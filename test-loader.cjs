@@ -1,13 +1,19 @@
 const path = require('node:path');
+const fs = require('node:fs');
 const { resolveEngine } = require('./runtime-paths.cjs');
 const root = resolveEngine();
 const { createJiti } = require(path.join(__dirname, 'node_modules/jiti'));
-function resolvePackageEntry(name, fallback) {
- try { return require.resolve(name, { paths: [__dirname] }); }
- catch { return fallback; }
+function firstExisting(candidates) {
+ return candidates.find(candidate => fs.existsSync(candidate)) || candidates[0];
 }
-const tuiEntry = resolvePackageEntry('@earendil-works/pi-tui', path.join(__dirname, 'node_modules/@earendil-works/pi-tui/dist/index.js'));
-const aiEntry = resolvePackageEntry('@earendil-works/pi-ai', path.join(__dirname, 'node_modules/@earendil-works/pi-ai/dist/index.js'));
+const tuiEntry = firstExisting([
+ path.join(__dirname, 'node_modules/@earendil-works/pi-tui/dist/index.js'),
+ path.join(root, 'node_modules/@earendil-works/pi-tui/dist/index.js'),
+]);
+const aiEntry = firstExisting([
+ path.join(__dirname, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
+ path.join(root, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
+]);
 const jiti = createJiti(__filename, { alias: {
  '@earendil-works/pi-coding-agent': path.join(root, 'dist/index.js'),
  '@earendil-works/pi-tui': tuiEntry,
