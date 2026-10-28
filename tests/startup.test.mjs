@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { createRequire } from 'node:module';
@@ -62,5 +62,5 @@ test('launcher JSON stays parseable and preserves the calling project directory'
  const cwd = mkdtempSync(join(tmpdir(), 'kepos-project-start-'));
  const result = spawnSync(process.execPath, [resolve('bin/kepos.cjs'), 'doctor', '--json'], { cwd, encoding: 'utf8', windowsHide: true, timeout: 15000 });
  assert.equal(result.status, 0, result.stderr);
- assert.equal(JSON.parse(result.stdout).project, cwd);
+ assert.equal(realpathSync(JSON.parse(result.stdout).project), realpathSync(cwd));
 });
