@@ -17,6 +17,7 @@ import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, type WorkerHandle } from './workers.ts';
 export { fit, historyLines };
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
+const DEFAULT_COUNCIL_ROLE_COUNT = 10;
 export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const config=loadConfig();const poolKey=Symbol.for('orbital.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let tool='';let pulse=0;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
@@ -24,9 +25,10 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,checkpoint:j.checkpoint?.slice(0,500),error:j.error}))});
  const save=()=>{saveConfig(config);refreshSupervisionPrompt?.();desk?.invalidate();};
  function initializeCrew(ctx:any){
-  if(ctx.mode!=='tui'||!ctx.model?.id||ctx.model.id==='unknown'||config.initialized)return;
-  if(!config.agents.length){const locale=councilLocale(process.env.KEPOS_LOCALE);for(const role of COUNCIL_ROLES.slice(0,10))config.agents.push({id:randomUUID(),name:roleName(role,locale),roleKey:role.key,role:rolePrompt(role,locale),model:ctx.model.id,provider:ctx.model.provider});}
-  config.initialized=true;save();
+  if(ctx.mode!=='tui'||!ctx.model?.id||ctx.model.id==='unknown')return;
+  const locale=councilLocale(process.env.KEPOS_LOCALE);const existingKeys=new Set(config.agents.map(agent=>agent.roleKey).filter(Boolean));const existingNames=new Set(config.agents.map(agent=>agent.name));let changed=false;
+  for(const role of COUNCIL_ROLES){if(config.agents.length>=DEFAULT_COUNCIL_ROLE_COUNT)break;if(existingKeys.has(role.key))continue;const name=roleName(role,locale);if(existingNames.has(name))continue;config.agents.push({id:randomUUID(),name,roleKey:role.key,role:rolePrompt(role,locale),model:ctx.model.id,provider:ctx.model.provider});existingKeys.add(role.key);existingNames.add(name);changed=true;}
+  if(!config.initialized||changed){config.initialized=true;save();}
  }
  const createLinkedSession=(ctx:any,cwd:string,title:string)=>{const piPath=createSessionFile(cwd,title,sessionDir(ctx));const logical=orbitalSessionStore.createSession({cwd,title,piSessionFile:piPath});config.sessionLinks[piPath]=logical.logicalSessionId;save();return piPath;};
  const repaint=()=>desk?.refresh();const scheduleRepaint=()=>{if(repaintTimer)return;repaintTimer=setTimeout(()=>{repaintTimer=undefined;repaint();},75);};pool.change=scheduleRepaint;
