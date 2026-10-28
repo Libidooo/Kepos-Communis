@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/assets/kepos-brand-hero-v8.svg" alt="Kepos Communis — 让协作自然生长" width="100%">
+  <img src="docs/assets/kepos-brand-hero-v9.svg" alt="Kepos Communis — 让协作自然生长" width="100%">
 </p>
 
 <p align="center"><strong>让协作自然生长。</strong></p>
