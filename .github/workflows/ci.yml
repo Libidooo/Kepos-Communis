@@ -20,6 +20,8 @@ jobs:
       - run: npm test
       - run: npm pack --dry-run
       - if: runner.os == 'Windows'
+        run: npm install --no-save --ignore-scripts --no-audit @earendil-works/pi-tui@1.4.0 @earendil-works/pi-ai@1.4.0
+      - if: runner.os == 'Windows'
         run: npm run test:legacy
       - if: runner.os == 'Windows'
         run: npm run test:terminal:sdk
