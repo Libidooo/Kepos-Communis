@@ -2,10 +2,16 @@ const path = require('node:path');
 const { resolveEngine } = require('./runtime-paths.cjs');
 const root = resolveEngine();
 const { createJiti } = require(path.join(__dirname, 'node_modules/jiti'));
+function resolvePackageEntry(name, fallback) {
+ try { return require.resolve(name, { paths: [__dirname] }); }
+ catch { return fallback; }
+}
+const tuiEntry = resolvePackageEntry('@earendil-works/pi-tui', path.join(__dirname, 'node_modules/@earendil-works/pi-tui/dist/index.js'));
+const aiEntry = resolvePackageEntry('@earendil-works/pi-ai', path.join(__dirname, 'node_modules/@earendil-works/pi-ai/dist/index.js'));
 const jiti = createJiti(__filename, { alias: {
  '@earendil-works/pi-coding-agent': path.join(root, 'dist/index.js'),
- '@earendil-works/pi-tui': path.join(__dirname, 'node_modules/@earendil-works/pi-tui/dist/index.js'),
- '@earendil-works/pi-ai': path.join(__dirname, 'node_modules/@earendil-works/pi-ai/dist/compat.js'),
+ '@earendil-works/pi-tui': tuiEntry,
+ '@earendil-works/pi-ai': path.join(path.dirname(aiEntry), 'compat.js'),
 } });
 // Exercise the checkout unless an installed/staged extension is explicitly selected.
 const ext = path.resolve(process.env.KEPOS_EXTENSION_DIR || path.join(__dirname, 'terminal'));
