@@ -1,5 +1,7 @@
 # ◌ Kepos Communis
 
+![Kepos Communis](docs/assets/kepos-logo-v5.svg)
+
 > **把目标交给理事会，把执行过程掌握在手里。**
 
 Kepos Communis 是一个独立的多智能体终端工作台。它使用 Pi SDK 负责模型、会话和认证，由 Kepos 负责任务拆解、专家协作、证据监督、长程调度和人类审批。

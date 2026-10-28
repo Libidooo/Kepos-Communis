@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="980" height="220" viewBox="0 0 980 220" role="img" aria-labelledby="title desc">
+  <title id="title">Kepos Communis</title>
+  <desc id="desc">Kepos Communis wordmark with twenty-four tapered square tables forming a shared ring.</desc>
+  <defs>
+    <path id="table" d="M122 12 L134 12 L137 29 L119 29 Z"/>
+    <g id="tables" fill="#0B2744">
+      <use href="#table"/><use href="#table" transform="rotate(15 128 128)"/><use href="#table" transform="rotate(30 128 128)"/><use href="#table" transform="rotate(45 128 128)"/>
+      <use href="#table" transform="rotate(60 128 128)"/><use href="#table" transform="rotate(75 128 128)"/><use href="#table" transform="rotate(90 128 128)"/><use href="#table" transform="rotate(105 128 128)"/>
+      <use href="#table" transform="rotate(120 128 128)"/><use href="#table" transform="rotate(135 128 128)"/><use href="#table" transform="rotate(150 128 128)"/><use href="#table" transform="rotate(165 128 128)"/>
+      <use href="#table" transform="rotate(180 128 128)"/><use href="#table" transform="rotate(195 128 128)"/><use href="#table" transform="rotate(210 128 128)"/><use href="#table" transform="rotate(225 128 128)"/>
+      <use href="#table" transform="rotate(240 128 128)"/><use href="#table" transform="rotate(255 128 128)"/><use href="#table" transform="rotate(270 128 128)"/><use href="#table" transform="rotate(285 128 128)"/>
+      <use href="#table" transform="rotate(300 128 128)"/><use href="#table" transform="rotate(315 128 128)"/><use href="#table" transform="rotate(330 128 128)"/><use href="#table" transform="rotate(345 128 128)"/>
+    </g>
+  </defs>
+  <use href="#tables" transform="translate(16 16) scale(.74)"/>
+  <text x="226" y="137" fill="#0B2744" font-family="Segoe UI, Arial, sans-serif" font-size="74" font-weight="500" letter-spacing="-2">Kepos Communis</text>
+</svg>
