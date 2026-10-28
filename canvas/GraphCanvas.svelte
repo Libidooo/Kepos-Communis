@@ -1,0 +1,13 @@
+<script lang="ts">
+ import {onMount} from 'svelte';
+ export let graph:any; export let onApprove:(node:any)=>void=()=>{}; export let onCancel:(node:any)=>void=()=>{};
+ const color:any={QUEUED:'#c5a575',WAITING:'#c5a575',RUNNING:'#8eb5ad',SUCCEEDED:'#a5b58d',FAILED:'#cd9585',NEEDS_HUMAN:'#cd9585',CANCELLED:'#858d87'};
+ let selected:any;
+ $: nodes=graph?.nodes||[]; $: edges=graph?.edges||[];
+ function select(node:any){selected=node;}
+</script>
+<div class="canvas">
+ <div class="toolbar"><strong>◌ KEPOS / GRAPH</strong><span>{graph?.run?.goal||'Run'}</span><span>{graph?.run?.state||'UNKNOWN'}</span></div>
+ <div class="grid">{#each nodes as node,i}<div class="node" role="button" tabindex="0" class:selected={selected?.id===node.id} style={`--accent:${color[node.data?.state]||color.QUEUED};left:${(node.position?.x||i%3*320)+24}px;top:${(node.position?.y||Math.floor(i/3)*190)+76}px`} on:click={()=>select(node)} on:keydown={(event)=>event.key==='Enter'&&select(node)}><small>{node.data?.kind||'agent'}</small><b>{node.data?.label||node.id}</b><em>{node.data?.state}</em>{#if node.data?.checkpoint}<span>checkpoint {node.data.checkpoint}</span>{/if}{#if node.data?.state==='NEEDS_HUMAN'}<span class="actions"><button type="button" class="action" on:click|stopPropagation={()=>onApprove(node)}>Approve</button></span>{/if}{#if node.data?.state==='RUNNING'}<span class="actions"><button type="button" class="action" on:click|stopPropagation={()=>onCancel(node)}>Stop</button></span>{/if}</div>{/each}</div>
+</div>
+<style>.canvas{height:100%;min-height:600px;background:#1d2422;color:#d2cabb;font:13px/1.5 'Cascadia Code',monospace}.toolbar{height:58px;padding:16px 20px;border-bottom:1px solid #536562;display:flex;gap:20px;align-items:center}.toolbar strong{color:#c5a575;letter-spacing:.16em}.toolbar span{color:#a5a79d}.grid{height:calc(100% - 58px);min-height:540px;position:relative;overflow:auto;background-image:linear-gradient(#ffffff08 1px,transparent 1px),linear-gradient(90deg,#ffffff08 1px,transparent 1px);background-size:32px 32px}.node{position:absolute;cursor:pointer;width:260px;text-align:left;padding:14px;background:#28312ef5;border:1px solid #536562;border-radius:8px;color:#d2cabb;box-shadow:0 14px 30px #0005}.node:hover,.node.selected{border-color:#c5a575}.node small{display:block;color:#8eb5ad;letter-spacing:.12em;text-transform:uppercase}.node b{display:block;margin:8px 0}.node em{display:inline-block;color:var(--accent);font-style:normal;background:#1d2422;border-radius:12px;padding:3px 7px;font-size:10px}.node span{display:block;color:#a5a79d;font-size:11px;margin-top:7px}.action{background:transparent;border:0;padding:0;color:#c5a575;cursor:pointer;font:inherit;margin-right:8px}</style>

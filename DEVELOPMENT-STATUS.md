@@ -1,0 +1,66 @@
+# 当前开发状态 — 0.3.0-beta.4
+
+本轮使用 code-simplifier 技能整理了 CLI、运行时认证、配置保存和调度代码，并加入自动构建、专家修订恢复、GraphStore、SQLite scheduler lease 和更简单的启动入口。重构保留既有命令、退出码和人工门禁行为；新增启动体验与配置修订管理另有针对性测试。
+
+- 全局入口已备份并更新到 `T:\Kepos\kepos.cjs`，在用户目录验证过 `kepos doctor --json`；开发目录可 `npm start` 或双击 `start.cmd`。
+- 源码启动会按内容指纹自动构建；已发布包直接运行编译产物。编译诊断走 stderr，不破坏 JSON stdout。
+- F2 专家管理可查看/恢复旧修订，并配置只读工具范围。旧任务的配置快照保持不变。
+- 自动化覆盖启动缓存、编译失败、发布包无编译器启动、修订幂等、恢复冲突、工具白名单及旧行为回归。
+- Windows ConPTY 已实测专家修订恢复，直接检查 SQLite 中职责与工具范围确实恢复；未发送模型提示词。
+- 已加入 Kepos Council 十角色目录（中英文名、role key、证据导向提示词和 Skill 使用边界）；代表配置快照保存 role key 与 Skill，F2 角色编辑默认使用角色目录，左栏更名为“代表席”。
+- Council 角色目录扩展到学术、产品、工程和运营方向；学术角色按 academic-pipeline 的研究、写作、完整性、评审、修订和发表门禁拆分，主 Agent 仍可用自定义 name/role 自由创建代表。
+- 新增政策研究、政策发布/评议和代码工程预设代表，并提供 `orbital_roles` 目录工具；主 Agent 可先按领域选 roleKey，再按需用 `orbital_skills` 验证 Skill。
+- Council 角色定义已拆到 `terminal/council-roles/` 六个领域文件；安装器与安装验收改为递归复制/核对嵌套运行文件。
+
+本轮验证：`npm run typecheck`、45项 `npm test`、旧回归、真实ConPTY修订恢复及打包产物启动均通过。打包白名单已包含最新 GraphStore/daemon 文件，产物约122KB，使用项目已有依赖验证，不是干净机器安装验收。全局启动入口已备份至 `recovery/launcher-d59531e1-5040-4278-99a8-96e5d580d8b4/`。本轮无模型调用。全局 PATH 入口已通过 `install-launcher.cjs --check` 核对，`kepos doctor --json` 从用户目录启动通过。
+
+下面保留上一阶段的运行时验证记录。Run/Node/Edge/Event/Artifact 数据投影、SQLite scheduler lease、`kepos daemon`、远程 Worker 协议和事件归档已完成第一版；React Flow 适配的离线画布已提供，完整画布交互和跨机器路由策略仍待完成；尚未公开发布。
+
+---
+
+# Kepos 开发状态 — 0.3.0-beta.4
+
+本轮在 2026-10-28 完成长程运行基础的修复与验证，没有发布 npm/GitHub，也没有发送模型提示词。
+
+## 完成的行为
+
+1. WorkerPool：正常完成后自动出队；父会话内 FIFO、会话间轮转；排队 AbortSignal/超时/取消；退出确认前保留执行器槽位；池关闭后不再派发。任务的300秒期限含排队/启动。
+2. Mission：局部步骤ID按计划隔离；事务认领；计划间共享预算；依赖证据传递；人工门禁批准；暂停时活动步骤收尾；CLI只运行指定计划；未知派发不重放。
+3. 人类控制：F8跨项目、F9长程计划、F2审批；CLI `missions show/events/pause/approve/resume/cancel/run`。模型工具没有批准人工门禁的动作。
+4. Token/性能：结果原文预览1600字符，分页最多6000字符，同步批量共享预览预算；事件cursor与受限检查点；历史/列表缓存；队列等待和派发后首文本时长分开记录。
+5. 独立应用：兼容入口与npm入口统一；延迟绑定数据目录；单进程多home明确拒绝；默认主题随包安装。
+
+## 本轮验证
+
+- `npm run typecheck`：通过。
+- `npm test`：31项通过，使用本地模拟执行器、真实SQLite和CLI，无模型调用。
+- `npm run test:legacy`：通过，包含20项交互、14项数据库、12项真实本地RPC生命周期检查及安装/启动入口检查。
+- `npm run test:terminal:sdk`：真实Windows ConPTY通过，覆盖启动、帮助、菜单、F8/F9、中止后重开、热重载；无模型提示词。
+- `npm run test:package`：103个打包文件的白名单/完整性及打包后doctor通过。使用项目已安装依赖，尚不是全新机器npm registry安装验收。
+- 90项混合排队工作负载：全部完成或按要求取消，容量不越界，receipt不被后续取消覆盖。
+
+## 本地合成渲染样本
+
+1000条历史，300次缓存重绘和100次流式重绘。最近样本首绘约19.96ms，缓存p95约0.38ms，流式p95约0.52ms，历史源读取1次。简化主题、无终端绘制和无网络/模型请求；不是端到端像素/模型TTFT。报告可通过 `npm run benchmark:render` 重现。
+
+## 明确保留的后续工作
+
+- Run/Node/Edge/Artifact统一图模型与流程图画布。
+- 统一守护进程、跨OS进程共享执行器、PID重用下的所有权确认。
+- 历史懒加载、事件归档、保留策略、模型费用预算与真实TTFT/token A/B。
+- macOS/Linux实机、远程CI、干净机器安装与公开发布。
+
+代码级回归和模拟压力测试不能替代服务商认证/真实模型长跑验收。故障、网络和账户额度依然可能影响执行。
+
+
+## 2026-10-28 扩展冒烟结果
+
+- React Flow 12 host fixture：`@xyflow/react@12.12.0` + React 19 + TypeScript 编译通过。
+- Svelte 5 host fixture：`@xyflow/svelte@1.7.0` + Svelte compiler 编译通过（有 accessibility warning，组件宿主应继续配置键盘交互）。
+- Remote Worker TLS：自签证书、token、health、submit、result 通过；无模型调用。
+- Windows Service：执行 `sc.exe` 安装路径，系统返回 `OpenSCManager error 5 / Access Denied`；需要管理员 CMD 重试。
+
+
+## Windows service smoke note
+
+The source compilation issue in `terminal/index.ts` was corrected and `npm run typecheck` now passes. Installing `KeposScheduler` from the current restricted shell reached the OS service manager but returned Access Denied; use an elevated PowerShell and `C:\ProgramData\Kepos` for the real install.

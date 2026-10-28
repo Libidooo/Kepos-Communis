@@ -1,0 +1,30 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {spawnSync} from 'node:child_process';
+import {mkdtempSync,writeFileSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join,resolve} from 'node:path';
+import {pathToFileURL} from 'node:url';
+const cli=resolve('bin/kepos.cjs');
+const cleanEnv={...process.env};for(const key of ['ORBITAL_HOME','ORBITAL_DATA_DIR','KEPOS_HOME','KEPOS_AGENT_DIR','KEPOS_DATA_DIR','PI_CODING_AGENT_DIR'])delete cleanEnv[key];
+const run=(args)=>{const result=spawnSync(process.execPath,[cli,...args],{encoding:'utf8',env:cleanEnv,windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);return result.stdout;};
+test('supervise human gate exits without a model request, then CLI can approve/pause/resume/cancel',()=>{
+ const dir=mkdtempSync(join(tmpdir(),'kepos-cli-plan-'));const home=join(dir,'home');const file=join(dir,'mission.json');
+ writeFileSync(file,JSON.stringify({goal:'human-only fixture',cwd:dir,parentSessionId:'human',jobs:[{id:'gate',agent:{name:'review',model:'fixture',provider:'fixture'},task:'Do not run without approval',requiresHuman:true}]}));
+ const output=run(['supervise',file,'--home',home,'--json']).trim().split('\n').map(line=>JSON.parse(line));
+ const state=output.at(-1);assert.equal(state.state,'NEEDS_HUMAN');assert.equal(state.jobs[0].state,'NEEDS_HUMAN');
+ const id=state.id;
+ assert.equal(JSON.parse(run(['missions','show',id,'--home',home,'--json'])).state,'NEEDS_HUMAN');
+ const events=JSON.parse(run(['missions','events',id,'--home',home]));assert.ok(events.events.some(event=>event.type==='job_needs_human'));
+ const approved=run(['missions','approve',id,'gate','--home',home,'--json']).trim();assert.equal(JSON.parse(approved).state,'QUEUED');
+ assert.equal(JSON.parse(run(['missions','pause',id,'--home',home,'--json'])).state,'PAUSED');
+ assert.equal(JSON.parse(run(['missions','resume',id,'--home',home,'--json'])).state,'QUEUED');
+ assert.equal(JSON.parse(run(['missions','cancel',id,'--home',home,'--json'])).state,'CANCELLED');
+ assert.ok(!JSON.stringify(output).includes('capability'));
+});
+test('public SDK import does not bind the default home before a custom workspace is created',()=>{
+ const home=mkdtempSync(join(tmpdir(),'kepos-sdk-home-'));
+ const source=`import {createWorkspace,appPaths} from ${JSON.stringify(pathToFileURL(resolve('dist/src/index.js')).href)};const paths=appPaths({KEPOS_HOME:${JSON.stringify(home)}});const app=await createWorkspace({paths,cwd:${JSON.stringify(home)}});const {databasePath}=await import(${JSON.stringify(pathToFileURL(resolve('dist/terminal/paths.js')).href)});console.log(JSON.stringify({databasePath,home:app.paths.home}));await app.runtime.dispose();`;
+ const result=spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8',env:cleanEnv,windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);
+ assert.equal(JSON.parse(result.stdout).databasePath,join(home,'data','orbital.sqlite'));
+});

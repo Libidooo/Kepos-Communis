@@ -1,0 +1,76 @@
+{
+  "name": "kepos-communis",
+  "version": "0.3.0-beta.4",
+  "description": "Kepos Communis terminal workspace, powered by the Pi runtime",
+  "bin": {
+    "kepos": "bin/kepos.cjs"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "scripts": {
+    "start": "node bin/kepos.cjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "test:live": "node warm-worker-test.cjs && node worker-safety-test.cjs && python conpty-test.py",
+    "test:workers": "node worker-lifecycle-test.cjs",
+    "install:extension": "node install-terminal.cjs",
+    "test:terminal": "python conpty-test.py --smoke",
+    "install:launcher": "node install-launcher.cjs",
+    "test:launcher": "node launcher-test.cjs",
+    "build": "node node_modules/typescript/bin/tsc -p tsconfig.json && node scripts/copy-assets.mjs",
+    "typecheck": "node node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
+    "prepack": "npm run build",
+    "test:legacy": "node terminal-smoke.cjs && node session-store-test.cjs && node database-runtime-test.cjs && node command-copy-test.cjs && node kepos-presentation-test.cjs && node worker-lifecycle-test.cjs && node install-runtime-test.cjs && node launcher-test.cjs",
+    "test:terminal:sdk": "python conpty-test.py --smoke --sdk",
+    "benchmark:render": "npm run build && node scripts/benchmark.mjs",
+    "test:package": "npm run build && node scripts/verify-pack.mjs",
+    "test:terminal:profiles": "python conpty-test.py --smoke --sdk --profiles"
+  },
+  "type": "module",
+  "license": "MIT",
+  "main": "./dist/src/index.js",
+  "exports": {
+    ".": "./dist/src/index.js",
+    "./scheduler": "./dist/terminal/scheduler.js"
+  },
+  "files": [
+    "bin/",
+    "dist/",
+    "themes/",
+    "canvas/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.4.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-tui": "1.4.0"
+  },
+  "devDependencies": {
+    "typescript": "6.0.3",
+    "@types/node": "26.6.5",
+    "jiti": "2.7.0"
+  },
+  "keywords": [
+    "agent",
+    "multi-agent",
+    "tui",
+    "cli",
+    "orchestration",
+    "pi"
+  ],
+  "peerDependencies": {
+    "@xyflow/react": "^12.0.0",
+    "@xyflow/svelte": "^1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@xyflow/react": {
+      "optional": true
+    },
+    "@xyflow/svelte": {
+      "optional": true
+    }
+  }
+}

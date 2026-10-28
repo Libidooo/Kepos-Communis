@@ -1,0 +1,11 @@
+import { createRequire } from 'node:module';
+import { copyFileSync, mkdirSync, existsSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+const source = resolve('terminal/worker-host.cjs');
+const target = resolve('dist/terminal/worker-host.cjs');
+mkdirSync(dirname(target), { recursive: true });
+copyFileSync(source, target);
+if (!existsSync('themes/orbital-76.json')) throw Error('Missing bundled orbital-76 theme');
+const { writeBuildStamp } = createRequire(import.meta.url)('../bin/build-support.cjs');
+writeBuildStamp(process.cwd());
+console.log('Kepos build ready');
