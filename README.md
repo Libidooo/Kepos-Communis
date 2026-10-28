@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/kepos-logo-v14.svg" alt="Kepos Communis — 让协作自然生长" width="620">
+</p>
+
 <p align="center"><strong>让协作自然生长。</strong></p>
 
 <p align="center">
@@ -195,3 +199,4 @@ npm run audit:public
 ## 许可
 
 Kepos Communis 使用 MIT License。Pi SDK 及其传递依赖按各自上游许可证发布，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
