@@ -29,6 +29,9 @@ test('human gate never starts until explicitly approved, and failure cannot be a
  assert.throws(()=>f.scheduler.approve(m.id,'foreign'),/Unknown/);f.scheduler.approve(m.id,'parent','approval');await f.scheduler.tick();assert.equal(f.dispatch.length,1);
  f.records.set(f.dispatch[0].h.workerId,{state:'FAILED',error:'bad'});await f.scheduler.tick();assert.equal(f.scheduler.get(m.id).state,'NEEDS_HUMAN');assert.throws(()=>f.scheduler.approve(m.id,'parent'),/explicit new/);await f.scheduler.tick();assert.equal(f.dispatch.length,1);
 });
+test('steps longer than twenty minutes are automatically placed behind a human gate',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'long',agent,task:'long running review',seconds:1201}]);await f.scheduler.tick();assert.equal(f.dispatch.length,0);assert.equal(f.scheduler.get(m.id).jobs[0].state,'NEEDS_HUMAN');assert.equal(f.scheduler.get(m.id).jobs[0].requiresHuman,true);
+});
 test('paused mission drains its active job and dispatches no dependent work',async t=>{
  const f=fixture(t);const m=f.enqueue([{id:'a',agent,task:'a'},{id:'b',agent,task:'b',dependsOn:['a']}]);await f.scheduler.tick();f.scheduler.pause(m.id,'parent');f.done(0);await f.scheduler.tick();assert.equal(f.dispatch.length,1);assert.equal(f.scheduler.get(m.id).jobs[0].state,'SUCCEEDED');assert.equal(f.scheduler.get(m.id).state,'PAUSED');
  f.scheduler.resume(m.id,'parent');await f.scheduler.tick();assert.equal(f.dispatch.length,2);

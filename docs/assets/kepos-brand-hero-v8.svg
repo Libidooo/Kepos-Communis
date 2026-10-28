@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="520" viewBox="0 0 1600 520" role="img" aria-labelledby="title desc">
+  <title id="title">Kepos Communis — garden commune</title>
+  <desc id="desc">A constructivist garden poster combining the Kepos ring mark and the Kepos Communis wordmark.</desc>
+  <rect width="1600" height="520" fill="#FFF7E6"/>
+  <path d="M0 0H480L0 360Z" fill="#B3242A"/>
+  <path d="M0 0H145L620 520H470Z" fill="#171717"/>
+  <path d="M1110 0H1600V136L1260 520H1020Z" fill="#B3242A"/>
+  <path d="M1320 0H1410L1080 520H990Z" fill="#F2C14E" opacity="0.86"/>
+  <path d="M1480 0H1600V38L1270 520H1170Z" fill="#66B79A" opacity="0.9"/>
+  <g transform="translate(42 130)">
+    <circle cx="128" cy="128" r="48" fill="#DDEBCF"/>
+    <g>
+    <g transform="rotate(0.0 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(7.5 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(15.0 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(22.5 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(30.0 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(37.5 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(45.0 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(52.5 128 128)" fill="#2F7D59"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(60.0 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(67.5 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(75.0 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(82.5 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(90.0 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(97.5 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(105.0 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(112.5 128 128)" fill="#66B79A"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(120.0 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(127.5 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(135.0 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(142.5 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(150.0 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(157.5 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(165.0 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(172.5 128 128)" fill="#F08A5B"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(180.0 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(187.5 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(195.0 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(202.5 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(210.0 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(217.5 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(225.0 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(232.5 128 128)" fill="#F2C14E"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(240.0 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(247.5 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(255.0 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(262.5 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(270.0 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(277.5 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(285.0 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(292.5 128 128)" fill="#5B8FD1"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(300.0 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(307.5 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(315.0 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(322.5 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(330.0 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(337.5 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(345.0 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    <g transform="rotate(352.5 128 128)" fill="#A58ACB"><path d="M123 10 Q128 8 133 10 L135 21 Q128 23 121 21 Z"/><path d="M124 11 L132 11" fill="none" stroke="#FFF7E6" stroke-width="1.2" stroke-linecap="round"/></g>
+    </g>
+    <g fill="none" stroke="#1F5E46" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M128 145 C128 136 128 128 128 119" stroke-width="4"/>
+      <path d="M128 125 C116 114 108 115 102 117 C108 127 117 130 128 125Z" fill="#2F7D59" stroke-width="2"/>
+      <path d="M128 120 C139 109 147 110 154 112 C148 122 139 125 128 120Z" fill="#66B79A" stroke-width="2"/>
+    </g>
+  </g>
+  <text x="390" y="164" fill="#1F5E46" font-family="Segoe UI, Arial, sans-serif" font-size="26" font-weight="700" letter-spacing="9">KEPOS</text>
+  <text x="390" y="246" fill="#1F5E46" font-family="Segoe UI, Arial, sans-serif" font-size="80" font-weight="700" letter-spacing="-3">COMMUNIS</text>
+  <rect x="395" y="276" width="275" height="7" fill="#F08A5B"/>
+  <text x="390" y="332" fill="#47715E" font-family="Segoe UI, Arial, sans-serif" font-size="25">让协作自然生长。</text>
+  <text x="390" y="375" fill="#47715E" font-family="Segoe UI, Arial, sans-serif" font-size="18" letter-spacing="2">A GARDEN COMMUNE FOR AGENTS</text>
+  <text x="390" y="432" fill="#B3242A" font-family="Consolas, monospace" font-size="15" font-weight="700" letter-spacing="3">48 TABLES · ONE SHARED GARDEN</text>
+  <rect x="1395" y="435" width="130" height="5" fill="#1F5E46"/>
+</svg>

@@ -24,7 +24,7 @@ const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixtu
   return child;
  });
  const pools = [];
- const makePool = (create = factory()) => { const pool = new WorkerPool(db(), create); pools.push(pool); return pool; };
+ const makePool = (create = factory(), options = {}) => { const pool = new WorkerPool(db(), create, options); pools.push(pool); return pool; };
  const launch = (pool, text, parent = 'parent', seconds = 5) => pool.launch(crew, text, isolated, 'source', seconds, undefined, parent, []);
  let checks = 0;
  const check = async (name, fn) => { await fn(); checks++; console.log('PASS ' + name); };
@@ -127,8 +127,8 @@ const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixtu
    assert.match(broken.result(handle, 'parent').error, /spawn failed/);
    assert.equal((await broken.run(crew, 'START', isolated, 's', 5, undefined, 'parent', [])).state, 'FAILED');
   });
-  await check('Ten busy slots queue an eleventh and cancel without leaking processes', async () => {
-   const full = makePool();
+   await check('Ten busy slots queue an eleventh and cancel without leaking processes', async () => {
+    const full = makePool(factory(), { concurrency: 10 });
    const handles = Array.from({ length: 10 }, () => launch(full, 'WAIT'));
    const extra = launch(full, 'EXTRA'); assert.equal(full.status(extra, 'parent').state, 'QUEUED'); full.cancelHandle(extra, 'parent'); assert.equal((await full.wait(extra, 'parent', 2)).state, 'CANCELLED');
    full.cancelAll();
@@ -164,7 +164,7 @@ const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixtu
     const count = bound.tasks.length;
     await assert.rejects(tools.orbital_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }, { name: 'second', model: 'fixture', task: '  ' }] }, undefined, undefined, ctx), /不能为空/);
     assert.equal(bound.tasks.length, count, 'Invalid batch launched its first task');
-    for (const seconds of [0, 301, NaN]) {
+    for (const seconds of [0, 3601, NaN]) {
      await assert.rejects(tools.orbital_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }, { name: 'second', model: 'fixture', task: 'valid', seconds }] }, undefined, undefined, ctx), /期限/);
      assert.equal(bound.tasks.length, count);
     }

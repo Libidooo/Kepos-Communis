@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { OrbitalDatabase } from './database.ts';
 import { GraphStore } from './graph.ts';
 import type { WorkerPool } from './workers.ts';
-import { READ_ONLY_TOOLS, MAX_TASK_SECONDS, profileRevision, type WorkerHandle } from './worker-contract.ts';
+import { DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, READ_ONLY_TOOLS, MAX_TASK_SECONDS, profileRevision, type WorkerHandle } from './worker-contract.ts';
 export type MissionState = 'QUEUED' | 'RUNNING' | 'PAUSED' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export type JobState = 'QUEUED' | 'RUNNING' | 'WAITING' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export interface MissionJobInput {
@@ -86,7 +86,7 @@ export class MissionScheduler {
         missionIds?: string[];
     } = {}) {
         this.graph = new GraphStore(database);
-        this.concurrency = Math.max(1, Math.min(10, Math.floor(options.concurrency || 10)));
+        this.concurrency = Math.max(1, Math.min(MAX_CONCURRENT_CHILDREN, Math.floor(options.concurrency || MAX_CONCURRENT_CHILDREN)));
         this.database.sql.exec(`
    CREATE TABLE IF NOT EXISTS missions(id TEXT PRIMARY KEY,goal TEXT NOT NULL,cwd TEXT NOT NULL,parent TEXT NOT NULL,session_file TEXT,state TEXT NOT NULL,created INTEGER NOT NULL,updated INTEGER NOT NULL,deadline INTEGER,meta TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS mission_jobs(id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES missions(id),agent TEXT NOT NULL,task TEXT NOT NULL,depends TEXT NOT NULL,seconds INTEGER NOT NULL,requires_human INTEGER NOT NULL,state TEXT NOT NULL,handle TEXT,output TEXT,error TEXT,checkpoint TEXT,started INTEGER,ended INTEGER);
@@ -117,8 +117,10 @@ export class MissionScheduler {
                     mcp: false,
                 };
                 agent.profileRevision = profileRevision(base);
-                this.database.prepare('INSERT INTO mission_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(key, id, JSON.stringify(agent), item.task, JSON.stringify(item.dependsOn || []), item.seconds ?? MAX_TASK_SECONDS, item.requiresHuman ? 1 : 0, 'QUEUED', null, null, null, null, null, null);
-                this.event(id, key, 'job_queued', { state: 'QUEUED', profileRevision: agent.profileRevision });
+                const seconds = item.seconds ?? DEFAULT_TASK_SECONDS;
+                const requiresHuman = !!item.requiresHuman || seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS;
+                this.database.prepare('INSERT INTO mission_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(key, id, JSON.stringify(agent), item.task, JSON.stringify(item.dependsOn || []), seconds, requiresHuman ? 1 : 0, 'QUEUED', null, null, null, null, null, null);
+                this.event(id, key, 'job_queued', { state: requiresHuman ? 'NEEDS_HUMAN' : 'QUEUED', profileRevision: agent.profileRevision, requiresHuman, reason: seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS ? 'Long-running step requires human approval' : undefined });
             });
             this.event(id, null, 'mission_created', { state: 'QUEUED' });
         });
@@ -155,7 +157,7 @@ export class MissionScheduler {
             if (!job.agent?.name?.trim() || !job.agent?.model?.trim())
                 throw Error('Job agent name and model are required');
             if (job.seconds !== undefined && (!Number.isInteger(job.seconds) || job.seconds < 1 || job.seconds > MAX_TASK_SECONDS))
-                throw Error('Job deadline must be 1-300 seconds');
+                throw Error(`Job deadline must be 1-${MAX_TASK_SECONDS} seconds`);
             if (job.dependsOn !== undefined && !Array.isArray(job.dependsOn))
                 throw Error('Job dependsOn must be an array');
             for (const dependency of job.dependsOn || [])

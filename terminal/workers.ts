@@ -7,9 +7,9 @@ import { db, type OrbitalDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
-import {MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
+import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
+export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
 const labels: Record<WorkerState, string> = { QUEUED: '排队中', STARTING: '启动中', RUNNING: '运行中', SUCCEEDED: '完成', FAILED: '失败', INTERRUPTED: '已中断', CANCEL_REQUESTED: '正在终止', CANCELLED: '已取消', TIMED_OUT: '超时' };
@@ -156,6 +156,17 @@ export class WorkerPool {
   this.cancel(handle.workerId);
   return this.status(handle, parent);
  }
+ review(handle: WorkerHandle, parent: string) {
+  const task = this.tasks.find(item => item.id === handle.workerId);
+  if (!task || !this.authorize(handle, parent)) return { state: 'UNKNOWN_HANDLE' };
+  if (!terminalStates.has(task.status)) {
+   task.reviewDue = false;
+   task.reviewAt = Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000;
+   this.persist(task, 'review_ack');
+   this.emit({ type: 'task_review_ack', task: { ...task } });
+  }
+  return { state: task.state, reviewDue: !!task.reviewDue, reviewAt: task.reviewAt, reviewCount: task.reviewCount || 0 };
+ }
  cancel(id: string) {
   const pending = this.queued.get(id);
   if (pending) {
@@ -253,11 +264,26 @@ export class WorkerPool {
   {
 
    let finished = false, stopping = false, usage: any, final: any;let checkpointAt=0;
-   let timer: ReturnType<typeof setTimeout>, cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+   let timer: ReturnType<typeof setTimeout>, reviewTimer: ReturnType<typeof setTimeout> | undefined, cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+   const scheduleReview = () => {
+    if (finished) return;
+    const delay = Math.max(1000, (task.reviewAt || Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000) - Date.now());
+    reviewTimer = setTimeout(() => {
+     if (finished) return;
+     task.reviewCount = (task.reviewCount || 0) + 1;
+     task.reviewDue = true;
+     task.reviewAt = Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000;
+     this.persist(task, 'review_due');
+     this.emit({ type: 'task_review_due', task: { ...task } });
+     scheduleReview();
+    }, delay);
+    reviewTimer.unref?.();
+   };
    const finish = (state: WorkerState, error?: string, exitConfirmed = true) => {
     if (finished) return;
     finished = true;
     clearTimeout(timer);
+    clearTimeout(reviewTimer);
     clearTimeout(cleanupTimer);
     signal?.removeEventListener('abort', cancel);
     this.cancelCallbacks.delete(id);
@@ -329,14 +355,23 @@ export class WorkerPool {
     if (response?.disposition === 'handled' && !finished && !stopping) terminate('FAILED', 'Worker prompt was handled without starting an agent');
    })().catch(error => { if (!finished && !stopping) terminate('FAILED', error.message); });
    if (signal?.aborted) cancel();
-  }
-  this.emit({ type: 'task_started', task: { ...task } });
+   task.reviewAt = Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000;
+   task.reviewCount = 0;
+   task.reviewDue = false;
+   this.persist(task, 'started');
+   scheduleReview();
+   this.emit({ type: 'task_started', task: { ...task } });
  }
- launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = 300, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false): WorkerHandle {
+ }
+ launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string): WorkerHandle {
   if (this.closed) throw Error('Pool closed');
   if (!parentSessionId) throw Error('A bound parent session is required');
   if (signal?.aborted) throw Error('Task cancelled');
-  if (!Number.isFinite(seconds) || seconds <= 0) throw Error('Invalid task deadline');
+  if (!Number.isFinite(seconds) || seconds <= 0 || seconds > MAX_TASK_SECONDS) throw Error(`Task deadline must be 1-${MAX_TASK_SECONDS} seconds`);
+  if (!Number.isInteger(delegationDepth) || delegationDepth < 0 || delegationDepth > 1) throw Error('Nested delegation depth is limited to one level');
+  const parentTask = parentWorkerId && this.tasks.find(item => item.id === parentWorkerId);
+  if (parentWorkerId && (!parentTask || parentTask.parentSessionId !== parentSessionId)) throw Error('Parent worker is unknown or belongs to another session');
+  if (parentTask && seconds > Math.max(1, Math.floor(parentTask.limit / 2))) throw Error(`Copied task deadline cannot exceed half of parent task (${Math.floor(parentTask.limit / 2)} seconds)`);
   if (!instruction.trim()) throw Error('Task goal is empty');
   if (this.queued.size >= 1000) throw Error('Worker queue is full');
   const profile = this.profile(crew, cwd, tools, skills, mcp);
@@ -344,8 +379,8 @@ export class WorkerPool {
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
-  const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability };
-  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: Math.min(MAX_TASK_SECONDS, seconds), model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp };
+  const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
+  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));
    this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'queued', task.started, JSON.stringify({state:task.state,profileRevision:task.profileRevision}));
@@ -387,8 +422,8 @@ export class WorkerPool {
    }
   } finally { this.pumping = false; }
  }
- async run(crew: Crew, instruction: string, cwd: string, session: string, seconds = 300, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false): Promise<Task> {
-  const handle = this.launch(crew, instruction, cwd, session, seconds, signal, parentSessionId || session, tools, skills, mcp);
+ async run(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string): Promise<Task> {
+  const handle = this.launch(crew, instruction, cwd, session, seconds, signal, parentSessionId || session, tools, skills, mcp, delegationDepth, parentWorkerId);
   return this.completions.get(handle.workerId) || structuredClone(this.tasks.find(task => task.id === handle.workerId)!);
  }
 }

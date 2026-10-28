@@ -4,11 +4,14 @@ import {EventEmitter} from 'node:events';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {WorkerPool} from '../dist/terminal/workers.js';
+import {WorkerPool,MAX_CONCURRENT_CHILDREN,DEFAULT_TASK_SECONDS} from '../dist/terminal/workers.js';
 import {OrbitalDatabase} from '../dist/terminal/database.js';
 
 const crew={id:'expert',name:'Expert',role:'investigate',model:'fixture',provider:'fixture'};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
+test('default worker policy exposes 48 slots and a five-minute review baseline',()=>{assert.equal(MAX_CONCURRENT_CHILDREN,48);assert.equal(DEFAULT_TASK_SECONDS,300);});
+test('main-agent review acknowledgement is scoped to the worker handle',async t=>{const f=fixture(t);const handle=f.launch('review');await turn();const review=f.pool.review(handle,'a');assert.equal(review.state,'STARTING');assert.equal(review.reviewDue,false);assert.equal(f.pool.review(handle,'wrong').state,'UNKNOWN_HANDLE');});
+test('copy delegation is one level and halves the parent budget',async t=>{const f=fixture(t);const parent=f.launch('parent','a',{seconds:5});assert.throws(()=>f.pool.launch(crew,'too long',t.name,'source',3,undefined,'a',[],[],false,1,parent.workerId),/half/);const child=f.pool.launch(crew,'copy',t.name,'source',2,undefined,'a',[],[],false,1,parent.workerId);assert.equal(f.pool.tasks.at(-1).delegationDepth,1);assert.equal(f.pool.tasks.at(-1).parentWorkerId,parent.workerId);f.pool.cancelHandle(child,'a');f.pool.cancelHandle(parent,'a');});
 function fixture(t,concurrency=1){
  const dir=mkdtempSync(join(tmpdir(),'kepos-queue-'));
  const database=new OrbitalDatabase(join(dir,'state.sqlite'));
