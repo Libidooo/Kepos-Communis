@@ -12,14 +12,16 @@ function resolveFromEngine(name, fallback) {
 function firstExisting(candidates) {
  return candidates.find(candidate => fs.existsSync(candidate)) || candidates[0];
 }
-const tuiEntry = resolveFromEngine('@earendil-works/pi-tui', firstExisting([
+const tuiFallback = firstExisting([
  path.join(__dirname, 'node_modules/@earendil-works/pi-tui/dist/index.js'),
  path.join(root, 'node_modules/@earendil-works/pi-tui/dist/index.js'),
- ]));
-const aiEntry = resolveFromEngine('@earendil-works/pi-ai', firstExisting([
+]);
+const tuiEntry = fs.existsSync(tuiFallback) ? tuiFallback : resolveFromEngine('@earendil-works/pi-tui', tuiFallback);
+const aiFallback = firstExisting([
  path.join(__dirname, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
  path.join(root, 'node_modules/@earendil-works/pi-ai/dist/index.js'),
- ]));
+]);
+const aiEntry = fs.existsSync(aiFallback) ? aiFallback : resolveFromEngine('@earendil-works/pi-ai', aiFallback);
 const jiti = createJiti(__filename, { alias: {
  '@earendil-works/pi-coding-agent': path.join(root, 'dist/index.js'),
  '@earendil-works/pi-tui': tuiEntry,
