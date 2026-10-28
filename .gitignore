@@ -41,7 +41,6 @@ conpty-result.json
 /index.html
 /longrun-review.cjs
 /review-team.cjs
-/runtime-paths.cjs
 /smoke-test.cjs
 /sqlite-review.cjs
 /terminal-screen.py
