@@ -1,0 +1,4 @@
+# Visual identity drafts are intentionally kept out of the source and npm release.
+docs/assets/
+recovery/
+reports/
