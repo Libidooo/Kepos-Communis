@@ -1,6 +1,6 @@
 # ◌ Kepos Communis
 
-![Kepos Communis](docs/assets/kepos-logo-v5.svg)
+![Kepos Communis](docs/assets/kepos-logo-v6.svg)
 
 > **把目标交给理事会，把执行过程掌握在手里。**
 
