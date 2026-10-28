@@ -47,5 +47,3 @@ conpty-result.json
 /terminal-screen.py
 /terminal-v1-backup.ts
 
-# Optional CI file requires a GitHub token with workflow scope.
-/.github/workflows/ci.yml
