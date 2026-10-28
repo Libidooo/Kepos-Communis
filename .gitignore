@@ -46,3 +46,6 @@ conpty-result.json
 /terminal-screen.py
 /terminal-v1-backup.ts
 
+
+# Brand artwork is kept out of the source release until the visual identity is finalized.
+/docs/assets/

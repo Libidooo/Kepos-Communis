@@ -1,8 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="760" height="132" viewBox="0 0 760 132" role="img" aria-labelledby="title desc">
-  <title id="title">Kepos Communis</title>
-  <desc id="desc">Kepos Communis logo with a dotted orbital mark and dark blue wordmark.</desc>
-  <g fill="none" stroke="#0B2744" stroke-width="4" stroke-linecap="round">
-    <circle cx="34" cy="66" r="25" stroke-dasharray="1 10"/>
-  </g>
-  <text x="84" y="88" fill="#0B2744" font-family="Segoe UI, Arial, sans-serif" font-size="68" font-weight="500" letter-spacing="-1.5">Kepos Communis</text>
-</svg>

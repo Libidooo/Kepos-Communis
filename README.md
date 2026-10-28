@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="docs/assets/kepos-brand-hero-v10.svg" alt="Kepos Communis — 让协作自然生长" width="100%">
-</p>
-
 <p align="center"><strong>让协作自然生长。</strong></p>
 
 <p align="center">
@@ -114,7 +110,7 @@ Kepos · project-b (main) · gpt-6.1-sol · ctx 14% · 01:42              PLAN �
 F1 帮助   F2 操作   F3 任务   F4 模型   F5 工具   F7 复制   F8 全局   F9 计划
 ```
 
-默认主题是 `orbital-76`。主题文件位于 `themes/orbital-76.json`；品牌资产位于 `docs/assets/`。品牌标语是“让协作自然生长”。
+默认主题是 `orbital-76`。主题文件位于 `themes/orbital-76.json`；品牌标语是“让协作自然生长”。
 
 ## 核心能力
 
