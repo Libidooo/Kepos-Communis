@@ -60,3 +60,15 @@ test('human approval uses a bright hammer and a bounded two-frame tremble', () =
   assert.notDeepEqual(first.lines, next.lines);
   assert.deepEqual(first.hits, next.hits);
 });
+
+test('seat states distinguish idle, queued, review, success, failure and cancellation', () => {
+  const view = task => renderGraph({ agents, tasks: task ? [task] : [] }, 100, 24, -1, 1, theme).lines.join('');
+  assert.ok(view().includes('\x1b[38;2;116;139;129m■'));
+  assert.ok(view({ id: 'queued', agent: 'A', state: 'QUEUED' }).includes('\x1b[38;2;157;126;76m■'));
+  assert.ok(view({ id: 'running', agent: 'A', state: 'RUNNING', reviewDue: true }).includes('!'));
+  const colored = { fg: (color, value) => `[${color}]${value}` };
+  const state = value => renderGraph({ agents, tasks: [{ id: value, agent: 'A', state: value }] }, 100, 24, -1, 1, colored).lines.join('');
+  assert.ok(state('SUCCEEDED').includes('[success]■'));
+  assert.ok(state('FAILED').includes('[error]■'));
+  assert.ok(state('CANCELLED').includes('[dim]■'));
+});
