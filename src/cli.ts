@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { activatePaths, appPaths, type AppPaths } from './config.ts';
 import { doctorCommand, packageVersion } from './cli/diagnostics.ts';
 import { HELP, parseCli, type CliOptions } from './cli/options.ts';
@@ -39,8 +39,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
       return;
     }
     case 'graph': {
-      const action=options.args[0]||'export';const runId=options.args[1]||options.args[0];if(action!=='export'||!runId)throw Error('Usage: kepos graph export <run-id>');
-      const {OrbitalDatabase}=await import('../terminal/database.ts');const {GraphStore}=await import('../terminal/graph.ts');const graph=new GraphStore(new OrbitalDatabase(join(paths.dataDir,'orbital.sqlite')));console.log(JSON.stringify(graph.toReactFlow(runId),null,2));return;
+      throw Error('Graph export has been retired. Start Kepos and press F10 to open the live terminal graph.');
     }
     case 'retention': {
       const { retentionCommand } = await import('./retention.ts'); await retentionCommand(options, paths); return;

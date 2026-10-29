@@ -14,4 +14,4 @@
 
 Node state and edge animation are presentation hints. The database graph tables remain the source for graph queries. `canvas/graph.html` loads this JSON locally without a network dependency; a React Flow or Svelte Flow adapter can consume the same objects.
 
-`kepos graph export <run-id> > graph.json` exports a run. `GraphStore.events(runId, cursor, limit)` is the incremental graph event API.
+The live terminal graph is opened with `F10`. `GraphStore.events(runId, cursor, limit)` remains the incremental graph event API used by the terminal view. The old standalone graph export command is retired.

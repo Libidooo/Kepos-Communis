@@ -71,7 +71,6 @@ Usage: kepos [command] [options]
   kepos missions show|events|pause|approve|resume|cancel|run <id> [job]
   kepos supervise <file>  Run a durable task plan from a JSON file
   kepos daemon            Run one cross-process scheduler owner
-  kepos graph export <id> Export a React Flow-compatible run graph
   kepos worker serve      Run an authenticated remote Worker executor
   kepos retention         Archive old derived events
 

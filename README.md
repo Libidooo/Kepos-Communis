@@ -124,7 +124,7 @@ F1 帮助   F2 操作   F3 任务   F4 模型   F5 工具   F7 复制   F8 全�
 | WorkerPool | 默认 48 个并发槽位、队列、每 5 分钟复核、跨项目轮转和 warm executor |
 | Evidence | 结果摘要、完整产出、游标分页、哈希和不可变 receipt |
 | Mission | 持久 DAG、依赖、暂停、取消、人工门禁和恢复 |
-| GraphStore | Run / Node / Edge / Event / Artifact 图模型，支持 React Flow 和 Svelte Flow |
+| Agent Graph | 终端内 48 席径向图谱、状态颜色、父子连接、复核提示和 Worker 详情 |
 | Remote Worker | token + TLS 的 health、submit、status、result、cancel、events 协议 |
 | SQLite | 任务、事件、结果、计划和归档的协作索引；Pi JSONL 仍是会话权威来源 |
 
@@ -150,7 +150,7 @@ kepos login
 kepos logout
 kepos doctor --json
 kepos missions
-kepos graph export <run-id>
+F10              打开终端 Agent 图谱
 kepos daemon --home <dir>
 ```
 

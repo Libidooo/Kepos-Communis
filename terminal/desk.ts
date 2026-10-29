@@ -7,6 +7,7 @@ import { terminalStates, type WorkerPool } from './workers.ts';
 import { routeCommand, localCommands } from './command-routing.ts';
 import { TimingWindow } from './metrics.ts';
 import { PRODUCT_NAME, sessionUsage, usageText } from './presentation.ts';
+import { graphHitTest, renderGraph, type GraphViewSnapshot } from './graph-view.ts';
 export const fit=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
 export function historyLines(entries:any[],width:number,expanded=false,theme?:any):string[]{
  const lines:string[]=[];for(const entry of entries){if(entry.type==='compaction'||entry.type==='branch_summary'){lines.push(entry.type==='compaction'?'[上下文已压缩 / 以下为摘要]':'[分支背景摘要]',...wrapTextWithAnsi(clean(entry.summary),width),'');continue;}if(entry.type==='custom_message'&&entry.display===false)continue;if(entry.type!=='message'&&entry.type!=='custom_message')continue;const m=entry.message||{role:'custom',content:entry.content};if(m.role==='custom'&&m.display===false)continue;if(!['user','assistant','toolResult','custom'].includes(m.role))continue;
@@ -22,7 +23,7 @@ export class Desk {
  readonly renderMetrics=new TimingWindow();
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;
  taskScope:'session'|'all'='session';
- missionView=false;
+ missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphZoom=1;graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
@@ -78,8 +79,9 @@ export class Desk {
  return this.historyCache;
  }
  render(width:number):string[]{const begin=performance.now();try{return this.renderFrame(width);}finally{this.renderMetrics.observe(performance.now()-begin);}}
+ private renderGraphFrame(width:number,rows:number):string[]{const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};const graph=renderGraph(snapshot,width,Math.max(8,rows-4),this.graphSelected,this.graphZoom,this.theme,this.graphDetail);const header=this.theme.fg('accent',fit('Kepos Communis · Agent Graph · F10 返回',width));this.editor.focused=this.focused&&this.focus==='input';const input=this.editor.render(Math.max(8,width-2));return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
  private renderFrame(width:number):string[]{
- this.width=width;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);const wide=width>=110;const medium=width>=80;
+ this.width=width;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);if(this.graphView)return this.renderGraphFrame(width,rows);const wide=width>=110;const medium=width>=80;
  this.leftWidth=wide?27:0;this.rightWidth=medium?34:0;this.centerWidth=Math.max(12,width-this.leftWidth-this.rightWidth-(wide?6:medium?3:0));this.inputWidth=this.centerWidth;
  this.editor.focused=this.focused&&this.focus==='input';const editorLines=this.editor.render(this.centerWidth);this.editorHeight=editorLines.length;const inputLines=editorLines;
  if(rows<18||width<24){const compact=this.editor.render(width);const prefix=[this.theme.fg('accent',fit(`${PRODUCT_NAME} · Enter发送 · Esc返回`,width))];return [...prefix,...compact,this.theme.fg('muted',fit('扩大窗口可显示三栏 / F1帮助',width))].slice(0,rows);}
@@ -90,7 +92,7 @@ export class Desk {
  if(history.length===1&&history[0].startsWith('尚无消息。')&&!this.live){history=['',PRODUCT_NAME,'把目标交给主 Agent，把执行过程掌握在手里。','', '项目  '+clean(this.ctx.cwd),this.ctx.model?.id&&this.ctx.model.id!=='unknown'?'模型  '+clean(this.ctx.model.id):'尚未连接模型 · 输入 /login 开始','', '直接输入目标，Enter 开始','F2 配置专家与任务 · F3 当前会话','F8 跨项目监控 · F9 长程计划','', '每个子任务最多5分钟；长程工作按步骤推进。'];}
 
  if((this.sending||this.activity.length||this.thinking)&&!this.help&&!this.taskView&&!this.missionView)history=[...history,'',...(this.thinking?['┊ 正在整理思路…']:[]),...this.activity];
- if(this.help)history=['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开工作台','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn：滚动历史，Ctrl+End 回最新','F2：新项目 / 新对话 / 配置 / 手动分派','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：中止主 Agent 和本进程子任务','Esc：只回到 Kepos 工作台，不离开到 Pi','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本工作台输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。'];
+ if(this.help)history=['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开工作台','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席','F10：打开 48 席 Agent 图谱','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn：滚动历史，Ctrl+End 回最新','F2：新项目 / 新对话 / 配置 / 手动分派','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：中止主 Agent 和本进程子任务','Esc：只回到 Kepos 工作台，不离开到 Pi','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本工作台输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。'];
  if(this.taskView&&!this.help){const tasks=this.panelTasks();this.taskIndex=Math.max(0,Math.min(this.taskIndex,Math.max(0,tasks.length-1)));let task=tasks[Math.min(this.taskIndex,Math.max(0,tasks.length-1))];
  if(task&&this.taskScope==='all'&&this.monitor){if(!this.evidenceCache||this.evidenceCache.id!==task.id||this.evidenceCache.ended!==task.ended||(!task.ended&&Date.now()-this.evidenceAt>1000)){this.evidenceAt=Date.now();this.evidenceCache={id:task.id,ended:task.ended,output:task.output,value:this.monitor.evidence(task.id)};}task=this.evidenceCache.value||task;}
  history=task?[(this.taskScope==='all'?'全局任务':'会话任务')+' / '+(this.taskIndex+1)+' / '+tasks.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),this.centerWidth)]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`${Math.round(((task.ended||Date.now())-task.started)/1000)} 秒 / 上限 ${task.limit} 秒`,`${clean(task.provider)} / ${clean(task.model)}`,...wrapTextWithAnsi(clean(task.title),this.centerWidth),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),this.centerWidth):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),this.centerWidth))]:[this.taskScope==='all'?'全局任务 · 暂无子 Agent 任务':'本会话暂无子 Agent 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
@@ -113,8 +115,9 @@ export class Desk {
  selectedText(){if(!this.selection)return'';const {anchor,end,lines}=this.selection;const [a,b]=anchor.row<end.row||anchor.row===end.row&&anchor.col<=end.col?[anchor,end]:[end,anchor];return stripVTControlCharacters(lines.slice(a.row,b.row+1).map((line,i)=>sliceByColumn(line,i===0?a.col:0,Math.max(0,(a.row+i===b.row?b.col:visibleWidth(line))-(i===0?a.col:0))).trimEnd()).join('\n'));}
  handleInput(data:string){
  if(matchesKey(data,Key.f7)||matchesKey(data,'ctrl+shift+c')){void this.copyAnswer();return;}
+ if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.focus=this.graphView?'crew':'input';this.readStart=null;this.refresh();return;}
  if(matchesKey(data,Key.escape)&&this.focus==='input'&&this.editor.isShowingAutocomplete()){this.editor.handleInput(data);this.refresh();return;}
- if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到 Kepos 工作台';}else this.notice='已在 Kepos 工作台；输入 /pi 进入 Pi 命令行';this.refresh();return;}
+ if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){this.graphView=false;this.graphDetail=false;this.setFocus('input');this.notice='已回到 Kepos 工作台';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到 Kepos 工作台';}else this.notice='已在 Kepos 工作台；输入 /pi 进入 Pi 命令行';this.refresh();return;}
  if(matchesKey(data,'ctrl+c')){const selected=this.selectedText();if(selected){void this.copyText(selected);return;}this.notice='进入 Pi 命令行请使用 /pi；中止任务请按 Ctrl+X。';this.refresh();return;}
  if(matchesKey(data,'ctrl+x')){this.finish({kind:'abort'});return;}
  if(matchesKey(data,Key.f1)){this.help=!this.help;this.readStart=null;this.refresh();return;}
@@ -125,6 +128,10 @@ export class Desk {
  if(matchesKey(data,Key.f5)){this.expandedTools=!this.expandedTools;this.historyCacheKey='';this.notice=this.expandedTools?'工具完整输出已展开':'工具输出已折叠（保留头尾）';this.refresh();return;}
  if(matchesKey(data,Key.f4)){this.finish({kind:'model'});return;}
  if(matchesKey(data,Key.f6)){this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
+ if(this.graphView&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphDetail=false;this.refresh();return;}
+ if(this.graphView&&matchesKey(data,Key.down)){this.graphSelected=Math.min(47,this.graphSelected+1);this.graphDetail=false;this.refresh();return;}
+ if(this.graphView&&matchesKey(data,Key.enter)){this.graphDetail=true;this.refresh();return;}
+ if(this.graphView&&(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown))){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(matchesKey(data,Key.pageUp)?0.1:-0.1)));this.refresh();return;}
  if(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown)){const lines=this.displayLines.length?this.displayLines:this.history(this.centerWidth);this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(matchesKey(data,Key.pageUp)?-Math.max(1,this.bodyHeight-2):Math.max(1,this.bodyHeight-2)));if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'ctrl+end')){this.readStart=null;this.refresh();return;}
  if(this.taskView&&matchesKey(data,'ctrl+right')){this.taskIndex++;this.readStart=null;this.refresh();return;}
@@ -136,6 +143,8 @@ export class Desk {
  this.refresh();
  }
  handleMouse(e:any){if(e.shift)return;
+ if(this.graphView&&e.type==='wheel'){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(e.wheelDelta>0?.1:-.1)));this.refresh();return{handled:true};}
+ if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=graphHitTest(this.width,Math.max(8,(this.tui.terminal.rows||30)-4),this.graphZoom,e.x,e.y-1);if(hit){this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphDetail=e.clickCount>=2;this.refresh();return{handled:true,focus:true};}}
  const centerX=this.leftWidth+(this.leftWidth?3:0);const inTranscript=e.y>=2&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+this.centerWidth&&this.focus!=='crew';
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-2,col:e.x-centerX},end:{row:e.y-2,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-1,e.y-2)),col:Math.max(0,Math.min(this.centerWidth,e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}
