@@ -8,13 +8,22 @@ const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
 
 test('unassigned seats have no connection; assigned seats connect to the main Agent', () => {
-  const empty = renderGraph({ agents, tasks: [] }, 120, 32, -1, 1, theme);
+  const empty = renderGraph({ agents, tasks: [] }, 100, 32, -1, 1, theme);
   assert.equal(empty.hits.length, 49);
   assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
   assert.ok(empty.lines.slice(0, 32).join('').includes('□'));
   assert.equal(/[─│╱╲┼]/.test(empty.lines.slice(0, 32).join('')), false);
-  const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 120, 32, -1, 1, theme);
+  const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
   assert.equal(/[─│╱╲┼]/.test(active.lines.slice(0, 32).join('')), true);
+  const finished = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'SUCCEEDED' }] }, 100, 32, -1, 1, theme);
+  assert.equal(/[─│╱╲┼]/.test(finished.lines.slice(0, 32).join('')), false);
+});
+
+test('wide council keeps the ring compact and uses a right-side inspector', () => {
+  const view = renderGraph({ agents, tasks: [] }, 160, 50, -1, 1, theme);
+  assert.ok(view.hits[0].x < 80);
+  assert.ok(view.lines.some(line => line.includes('议会观察')));
+  assert.ok(view.lines.every(line => visibleWidth(line) <= 160));
 });
 
 test('ring layout is stable between renders and dragging changes only the chosen seat', () => {
