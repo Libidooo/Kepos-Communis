@@ -7,7 +7,7 @@ import { terminalStates, type WorkerPool } from './workers.ts';
 import { routeCommand, localCommands } from './command-routing.ts';
 import { TimingWindow } from './metrics.ts';
 import { PRODUCT_NAME, sessionUsage, usageText } from './presentation.ts';
-import { graphHitTest, renderGraph, type GraphViewSnapshot } from './graph-view.ts';
+import { renderGraph, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
 export const fit=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
 export function historyLines(entries:any[],width:number,expanded=false,theme?:any):string[]{
  const lines:string[]=[];for(const entry of entries){if(entry.type==='compaction'||entry.type==='branch_summary'){lines.push(entry.type==='compaction'?'[上下文已压缩 / 以下为摘要]':'[分支背景摘要]',...wrapTextWithAnsi(clean(entry.summary),width),'');continue;}if(entry.type==='custom_message'&&entry.display===false)continue;if(entry.type!=='message'&&entry.type!=='custom_message')continue;const m=entry.message||{role:'custom',content:entry.content};if(m.role==='custom'&&m.display===false)continue;if(!['user','assistant','toolResult','custom'].includes(m.role))continue;
@@ -23,7 +23,7 @@ export class Desk {
  readonly renderMetrics=new TimingWindow();
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;
  taskScope:'session'|'all'='session';
- missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphZoom=1;graph?:{snapshot:()=>GraphViewSnapshot};
+ missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphZoom=1;graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
@@ -79,7 +79,7 @@ export class Desk {
  return this.historyCache;
  }
  render(width:number):string[]{const begin=performance.now();try{return this.renderFrame(width);}finally{this.renderMetrics.observe(performance.now()-begin);}}
- private renderGraphFrame(width:number,rows:number):string[]{const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};const graph=renderGraph(snapshot,width,Math.max(8,rows-4),this.graphSelected,this.graphZoom,this.theme,this.graphDetail);const header=this.theme.fg('accent',fit('Kepos Communis · Agent Graph · F10 返回',width));this.editor.focused=this.focused&&this.focus==='input';const input=this.editor.render(Math.max(8,width-2));return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
+ private renderGraphFrame(width:number,rows:number):string[]{const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};const graph=renderGraph(snapshot,width,Math.max(8,rows-4),this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets);this.graphHits=graph.hits;const header=this.theme.fg('accent',fit('Kepos Communis · Agent Graph · F10 返回',width));this.editor.focused=this.focused&&this.focus==='input';const input=this.editor.render(Math.max(8,width-2));return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
  private renderFrame(width:number):string[]{
  this.width=width;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);if(this.graphView)return this.renderGraphFrame(width,rows);const wide=width>=110;const medium=width>=80;
  this.leftWidth=wide?27:0;this.rightWidth=medium?34:0;this.centerWidth=Math.max(12,width-this.leftWidth-this.rightWidth-(wide?6:medium?3:0));this.inputWidth=this.centerWidth;
@@ -144,7 +144,8 @@ export class Desk {
  }
  handleMouse(e:any){if(e.shift)return;
  if(this.graphView&&e.type==='wheel'){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(e.wheelDelta>0?.1:-.1)));this.refresh();return{handled:true};}
- if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=graphHitTest(this.width,Math.max(8,(this.tui.terminal.rows||30)-4),this.graphZoom,e.x,e.y-1);if(hit){this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphDetail=e.clickCount>=2;this.refresh();return{handled:true,focus:true};}}
+ if(this.graphView&&this.graphDrag&&(e.type==='drag'||e.type==='release')){const deltaX=e.x-this.graphDrag.lastX,deltaY=(e.y-1)-this.graphDrag.lastY;const offset=this.graphOffsets[this.graphDrag.id]||{x:0,y:0};this.graphOffsets[this.graphDrag.id]={x:offset.x+deltaX,y:offset.y+deltaY};this.graphDrag.lastX=e.x;this.graphDrag.lastY=e.y;if(e.type==='release')this.graphDrag=undefined;this.refresh();return{handled:true,focus:true};}
+ if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y};this.refresh();return{handled:true,focus:true};}}
  const centerX=this.leftWidth+(this.leftWidth?3:0);const inTranscript=e.y>=2&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+this.centerWidth&&this.focus!=='crew';
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-2,col:e.x-centerX},end:{row:e.y-2,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-1,e.y-2)),col:Math.max(0,Math.min(this.centerWidth,e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}
