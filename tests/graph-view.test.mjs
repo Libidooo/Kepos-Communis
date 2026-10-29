@@ -10,9 +10,11 @@ const agents = [{ id: 'a', name: 'A' }];
 test('unassigned seats have no connection; assigned seats connect to the main Agent', () => {
   const empty = renderGraph({ agents, tasks: [] }, 120, 32, -1, 1, theme);
   assert.equal(empty.hits.length, 49);
-  assert.equal(empty.lines.slice(0, 32).join('').includes('·'), false);
+  assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
+  assert.ok(empty.lines.slice(0, 32).join('').includes('□'));
+  assert.equal(/[─│╱╲┼]/.test(empty.lines.slice(0, 32).join('')), false);
   const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 120, 32, -1, 1, theme);
-  assert.equal(active.lines.slice(0, 32).join('').includes('·'), true);
+  assert.equal(/[─│╱╲┼]/.test(active.lines.slice(0, 32).join('')), true);
 });
 
 test('ring layout is stable between renders and dragging changes only the chosen seat', () => {
@@ -47,4 +49,14 @@ test('node detail bubble stays inside a narrow terminal', () => {
   const view = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING', title: '检查中文任务', tool: 'read' }] }, 80, 18, 0, 1, theme, true);
   assert.ok(view.lines.some(line => line.includes('检查中文任务')));
   assert.ok(view.lines.every(line => visibleWidth(line) <= 80));
+});
+
+test('human approval uses a bright hammer and a bounded two-frame tremble', () => {
+  const snapshot = { agents, tasks: [{ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', title: '等待批准' }] };
+  const first = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 0);
+  const next = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 400);
+  assert.ok(first.lines.join('').includes('⚒'));
+  assert.ok(first.lines.join('').includes('\x1b[1;38;2;255;223;84m'));
+  assert.notDeepEqual(first.lines, next.lines);
+  assert.deepEqual(first.hits, next.hits);
 });

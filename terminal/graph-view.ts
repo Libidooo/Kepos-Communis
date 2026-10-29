@@ -11,18 +11,25 @@ type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: Gr
 const palette = ['teal', 'blue', 'mauve', 'accent', 'success', 'warning'];
 const stateColor = (task: GraphViewTask | undefined, index: number) => {
   if (!task) return 'muted';
-  if (task.reviewDue || task.state === 'NEEDS_HUMAN') return 'warning';
+  if (task.state === 'NEEDS_HUMAN') return 'approval';
+  if (task.reviewDue) return 'warning';
   if (task.state === 'FAILED' || task.status === '失败') return 'error';
   if (task.state === 'SUCCEEDED' || task.status === '完成') return 'success';
-  return palette[index % palette.length];
+  if (task.state === 'QUEUED' || task.state === 'STARTING') return 'accent';
+  const group = task.groupKey || task.parentWorkerId || task.agent;
+  const hash = [...group].reduce((value, char) => value + char.charCodeAt(0), 0);
+  return palette[hash % palette.length];
 };
 
 function line(grid: Cell[][], x0: number, y0: number, x1: number, y1: number, color: string) {
   const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
   const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  const stroke = dx > -dy * 2 ? '─' : -dy > dx * 2 ? '│' : sx === sy ? '╲' : '╱';
   let error = dx + dy, x = x0, y = y0;
   for (;;) {
-    if (grid[y]?.[x]?.char === ' ') grid[y][x] = { char: '·', color };
+    const cell = grid[y]?.[x];
+    if (cell?.char === ' ') grid[y][x] = { char: stroke, color };
+    else if (cell && '─│╱╲'.includes(cell.char) && cell.char !== stroke) grid[y][x] = { char: '┼', color };
     if (x === x1 && y === y1) break;
     const twice = 2 * error;
     if (twice >= dy) { error += dy; x += sx; }
@@ -39,7 +46,7 @@ function put(grid: Cell[][], x: number, y: number, text: string, color?: string)
     column += width;
   }
 }
-function colorize(row: Cell[], theme: any): string { return row.map(cell => !cell.char ? '' : cell.char === ' ' ? ' ' : theme.fg(cell.color || 'text', cell.char)).join(''); }
+function colorize(row: Cell[], theme: any): string { return row.map(cell => !cell.char ? '' : cell.char === ' ' ? ' ' : cell.color === 'approval' ? `\x1b[1;38;2;255;223;84m${cell.char}\x1b[0m` : theme.fg(cell.color || 'text', cell.char)).join(''); }
 
 function bubble(grid: Cell[][], node: VisualNode, width: number, height: number) {
   const boxWidth = Math.min(38, width - 2), inner = boxWidth - 4;
@@ -97,7 +104,7 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
   return { center, nodes, ringCount };
 }
 
-export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
+export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}, now = Date.now()): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
   const safeWidth = Math.max(24, width), safeHeight = Math.max(8, height);
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, 0, offsets);
@@ -106,13 +113,13 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   for (const node of layout.nodes) { if (!node.task) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
   put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '主', 'accent');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const color = stateColor(node.task, node.index); const marker = node.task?.reviewDue ? '!' : node.task?.state === 'FAILED' ? '×' : node.task?.state === 'SUCCEEDED' ? '✓' : selectedNode ? '◆' : '⏢'; put(grid, node.x - 1, node.y, marker, color); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y }); }
+  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'teal'; const marker = empty ? '□' : selectedNode ? '▣' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y }); }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   if (detail) bubble(grid, selectedNode || { id: 'main', label: 'Kepos Council', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
   const lines = grid.map(row => colorize(row, theme));
   const info = selected === -1 ? '主 Agent · Kepos Council · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · 双击详情 · Ctrl+X 销毁 Worker`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('F10 返回工作台 · ↑↓/点击选择 · 拖动节点或空白区域 · 滚轮缩放 · Enter 详情', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · □ 空席  ■ 代表  ! 待处理 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }
