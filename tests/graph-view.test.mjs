@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { renderGraph } from '../dist/terminal/graph-view.js';
 import { Desk } from '../dist/terminal/desk.js';
+import { visibleWidth } from '@earendil-works/pi-tui';
 
 const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
@@ -40,4 +41,10 @@ test('mouse drag captures a seat and moves it in the terminal view', () => {
   desk.render(120);
   assert.equal(desk.graphHits[1].x, seat.x + 4);
   desk.dispose();
+});
+
+test('node detail bubble stays inside a narrow terminal', () => {
+  const view = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING', title: '检查中文任务', tool: 'read' }] }, 80, 18, 0, 1, theme, true);
+  assert.ok(view.lines.some(line => line.includes('检查中文任务')));
+  assert.ok(view.lines.every(line => visibleWidth(line) <= 80));
 });

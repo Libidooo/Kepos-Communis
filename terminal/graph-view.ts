@@ -1,7 +1,7 @@
-import { truncateToWidth } from '@earendil-works/pi-tui';
+import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 
 export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string };
-export type GraphViewTask = { id: string; agent: string; status?: string; state?: string; title?: string; parentWorkerId?: string; delegationDepth?: number; reviewDue?: boolean; error?: string; groupKey?: string };
+export type GraphViewTask = { id: string; agent: string; status?: string; state?: string; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; reviewDue?: boolean; error?: string; groupKey?: string };
 export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask[] };
 export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
@@ -31,9 +31,36 @@ function line(grid: Cell[][], x0: number, y0: number, x1: number, y1: number, co
 }
 
 function put(grid: Cell[][], x: number, y: number, text: string, color?: string) {
-  for (let index = 0; index < text.length; index++) if (grid[y]?.[x + index]) grid[y][x + index] = { char: text[index], color };
+  let column = x;
+  for (const char of text) {
+    const width = Math.max(1, visibleWidth(char));
+    if (grid[y]?.[column]) grid[y][column] = { char, color };
+    for (let offset = 1; offset < width; offset++) if (grid[y]?.[column + offset]) grid[y][column + offset] = { char: '', color };
+    column += width;
+  }
 }
-function colorize(row: Cell[], theme: any): string { return row.map(cell => cell.char === ' ' ? ' ' : theme.fg(cell.color || 'text', cell.char)).join(''); }
+function colorize(row: Cell[], theme: any): string { return row.map(cell => !cell.char ? '' : cell.char === ' ' ? ' ' : theme.fg(cell.color || 'text', cell.char)).join(''); }
+
+function bubble(grid: Cell[][], node: VisualNode, width: number, height: number) {
+  const boxWidth = Math.min(38, width - 2), inner = boxWidth - 4;
+  const x = node.x + boxWidth + 2 < width ? node.x + 2 : Math.max(0, node.x - boxWidth - 1);
+  const y = Math.max(0, Math.min(height - 8, node.y - 3));
+  const task = node.task;
+  const rows = [
+    ` ${node.label}  ·  ${task?.status || task?.state || '未分配'}`,
+    `任务 ${task?.title || '尚未分配任务'}`,
+    `工具 ${task?.tool || '—'}`,
+    `进度 ${task?.checkpoint || '—'}`,
+    `输出 ${task?.output || '等待结果'}`,
+    'Enter 输入主 Agent 指令 · Esc 返回',
+  ];
+  put(grid, x, y, '╭' + '─'.repeat(boxWidth - 2) + '╮', 'accent');
+  rows.forEach((row, index) => {
+    const content = truncateToWidth(row.replace(/[\r\n]+/g, ' '), inner);
+    put(grid, x, y + index + 1, '│ ' + content + ' '.repeat(Math.max(0, inner - visibleWidth(content))) + ' │', index === 0 ? 'accent' : 'text');
+  });
+  put(grid, x, y + 7, '╰' + '─'.repeat(boxWidth - 2) + '╯', 'accent');
+}
 
 function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   const agents = (snapshot.agents || []).slice(0, 48);
@@ -80,8 +107,9 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '主', 'accent');
   const hits: GraphHit[] = [main];
   for (const node of layout.nodes) { const selectedNode = selected === node.index; const color = stateColor(node.task, node.index); const marker = node.task?.reviewDue ? '!' : node.task?.state === 'FAILED' ? '×' : node.task?.state === 'SUCCEEDED' ? '✓' : selectedNode ? '◆' : '⏢'; put(grid, node.x - 1, node.y, marker, color); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y }); }
-  const lines = grid.map(row => colorize(row, theme));
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
+  if (detail) bubble(grid, selectedNode || { id: 'main', label: 'Kepos Council', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
+  const lines = grid.map(row => colorize(row, theme));
   const info = selected === -1 ? '主 Agent · Kepos Council · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · 双击详情 · Ctrl+X 销毁 Worker`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
