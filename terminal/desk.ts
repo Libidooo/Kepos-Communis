@@ -79,7 +79,17 @@ export class Desk {
  return this.historyCache;
  }
  render(width:number):string[]{const begin=performance.now();try{return this.renderFrame(width);}finally{this.renderMetrics.observe(performance.now()-begin);}}
- private renderGraphFrame(width:number,rows:number):string[]{const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};const graph=renderGraph(snapshot,width,Math.max(8,rows-4),this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets);this.graphHits=graph.hits;const header=this.theme.fg('accent',fit('Kepos Communis · Agent Graph · F10 返回',width));this.editor.focused=this.focused&&this.focus==='input';const input=this.editor.render(Math.max(8,width-2));return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
+ private renderGraphFrame(width:number,rows:number):string[]{
+  this.editor.focused=this.focused&&this.focus==='input';
+  const input=this.editor.render(Math.max(8,width-2));
+  const graphHeight=Math.max(8,rows-input.length-4);
+  const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};
+  const graph=renderGraph(snapshot,width,graphHeight,this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets);
+  this.graphHits=graph.hits;
+  this.inputY=1+graph.lines.length;
+  const header=this.theme.fg('accent',fit('Kepos Communis · Agent Graph · F10 返回',width));
+  return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);
+ }
  private renderFrame(width:number):string[]{
  this.width=width;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);if(this.graphView)return this.renderGraphFrame(width,rows);const wide=width>=110;const medium=width>=80;
  this.leftWidth=wide?27:0;this.rightWidth=medium?34:0;this.centerWidth=Math.max(12,width-this.leftWidth-this.rightWidth-(wide?6:medium?3:0));this.inputWidth=this.centerWidth;
@@ -115,10 +125,11 @@ export class Desk {
  selectedText(){if(!this.selection)return'';const {anchor,end,lines}=this.selection;const [a,b]=anchor.row<end.row||anchor.row===end.row&&anchor.col<=end.col?[anchor,end]:[end,anchor];return stripVTControlCharacters(lines.slice(a.row,b.row+1).map((line,i)=>sliceByColumn(line,i===0?a.col:0,Math.max(0,(a.row+i===b.row?b.col:visibleWidth(line))-(i===0?a.col:0))).trimEnd()).join('\n'));}
  handleInput(data:string){
  if(matchesKey(data,Key.f7)||matchesKey(data,'ctrl+shift+c')){void this.copyAnswer();return;}
- if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.focus=this.graphView?'crew':'input';this.readStart=null;this.refresh();return;}
+ if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.focus='input';this.readStart=null;this.refresh();return;}
  if(matchesKey(data,Key.escape)&&this.focus==='input'&&this.editor.isShowingAutocomplete()){this.editor.handleInput(data);this.refresh();return;}
  if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){this.graphView=false;this.graphDetail=false;this.setFocus('input');this.notice='已回到 Kepos 工作台';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到 Kepos 工作台';}else this.notice='已在 Kepos 工作台；输入 /pi 进入 Pi 命令行';this.refresh();return;}
  if(matchesKey(data,'ctrl+c')){const selected=this.selectedText();if(selected){void this.copyText(selected);return;}this.notice='进入 Pi 命令行请使用 /pi；中止任务请按 Ctrl+X。';this.refresh();return;}
+ if(matchesKey(data,'ctrl+x')&&this.graphView){const hit=this.graphHits.find(item=>item.index===this.graphSelected);if(hit?.kind==='task')this.finish({kind:'cancel-selected',id:hit.id.slice(5)});else{this.notice='请先选择已分配任务的子 Worker';this.refresh();}return;}
  if(matchesKey(data,'ctrl+x')){this.finish({kind:'abort'});return;}
  if(matchesKey(data,Key.f1)){this.help=!this.help;this.readStart=null;this.refresh();return;}
  if(matchesKey(data,Key.f2)){this.finish({kind:'menu'});return;}
@@ -130,7 +141,7 @@ export class Desk {
  if(matchesKey(data,Key.f6)){this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
  if(this.graphView&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphDetail=false;this.refresh();return;}
  if(this.graphView&&matchesKey(data,Key.down)){this.graphSelected=Math.min(47,this.graphSelected+1);this.graphDetail=false;this.refresh();return;}
- if(this.graphView&&matchesKey(data,Key.enter)){this.graphDetail=true;this.refresh();return;}
+ if(this.graphView&&matchesKey(data,Key.enter)){if(this.editor.getExpandedText().trim())this.send();else{this.graphDetail=true;this.refresh();}return;}
  if(this.graphView&&(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown))){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(matchesKey(data,Key.pageUp)?0.1:-0.1)));this.refresh();return;}
  if(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown)){const lines=this.displayLines.length?this.displayLines:this.history(this.centerWidth);this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(matchesKey(data,Key.pageUp)?-Math.max(1,this.bodyHeight-2):Math.max(1,this.bodyHeight-2)));if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'ctrl+end')){this.readStart=null;this.refresh();return;}
@@ -144,8 +155,9 @@ export class Desk {
  }
  handleMouse(e:any){if(e.shift)return;
  if(this.graphView&&e.type==='wheel'){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(e.wheelDelta>0?.1:-.1)));this.refresh();return{handled:true};}
- if(this.graphView&&this.graphDrag&&(e.type==='drag'||e.type==='release')){const deltaX=e.x-this.graphDrag.lastX,deltaY=(e.y-1)-this.graphDrag.lastY;const offset=this.graphOffsets[this.graphDrag.id]||{x:0,y:0};this.graphOffsets[this.graphDrag.id]={x:offset.x+deltaX,y:offset.y+deltaY};this.graphDrag.lastX=e.x;this.graphDrag.lastY=e.y;if(e.type==='release')this.graphDrag=undefined;this.refresh();return{handled:true,focus:true};}
- if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y};this.refresh();return{handled:true,focus:true,capture:e.type==='press'};}}
+ if(this.graphView&&this.graphDrag&&(e.type==='drag'||e.type==='release')){const deltaX=e.x-this.graphDrag.lastX,deltaY=(e.y-1)-this.graphDrag.lastY;const offset=this.graphOffsets[this.graphDrag.id]||{x:0,y:0};this.graphOffsets[this.graphDrag.id]={x:offset.x+deltaX,y:offset.y+deltaY};this.graphDrag.lastX=e.x;this.graphDrag.lastY=e.y-1;if(e.type==='release')this.graphDrag=undefined;this.refresh();return{handled:true,focus:true};}
+ if(this.graphView&&e.y>=this.inputY&&e.type==='press'){this.setFocus('input');return{handled:true,focus:true};}
+ if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y-1};this.refresh();return{handled:true,focus:true,capture:e.type==='press'};}}
  const centerX=this.leftWidth+(this.leftWidth?3:0);const inTranscript=e.y>=2&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+this.centerWidth&&this.focus!=='crew';
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-2,col:e.x-centerX},end:{row:e.y-2,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-1,e.y-2)),col:Math.max(0,Math.min(this.centerWidth,e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}
