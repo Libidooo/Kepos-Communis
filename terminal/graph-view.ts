@@ -75,7 +75,7 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, 0, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
   const byId = new Map(layout.nodes.map(node => [node.id, node]));
-  for (const node of layout.nodes) { const parent = node.task?.parentWorkerId ? byId.get(`task:${node.task.parentWorkerId}`) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
+  for (const node of layout.nodes) { if (!node.task) continue; const parent = node.task.parentWorkerId ? byId.get(`task:${node.task.parentWorkerId}`) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
   put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '主', 'accent');
   const hits: GraphHit[] = [main];
   for (const node of layout.nodes) { const selectedNode = selected === node.index; const color = stateColor(node.task, node.index); const marker = node.task?.reviewDue ? '!' : node.task?.state === 'FAILED' ? '×' : node.task?.state === 'SUCCEEDED' ? '✓' : selectedNode ? '◆' : '▱'; put(grid, node.x - 1, node.y, marker, color); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y }); }
