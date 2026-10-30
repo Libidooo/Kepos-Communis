@@ -1,7 +1,7 @@
 import type {OrbitalDatabase} from './database.ts';
 
 export interface RetentionOptions {maxAgeMs?:number;maxRowsPerSource?:number;batchSize?:number;}
-export interface RetentionReport {archived:number;remaining:number;cutoff:number;}
+export interface RetentionReport {archived:number;remaining:number;cutoff:number;workersPruned?:number;}
 const SOURCES=[
  {name:'worker',table:'worker_events',id:'worker_id'},
  {name:'mission',table:'mission_events',id:'mission_id'},
@@ -15,7 +15,20 @@ export class EventRetention {
   for(const source of SOURCES){if(!this.tableExists(source.table))continue;archived+=this.archiveSource(source,cutoff,batchSize);}
   if(options.maxRowsPerSource!==undefined){for(const source of SOURCES){if(!this.tableExists(source.table))continue;archived+=this.pruneSource(source,Math.max(1,Math.floor(options.maxRowsPerSource)),batchSize);}}
   const remaining=SOURCES.reduce((total,source)=>total+(this.tableExists(source.table)?Number((this.database.prepare(`SELECT COUNT(*) AS n FROM ${source.table}`).get() as any).n):0),0);
-  return{archived,remaining,cutoff};
+  const workersPruned=this.pruneTerminalWorkers({maxAgeMs,batchSize});
+  return{archived,remaining,cutoff,workersPruned};
+ }
+ /** Drop terminal workers (and their events) whose receipt ended before the cutoff. */
+ pruneTerminalWorkers(options:{maxAgeMs?:number;batchSize?:number}={}):number{
+  if(!this.tableExists('workers'))return 0;
+  const maxAgeMs=Math.max(60_000,options.maxAgeMs??30*24*60*60*1000);const cutoff=Date.now()-maxAgeMs;const batch=Math.max(10,Math.min(2000,options.batchSize??200));let total=0;
+  for(;;){
+   const rows=this.database.prepare(`SELECT id FROM workers WHERE receipt IS NOT NULL AND COALESCE(json_extract(receipt,'$.ended'),json_extract(task,'$.ended'),0)<? LIMIT ?`).all(cutoff,batch) as any[];
+   if(!rows.length)break;
+   this.database.transaction(()=>{for(const row of rows){this.database.prepare('DELETE FROM worker_events WHERE worker_id=?').run(row.id);this.database.prepare('DELETE FROM workers WHERE id=?').run(row.id);}});
+   total+=rows.length;if(rows.length<batch)break;
+  }
+  return total;
  }
  private tableExists(table:string){return !!this.database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table);}
  private archiveSource(source:typeof SOURCES[number],cutoff:number,batch:number){let total=0;for(;;){const rows=this.database.prepare(`SELECT rowid AS rid,${source.id} AS entity,seq,type,created,payload FROM ${source.table} WHERE created<? ORDER BY created,seq LIMIT ?`).all(cutoff,batch) as any[];if(!rows.length)break;this.database.transaction(()=>{for(const row of rows){this.database.prepare('INSERT OR IGNORE INTO event_archive VALUES(?,?,?,?,?,?,?)').run(source.name,String(row.entity),Number(row.seq),String(row.type),Number(row.created),String(row.payload),Date.now());this.database.prepare(`DELETE FROM ${source.table} WHERE rowid=?`).run(row.rid);}});total+=rows.length;if(rows.length<batch)break;}return total;}
