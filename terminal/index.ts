@@ -6,6 +6,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { Desk, fit, historyLines } from './desk.ts';
+import { playSplash } from './splash.ts';
 import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, profileHistory, restoreProfile, type Crew } from './store.ts';
 import { orbitalSessionStore } from './session-store.ts';
 import { db } from './database.ts';
@@ -435,6 +436,8 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(action.kind==='new'){if(blocked(ctx))throw Error('请等待任务结束再新建会话');const title=await ui.input('新对话名称','输入会话名称');if(!title?.trim())return;desk?.finish({kind:'switch',path:createLinkedSession(ctx,action.path||ctx.cwd,title.trim())});return;}
  }
  async function runDesk(ctx:ExtensionCommandContext){if(ctx.mode!=='tui'){ctx.ui.notify('此命令需要交互终端。','warning');return;}if(desk){ctx.ui.notify('议案已经打开。','info');return;}
+ // 开机动画：每进程一次；任意键跳过，motion:false 或小屏直接快进。
+ try{await playSplash(ctx,config);}catch{}
  while(true){let sessions:any[];try{const all=await SessionManager.listAll();const local=await SessionManager.listAll(ctx.sessionManager.getSessionDir());sessions=[...new Map([...all,...local].map(s=>[s.path,s])).values()];}catch(e){ctx.ui.notify(clean(e),'error');return;}
  let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,text=>pi.sendUserMessage(text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db())};
   desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
