@@ -241,7 +241,36 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const locale=councilLocale(process.env.KEPOS_LOCALE);const inputName=await ctx.ui.input(old?'代表名称（留空保留原名）':'代表名称',old?.name||'如：审查官');if(inputName===undefined)return;const name=inputName.trim()||old?.name||'';if(!name)return;
  const list=await models(ctx);if(!list.length)throw Error('没有已认证的可用模型，请先使用 /login。');
  const pick=await ctx.ui.select('选择真实模型',list.map((m:any)=>`${m.provider} / ${m.id}`));if(!pick)return;const model=list.find((m:any)=>`${m.provider} / ${m.id}`===pick);if(!model)return;
-  const options=roleOptions(locale);const labels=options.map(option=>option.label);const customLabel=locale==='en'?'Custom role (keep current)':'自定义职责（保留当前）';const initialRole=old?.roleKey&&councilRole(old.roleKey)?.key||options[0]?.key;const rolePick=await ctx.ui.select('选择 Council 代表角色',labels.concat(customLabel));if(!rolePick)return;const selected=options[labels.indexOf(rolePick)];const roleKey=(selected?.key|| (rolePick===customLabel?undefined:initialRole)) as CouncilRoleKey|undefined;const definition=roleKey&&councilRole(roleKey);const role=await ctx.ui.editor(`职责指令（只读，默认 ${DEFAULT_TASK_SECONDS/60} 分钟；每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核）`,definition?rolePrompt(definition,locale):(old?.role||'独立只读调查；返回可复核证据，不修改文件。'));if(!role?.trim())return;
+  const options=roleOptions(locale);const labels=options.map(option=>option.label);
+  const aiLabel=locale==='en'?'✨ Generate with AI (describe the goal)':'✨ AI 生成职责（输入目标想法）';
+  const customLabel=locale==='en'?'✏️ Custom role (manual input)':'✏️ 自定义职责（手动输入）';
+  const initialRole=old?.roleKey&&councilRole(old.roleKey)?.key||options[0]?.key;
+  const rolePick=await ctx.ui.select('选择 Council 代表角色',[aiLabel,customLabel,...labels]);if(!rolePick)return;
+  let roleKey: CouncilRoleKey|undefined;
+  let roleText=old?.role||'独立只读调查；返回可复核证据，不修改文件。';
+  const editorTitle=`职责指令（只读，默认 ${DEFAULT_TASK_SECONDS/60} 分钟；每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核）`;
+  if(rolePick===aiLabel){
+   // 让主 Agent 生成代表配置：一次前台模型调用，产出可编辑的职责指令。
+   const idea=await ctx.ui.input('描述这位代表的目标/想法','如：盯住项目风险，每天汇总成清单');
+   if(!idea?.trim())return;
+   ctx.ui.notify('正在生成职责…（一次模型调用，约 1-2 分钟）');
+   try{
+    const generator={id:'config-generator',name:'配置生成器',model:ctx.model?.id||'',provider:ctx.model?.provider||'',role:'Kepos 代表配置生成助手',tools:['read']};
+    const task=await pool.run(generator,`根据下面的人类目标，为一位 Kepos 只读代表撰写职责指令。\n要求：200 字以内；包含只读边界、证据优先、复核节奏和交付物；语言跟随目标。\n直接输出职责指令正文，不要解释，不要 JSON。\n\n目标：${idea.trim()}`,ctx.cwd,ctx.sessionManager.getSessionFile()||'',120,undefined,ctx.sessionManager.getSessionId(),['read']);
+    if(task.output?.trim())roleText=task.output.trim();
+   }catch(error){ctx.ui.notify('生成失败，请改用手动填写：'+clean(error),'warning');}
+   const edited=await ctx.ui.editor(`职责指令（AI 已生成，可修改。${editorTitle}）`,roleText);
+   if(!edited?.trim())return;roleText=edited;
+  } else if(rolePick===customLabel){
+   const edited=await ctx.ui.editor(editorTitle,roleText);
+   if(!edited?.trim())return;roleText=edited;
+  } else {
+   const selected=options[labels.indexOf(rolePick)];roleKey=(selected?.key||initialRole) as CouncilRoleKey|undefined;
+   const definition=roleKey&&councilRole(roleKey);
+   const edited=await ctx.ui.editor(editorTitle,definition?rolePrompt(definition,locale):roleText);
+   if(!edited?.trim())return;roleText=edited;
+  }
+  const role=roleText;
  if(config.agents.some(a=>a.id!==old?.id&&a.name===name.trim()))throw Error('已有同名 Agent，请使用不同名称。');
  let tools=old?.tools;
  if(old){const presets=[{label:'全部只读工具',tools:Array.from(READ_ONLY_TOOLS)},{label:'仅读取文件',tools:['read']},{label:'不使用工具',tools:[]}];

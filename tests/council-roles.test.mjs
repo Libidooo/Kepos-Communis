@@ -44,7 +44,7 @@ assert.equal(roleOptions('en')[1].label.includes('Archivist'), true);
 test('deputy_chair is the first seeded council role with approval-governance duties',()=>{
  assert.equal(COUNCIL_ROLES[0].key,'deputy_chair');
  const role=councilRole('deputy_chair');
- assert.equal(role.zhName,'代理主席');
+ assert.equal(role.zhName,'代理总代');
  assert.equal(role.enName,'Deputy Chair');
  const prompt=rolePrompt(role,'zh-CN');
  assert.match(prompt,/VOTE/);
