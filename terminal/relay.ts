@@ -229,8 +229,9 @@ export async function relaySetupFlow(ctx: any, agentDir: string): Promise<void> 
       if (!await ui.confirm(probe.ok ? '连通成功' : '连通失败', summary + '\n仍按当前配置保存？')) continue;
       let enabled: string[] | undefined;
       if (probe.ok && probe.models?.length) {
-        // Checkbox-style picker: pick a model to toggle it, actions for bulk changes.
-        const chosen = new Set<string>();
+        // Checkbox-style picker, all models pre-enabled: the user unchecks what they
+        // do not want. An empty save would make the relay invisible in the model list.
+        const chosen = new Set<string>(probe.models);
         while (true) {
           const rows = probe.models.map(id => (chosen.has(id) ? '[✓] ' : '[ ] ') + id);
           const pick = await ui.select(`可用模型 ${probe.models.length} 个 · 已选 ${chosen.size} 个（Esc 保留当前选择）`, [...rows, '✔ 完成，保存当前选择', '全选', '全不选']);

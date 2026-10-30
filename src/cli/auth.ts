@@ -53,8 +53,9 @@ export async function authCommand(options: CliOptions, paths: AppPaths): Promise
   }
   if (options.command === 'models') {
     const models = await auth.runtime.getAvailable();
-    const data = models.map((model: any) => ({ provider: model.provider, id: model.id, name: model.name, contextWindow: model.contextWindow }));
-    const text = data.map((model: any) => `${model.provider}/${model.id}`).join('\n');
+    const origin = (providerId: string) => (providerId.startsWith('relay_') ? ' [中转]' : ' [官方]');
+    const data = models.map((model: any) => ({ provider: model.provider, id: model.id, name: model.name, contextWindow: model.contextWindow, origin: origin(model.provider) }));
+    const text = data.map((model: any) => `${model.provider}/${model.id}${origin(model.provider)}`).join('\n');
     console.log(options.json ? JSON.stringify(data) : text || 'No available models. Run kepos login.');
     return;
   }
