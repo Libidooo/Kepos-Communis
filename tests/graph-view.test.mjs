@@ -24,7 +24,7 @@ test('unassigned seats have no connection; assigned seats connect to the main Ag
 test('wide council keeps the ring compact and uses a right-side inspector', () => {
   const view = renderGraph({ agents, tasks: [] }, 160, 50, -1, 1, theme);
   assert.ok(view.hits[0].x < 80);
-  assert.ok(view.lines.some(line => line.includes('议会观察')));
+  assert.ok(view.lines.some(line => line.includes('议会简要')));
   assert.ok(view.lines.every(line => visibleWidth(line) <= 160));
 });
 

@@ -144,3 +144,18 @@ test('scrollbar thumb tracks reading position in the framed transcript',()=>{
  assert.ok(scrolled.includes('·'),'track dots visible while scrolled');
  desk.dispose();
 });
+
+test('transcript distinguishes user input, thinking and tool output',()=>{
+ const entries=[
+  {id:'u',type:'message',message:{role:'user',content:[{type:'text',text:'你好'}]}},
+  {id:'t',type:'message',message:{role:'assistant',content:[{type:'thinking',thinking:'内心戏'},{type:'text',text:'回答正文'}]}},
+  {id:'r',type:'message',message:{role:'toolResult',toolName:'read',content:[{type:'text',text:'工具输出'}]}}];
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>entries,getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(c,v)=>`[${c}]${v}`,bg:(c,v)=>`{${c}}${v}`},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ const frame=desk.render(120).join('\n');
+ assert.ok(frame.includes('▎')&&frame.includes('内心戏'),'thinking block dimmed with bar');
+ assert.ok(frame.includes('▏')&&frame.includes('工具输出'),'tool output muted with bar');
+ assert.ok(frame.includes('{userMessageBg}'),'user lines carry a tint');
+ assert.ok(frame.includes('┊ ▸ read'),'tool call line marked');
+ desk.dispose();
+});
