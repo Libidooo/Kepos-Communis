@@ -3,7 +3,7 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 // 开机动画：一点扩散成环（朱红起笔）→ 左右各现两座讲台 → 48 讲台成环 →
 // 收缩 → 右侧亮出品牌名 → 交回议案。参考 docs/assets/kepos-lectern-ring：讲台即放射短线。
 const FRAME_MS = 40;
-export const SPLASH_STEPS = 60;
+export const SPLASH_STEPS = 70;
 const SEATS = 48;
 
 type Cell = { char: string; color: string };
@@ -29,25 +29,26 @@ export function buildSplashFrame(step: number, width: number, rows: number, them
   const W = Math.max(24, Math.min(width, 200)), H = Math.max(10, Math.min(rows, 60));
   const grid = blankGrid(H, W);
   const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
-  const maxR = Math.max(4, Math.min(Math.floor(W * 0.16), cy - 2, 12));
+  const maxR = Math.max(5, Math.min(Math.floor(W * 0.2), cy - 2, 16));
   const seatAngle = (k: number) => (k / SEATS) * Math.PI * 2;
-  // 每帧只画当前环：旧环真正消失，不留杂乱轨迹。
+  // 每帧只画当前环；48 个红圆点即品牌标志本身，放大约 1/4。
   const ring = (r: number, color: string) => { const n = Math.max(16, Math.round(r * 9)); for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; put(grid, Math.round(cx + Math.cos(a) * r * 2), Math.round(cy + Math.sin(a) * r), '·', color); } };
-  const lectern = (k: number, r: number, color: string) => { const a = seatAngle(k); put(grid, Math.round(cx + Math.cos(a) * r * 2), Math.round(cy + Math.sin(a) * r), radial(a), color); };
+  const dot = (k: number, r: number) => { const a = seatAngle(k); put(grid, Math.round(cx + Math.cos(a) * r * 2), Math.round(cy + Math.sin(a) * r), '●', 'brand'); };
   if (step < 9) {
     const r = Math.max(1, Math.round(maxR * easeOut(step / 9)));
     ring(r, 'brand');
   } else {
-    const scale = step >= 38 ? 1 - 0.3 * Math.min(1, (step - 38) / 7) : 1;
-    const r = Math.max(3, Math.round(maxR * scale));
+    const scale = step >= 38 ? 0.75 : 1;
+    const r = Math.max(4, Math.round(maxR * scale));
     ring(r, 'dim');
     const revealed = step < 11 ? 0 : step < 13 ? 2 : step < 15 ? 4 : Math.min(SEATS, 4 + Math.floor(((step - 15) * (SEATS - 4)) / 23));
-    for (let k = 0; k < revealed; k++) lectern(REVEAL[k], r, 'success');
+    for (let k = 0; k < revealed; k++) dot(REVEAL[k], r);
   }
+  // 品牌区与左环上下对齐（cy-1 / cy+1 对称跨中线），定格 1 秒（25 步）。
   if (step >= 45) {
-    const brandX = Math.min(W - 16, cx + Math.round(maxR * 0.7 * 2) + 4);
-    put(grid, brandX, cy - 1, 'Kepos Communis', 'brand');
-    put(grid, brandX, cy + 1, '议案 · 议会 · 48 席', 'dim');
+    const brandX = Math.min(W - 16, cx + Math.round(maxR * 0.75 * 2) + 4);
+    put(grid, brandX, cy - 1, 'Kepos Communis', 'text');
+    put(grid, brandX, cy + 1, '议案 · 议会 · 48 席', 'success');
   }
   return grid.map(row => row.map(cell => colorize(cell, theme)).join('')).map(line => truncateToWidth(line, W));
 }

@@ -18,13 +18,16 @@ test('splash frames stay inside the terminal and end on the brand lockup', () =>
   const final = buildSplashFrame(SPLASH_STEPS - 1, 120, 35, theme).join('\n');
   assert.match(bare(final), /Kepos Communis/);
   assert.match(bare(final), /议案 · 议会 · 48 席/);
-  assert.ok(final.split('').filter(c => c === '─' || c === '│' || c === '╱').length >= 40, 'lectern ring drawn as radial dashes');
+  assert.ok(bare(final).split('').filter(c => c === '●').length >= 40, 'ring of red round dots');
 });
 
-test('the lectern reveal follows left-right, then top-bottom, then the rest', () => {
-  const count = step => buildSplashFrame(step, 120, 35, theme).join('').split('').filter(c => '─│╱'.includes(c)).length;
+test('the 48 red dots follow left-right, then top-bottom, then the rest', () => {
+  const count = step => buildSplashFrame(step, 120, 35, theme).join('').split('').filter(c => c === '●').length;
   assert.ok(count(11) >= 2, 'first pair on the left-right axis');
   assert.ok(count(13) >= 4, 'second pair completes the four');
-  assert.ok(count(13) < count(30), 'seats keep filling');
-  assert.ok(count(44) >= 44, 'all 48 lecterns by the end of the fill phase');
+  assert.ok(count(13) < count(30), 'dots keep filling');
+  assert.ok(count(37) >= 44, 'all 48 red dots at full size');
+  assert.ok(count(44) >= 40, 'contraction keeps most dots unique');
+  const early = buildSplashFrame(5, 120, 35, theme).join('');
+  assert.ok(!early.includes('●'), 'no dots during expansion');
 });
