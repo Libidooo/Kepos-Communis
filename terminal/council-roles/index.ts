@@ -7,6 +7,10 @@ import { publicationRoles } from './publication.ts';
 export * from './types.ts';
 import type { CouncilDomain, CouncilLocale, CouncilRoleDefinition, CouncilRoleKey } from './types.ts';
 
+// 默认十席的均衡配置：治理 / 规划 / 调研 / 工程 / 风险 / 核验 / 安全 / 文档 / 协调 / 上下文。
+// 其余角色（如制图官、策略目录后段）仍在目录中可选，但不占用默认席位。
+const SEED_ORDER = ['deputy_chair', 'strategist', 'surveyor', 'engineer', 'auditor', 'verifier', 'sentinel', 'scribe', 'mediator', 'archivist'];
+
 export const COUNCIL_ROLES: readonly CouncilRoleDefinition[] = [
   ...coreRoles,
   ...academicRoles,
@@ -14,7 +18,13 @@ export const COUNCIL_ROLES: readonly CouncilRoleDefinition[] = [
   ...publicationRoles,
   ...codeRoles,
   ...productRoles,
-];
+].slice().sort((a, b) => {
+  const ia = SEED_ORDER.indexOf(a.key), ib = SEED_ORDER.indexOf(b.key);
+  if (ia >= 0 && ib >= 0) return ia - ib;
+  if (ia >= 0) return -1;
+  if (ib >= 0) return 1;
+  return 0;
+});
 
 export function councilLocale(value?: unknown): CouncilLocale {
   return String(value || '').toLowerCase().startsWith('en') ? 'en' : 'zh-CN';
