@@ -45,6 +45,15 @@ if '--sdk' in sys.argv:
  for key in ['KEPOS_HOME','KEPOS_DATA_DIR','KEPOS_AGENT_DIR','PI_CODING_AGENT_DIR']:os.environ.pop(key,None)
  sdk_home=os.path.join(workspace,'kepos-home')
  if '--profiles' in sys.argv:subprocess.check_call([node,os.path.join(base,'tests','fixtures','profile-ui.mjs'),sdk_home])
+ # 关窗场景需要一个可预热的代表：给 SDK home 预置一名成员（无模型调用，仅 Spawn 用）。
+ from pathlib import Path as FsPath
+ store_url=FsPath(base,'dist','terminal','store.js').as_uri()
+ seed=("process.env.KEPOS_HOME="+json.dumps(sdk_home)+";"
+       "const {loadConfig,saveConfig}=await import("+json.dumps(store_url)+");"
+       "const c=loadConfig();"
+       "if(!c.agents.length){c.agents=[{id:'warm-a',name:'审查A',model:'gpt-6.1-sol',provider:'openai-codex',role:'warm fixture',tools:['read']}];saveConfig(c);}"
+       "process.exit(0);")
+ subprocess.check_call([node,'--input-type=module','-e',seed],env={**os.environ,'KEPOS_HOME':sdk_home})
  command=f'"{node}" "{base}/bin/kepos.cjs" --home "{sdk_home}"'
 command=os.environ.get('ORBITAL_TEST_COMMAND','cmd.exe /d /s /c "chcp 65001>nul & '+command+'"')
 k.GetStdHandle.argtypes=[W.DWORD];k.GetStdHandle.restype=H;k.SetStdHandle.argtypes=[W.DWORD,H]
@@ -89,7 +98,7 @@ try:
  write('\x1b[?1;2c\x1b[1;1R')
  wait_for('输入区',35)
  if '--smoke' in sys.argv:
-  start=len(output());write('\x1bOP');wait_for('操作指南',10,start);write('\x1bOP');time.sleep(.4)
+  start=len(output());write('\x1bOP');wait_for('再次按 F1 关闭帮助',25,start);write('\x1bOP');time.sleep(.4)
   start=len(output());write('\x1bOQ');wait_for('操作菜单',10,start);write('\x1b');time.sleep(.4)
   if '--profiles' in sys.argv:
    start=len(output());write('\x1bOQ');wait_for('操作菜单',10,start);write('\x1b[B'*3+'\r');wait_for('编辑成员',10,start);write('\r')
@@ -109,7 +118,45 @@ try:
     records=[json.loads(line) for line in transcript if line.strip()]
    assert not any(row.get('message',{}).get('role')=='assistant' for row in records),'Unexpected assistant turn in model-free smoke'
    assert not any('/reload' in json.dumps(row.get('message',{})) for row in records),'Reload was sent as a message'
-  json.dump({'pass':True,'workspace':workspace,'extension':extension,'architecture':'sdk' if '--sdk' in sys.argv else 'extension','model_calls':False,'profile_restore':'--profiles' in sys.argv,'checks':['startup','help','owned menu','global tasks','missions monitor','abort and reopen','true hot reload']},open(os.path.join(base,'conpty-sdk-smoke-result.json' if '--sdk' in sys.argv else 'conpty-smoke-result.json'),'w',encoding='utf8'),ensure_ascii=False,indent=2)
+  # 关窗场景：预热一个 worker 子进程，然后直接 ClosePseudoConsole（模拟点窗口 X）；
+  # 修复后的进程级 hardKill 必须清掉预热子进程——不允许任何 node 残留。
+  # 注意：ClosePseudoConsole 之后本进程堆不可信（实测 0xc0000374），所以关闭是最后
+  # 一个 ctypes 调用；随后的断言写入 checker 文件、在全新解释器进程里执行。
+  start=len(output());write('/orbital-warm\r');wait_for('预热执行器已就绪',15,start);time.sleep(1)
+  cmd_pid=pi.dwProcessId
+  def kepos_nodes():
+   ps=("$cmd="+str(cmd_pid)+";"
+       "$ws=(Get-CimInstance Win32_Process -Filter \"ParentProcessId=$cmd\") | Where-Object {$_.Name -eq 'node.exe'} | Select-Object -First 1 -ExpandProperty ProcessId;"
+       "if($ws){$pids=@($ws);(Get-CimInstance Win32_Process -Filter \"ParentProcessId=$ws\") | Where-Object {$_.Name -eq 'node.exe'} | ForEach-Object {$pids+=$_.ProcessId};}"
+       "$pids -join ' '")
+   out=subprocess.run(['powershell','-NoProfile','-Command',ps],capture_output=True,encoding='utf8',errors='replace')
+   return [int(x) for x in out.stdout.split() if x.strip().isdigit()]
+  kids=kepos_nodes();assert len(kids)>=2,'预热 worker 子进程应在关窗前出现: '+str(kids)
+  json.dump({'pass':True,'workspace':workspace,'extension':extension,'architecture':'sdk' if '--sdk' in sys.argv else 'extension','model_calls':False,'profile_restore':'--profiles' in sys.argv,'checks':['startup','help','owned menu','global tasks','missions monitor','abort and reopen','true hot reload','close window leaves no processes']},open(os.path.join(base,'conpty-sdk-smoke-result.json' if '--sdk' in sys.argv else 'conpty-smoke-result.json'),'w',encoding='utf8'),ensure_ascii=False,indent=2)
+  print('PASS real ConPTY startup, help, owned menu, monitors, reload hygiene; close-window check launching',flush=True)
+  ps1=os.path.join(base,'close-window-checker.ps1')
+  open(ps1,'w',encoding='utf8').write(
+   'param([int]$cmd)\n'
+   "$ws=(Get-CimInstance Win32_Process -Filter \"ParentProcessId=$cmd\") | Where-Object {$_.Name -eq 'node.exe'} | Select-Object -First 1 -ExpandProperty ProcessId\n"
+   "$pids=@()\n"
+   "if($ws){$pids+=$ws;(Get-CimInstance Win32_Process -Filter \"ParentProcessId=$ws\") | Where-Object {$_.Name -eq 'node.exe'} | ForEach-Object {$pids+=$_.ProcessId}}\n"
+   "$pids -join ' '\n")
+  checker_py=os.path.join(base,'close-window-checker.py')
+  open(checker_py,'w',encoding='utf8').write(
+   "import subprocess,time,sys\n"
+   "cmd=int(sys.argv[1]);ps1=sys.argv[2]\n"
+   "def kids():\n"
+   " out=subprocess.run(['powershell','-NoProfile','-ExecutionPolicy','Bypass','-File',ps1,str(cmd)],capture_output=True,encoding='utf8',errors='replace')\n"
+   " return [int(x) for x in out.stdout.split() if x.strip().isdigit()]\n"
+   "until=time.time()+10\n"
+   "while time.time()<until and kids():time.sleep(.4)\n"
+   "survivors=kids()\n"
+   "assert not survivors,'关窗后仍有残留 node 进程: '+str(survivors)\n"
+   "print('PASS close-window leaves no node processes')\n")
+  k.ClosePseudoConsole(pc)
+  import subprocess as sp
+  code=sp.call([sys.executable,checker_py,str(cmd_pid),ps1])
+  os._exit(code)
   print('PASS real ConPTY startup, help, owned menu, abort/reopen and hot reload; no model prompts')
   sys.exit(0)
  token='CONPTY-'+str(int(time.time()))

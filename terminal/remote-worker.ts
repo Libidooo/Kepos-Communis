@@ -6,7 +6,7 @@ import type {WorkerPool, WorkerHandle} from './workers.ts';
 import type {Crew} from './store.ts';
 import {DEFAULT_TASK_SECONDS,HUMAN_APPROVAL_THRESHOLD_SECONDS} from './worker-contract.ts';
 
-type Request={id:string;action:string;token?:string;remoteId?:string;parentSessionId?:string;crew?:Crew;instruction?:string;cwd?:string;seconds?:number;cursor?:number};
+type Request={id:string;action:string;token?:string;remoteId?:string;parentSessionId?:string;crew?:Crew;instruction?:string;cwd?:string;seconds?:number;cursor?:number;limit?:number};
 type RemoteRecord={handle:WorkerHandle;parentSessionId:string;};
 const MAX_WIRE_BYTES=1024*1024;
 function digest(value:string){return createHash('sha256').update(value).digest();}
@@ -64,6 +64,10 @@ export class RemoteWorkerPool {
  result(handle:WorkerHandle,parent:string){const record=this.records.get(handle.workerId);if(!record||record.parent!==parent||handle.parentSessionId!==parent)return{state:'UNKNOWN_HANDLE'};if(!record.remoteId)return record.result||{state:record.state};this.poll(record);return record.result||{state:record.state};}
  status(handle:WorkerHandle,parent:string){const result=this.result(handle,parent);return{workerId:handle.workerId,state:result.state};}
  cancelHandle(handle:WorkerHandle,parent:string){const record=this.records.get(handle.workerId);if(!record||record.parent!==parent)return{state:'UNKNOWN_HANDLE'};record.state='CANCELLED';if(record.remoteId)this.client.cancel(record.remoteId).catch(()=>{});record.result={state:'CANCELLED',output:'',error:'Cancelled by parent/operator'};return record.result;}
- eventsSince(){return{cursor:0,events:[]};}
+ async eventsSince(cursor=0, options:{parentSessionId?:string;cwd?:string;limit?:number}={}) {
+  // The remote protocol scopes events by parentSessionId; without one there is nothing safe to read.
+  if (!options.parentSessionId) return { cursor: 0, events: [] };
+  return await this.client.request('events', { cursor, parentSessionId: options.parentSessionId, limit: Math.min(200, options.limit ?? 100) });
+ }
  async shutdown(){for(const record of this.records.values())if(record.remoteId&&['SUCCEEDED','FAILED','CANCELLED','TIMED_OUT'].includes(record.state)===false)this.client.cancel(record.remoteId).catch(()=>{});this.records.clear();}
 }

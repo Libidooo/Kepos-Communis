@@ -133,6 +133,12 @@ export async function missionCommand(options: MissionOptions, paths: AppPaths): 
       return;
     }
     scheduler.stop();
+    // Lease discipline: a running daemon owns the 'default' lease, so `missions run`
+    // refuses to co-dispatch (its private pool would bypass the daemon's slot budget).
+    const { SchedulerLease } = await import('../terminal/daemon.ts');
+    const lease = new SchedulerLease(database, 'default', 10000);
+    if (!lease.acquire()) throw Error('另一个 Kepos daemon 拥有此数据目录的调度租权；`kepos missions run` 拒绝并行派发。请停止 daemon 或通过它运行计划。');
+    const heartbeat = setInterval(() => lease.renew(), 3000);heartbeat.unref?.();
     const pool = new WorkerPool(database);
     scheduler = new MissionScheduler(database, pool, { missionIds: [mission.id] });
     function stop(): void {
@@ -146,6 +152,8 @@ export async function missionCommand(options: MissionOptions, paths: AppPaths): 
     } finally {
       process.removeListener('SIGINT', stop);
       process.removeListener('SIGTERM', stop);
+      clearInterval(heartbeat);
+      lease.release();
       await pool.shutdown();
       await scheduler.tick();
       scheduler.stop();
