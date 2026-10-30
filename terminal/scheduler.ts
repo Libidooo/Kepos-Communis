@@ -278,6 +278,32 @@ export class MissionScheduler {
         });
         return this.get(id, parent)!;
     }
+    /** Launch one ready step and record its handle; a failed launch rolls the worker back. */
+    private dispatchJob(m: MissionRecord, job: JobRecord): void {
+        let handle: WorkerHandle | undefined;
+        try {
+            const dependencies = job.dependsOn.map(id => m.jobs.find(item => item.id === id)!);
+            const context = dependencies.map(dep => `[${dep.id}] ${limitText(dep.output)}`).join('\n\n');
+            const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
+            handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false);
+            const launched = handle;
+            // Pool authorization only checks that the capability is a string; store a
+            // hash so a leaked database row does not hand out the live capability.
+            const stored = { ...launched, capability: createHash('sha256').update(launched.capability).digest('hex') };
+            this.database.transaction(() => {
+                this.database.prepare('UPDATE mission_jobs SET handle=? WHERE id=? AND state=\'RUNNING\'').run(JSON.stringify(stored), job.key);
+                this.event(m.id, job.key, 'job_dispatched', { state: 'RUNNING', workerId: launched.workerId });
+                this.graph.updateNode(m.id, job.key, 'RUNNING');
+            });
+            this.setMission(m, 'RUNNING');
+        }
+        catch (error) {
+            // The launch may already have spawned a worker before the bookkeeping
+            // transaction failed; never leave it running with no recorded handle.
+            if (handle) { try { this.pool.cancelHandle(handle, m.parentSessionId); } catch {} }
+            this.setJob(job, 'FAILED', String(error));
+        }
+    }
     cancel(id: string, parent: string) {
         const m = this.authorize(id, parent);
         if (terminal.has(m.state))
@@ -333,29 +359,7 @@ export class MissionScheduler {
                     if (!this.claimJob(m, job))
                         continue;
                     this.lastMission = m.id;
-                    let handle: WorkerHandle | undefined;
-                    try {
-                        const dependencies = job.dependsOn.map(id => m.jobs.find(item => item.id === id)!);
-                        const context = dependencies.map(dep => `[${dep.id}] ${limitText(dep.output)}`).join('\n\n');
-                        const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
-                        handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false);
-                        const launched = handle;
-                        // Pool authorization only checks that the capability is a string; store a
-                        // hash so a leaked database row does not hand out the live capability.
-                        const stored = { ...launched, capability: createHash('sha256').update(launched.capability).digest('hex') };
-                        this.database.transaction(() => {
-                            this.database.prepare('UPDATE mission_jobs SET handle=? WHERE id=? AND state=\'RUNNING\'').run(JSON.stringify(stored), job.key);
-                            this.event(m.id, job.key, 'job_dispatched', { state: 'RUNNING', workerId: launched.workerId });
-                            this.graph.updateNode(m.id, job.key, 'RUNNING');
-                        });
-                        this.setMission(m, 'RUNNING');
-                    }
-                    catch (error) {
-                        // The launch may already have spawned a worker before the bookkeeping
-                        // transaction failed; never leave it running with no recorded handle.
-                        if (handle) { try { this.pool.cancelHandle(handle, m.parentSessionId); } catch {} }
-                        this.setJob(job, 'FAILED', String(error));
-                    }
+                    this.dispatchJob(m, job);
                     slots--;
                     dispatched = true;
                     break;
