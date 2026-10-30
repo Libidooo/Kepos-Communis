@@ -2,8 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildSplashFrame, SPLASH_STEPS } from '../dist/terminal/splash.js';
 import { visibleWidth } from '@earendil-works/pi-tui';
+import { stripVTControlCharacters } from 'node:util';
 
 const theme = { fg: (color, value) => value };
+const bare = frame => stripVTControlCharacters(frame);
 
 test('splash frames stay inside the terminal and end on the brand lockup', () => {
   for (const width of [80, 120, 160]) for (const step of [0, 5, 11, 20, 45, 50, SPLASH_STEPS - 1]) {
@@ -14,8 +16,8 @@ test('splash frames stay inside the terminal and end on the brand lockup', () =>
   const early = buildSplashFrame(5, 120, 35, theme).join('\n');
   assert.ok(!early.includes('Kepos Communis'), 'brand appears only after the ring settles');
   const final = buildSplashFrame(SPLASH_STEPS - 1, 120, 35, theme).join('\n');
-  assert.match(final, /Kepos Communis/);
-  assert.match(final, /议案 · 议会 · 48 席/);
+  assert.match(bare(final), /Kepos Communis/);
+  assert.match(bare(final), /议案 · 议会 · 48 席/);
   assert.ok(final.split('').filter(c => c === '─' || c === '│' || c === '╱').length >= 40, 'lectern ring drawn as radial dashes');
 });
 

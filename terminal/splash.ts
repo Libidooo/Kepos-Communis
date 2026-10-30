@@ -3,7 +3,7 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 // 开机动画：一点扩散成环（朱红起笔）→ 左右各现两座讲台 → 48 讲台成环 →
 // 收缩 → 右侧亮出品牌名 → 交回议案。参考 docs/assets/kepos-lectern-ring：讲台即放射短线。
 const FRAME_MS = 40;
-export const SPLASH_STEPS = 64;
+export const SPLASH_STEPS = 60;
 const SEATS = 48;
 
 type Cell = { char: string; color: string };
@@ -21,44 +21,37 @@ const REVEAL: number[] = (() => {
 })();
 const easeOut = (t: number) => 1 - (1 - t) * (1 - t);
 
+// 品牌朱红：开机时刻的小面积品牌使用，绕过主题直出 SGR（同 graph-view directColors 先例）。
+const BRAND_SGR = '38;2;181;47;59';
+const colorize = (cell: Cell, theme: any) => { if (!cell.char) return ''; if (cell.color === 'brand') return `[${BRAND_SGR}m${cell.char}[39m`; return theme?.fg ? theme.fg(cell.color, cell.char) : cell.char; };
+
 export function buildSplashFrame(step: number, width: number, rows: number, theme: any): string[] {
   const W = Math.max(24, Math.min(width, 200)), H = Math.max(10, Math.min(rows, 60));
   const grid = blankGrid(H, W);
   const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
   const maxR = Math.max(4, Math.min(Math.floor(W * 0.16), cy - 2, 12));
-  const F = (color: string, ch: string) => theme?.fg ? theme.fg(color, ch) : ch;
   const seatAngle = (k: number) => (k / SEATS) * Math.PI * 2;
-  const expanded = step >= 10, shrinking = step >= 45, branded = step >= 52;
-  const revealed = expanded ? Math.min(SEATS, step < 12 ? (step >= 10 ? 2 : 0) : step < 14 ? 4 : 4 + Math.min(SEATS - 4, Math.floor((step - 14) * (SEATS - 4) / 30))) : 0;
-  const scale = shrinking ? 1 - 0.3 * Math.min(1, (step - 45) / 7) : 1;
-  const shown = new Set(REVEAL.slice(0, revealed));
-  const radius = Math.max(3, maxR * scale);
-  if (!shrinking) {
-    // 扩散：朱红前导环，旧环留成暗色轨迹，即"小点扩大成圆环逐渐消失"。
-    const trailSteps = Math.min(step, 10);
-    for (let k = 0; k <= trailSteps; k++) {
-      const r = Math.max(1, Math.round(maxR * easeOut(k / 10)));
-      const color = k === trailSteps ? 'error' : 'dim';
-      const dotN = Math.max(12, Math.round(r * 6));
-      for (let i = 0; i < dotN; i++) { const a = (i / dotN) * Math.PI * 2; put(grid, Math.round(cx + Math.cos(a) * r * 2), Math.round(cy + Math.sin(a) * r), '·', color); }
-    }
+  // 每帧只画当前环：旧环真正消失，不留杂乱轨迹。
+  const ring = (r: number, color: string) => { const n = Math.max(16, Math.round(r * 9)); for (let i = 0; i < n; i++) { const a = (i / n) * Math.PI * 2; put(grid, Math.round(cx + Math.cos(a) * r * 2), Math.round(cy + Math.sin(a) * r), '·', color); } };
+  const lectern = (k: number, r: number, color: string) => { const a = seatAngle(k); put(grid, Math.round(cx + Math.cos(a) * r * 2), Math.round(cy + Math.sin(a) * r), radial(a), color); };
+  if (step < 9) {
+    const r = Math.max(1, Math.round(maxR * easeOut(step / 9)));
+    ring(r, 'brand');
   } else {
-    const dotN = Math.max(24, Math.round(radius * 6));
-    for (let i = 0; i < dotN; i++) { const a = (i / dotN) * Math.PI * 2; put(grid, Math.round(cx + Math.cos(a) * radius * 2), Math.round(cy + Math.sin(a) * radius), '·', 'dim'); }
+    const scale = step >= 38 ? 1 - 0.3 * Math.min(1, (step - 38) / 7) : 1;
+    const r = Math.max(3, Math.round(maxR * scale));
+    ring(r, 'dim');
+    const revealed = step < 11 ? 0 : step < 13 ? 2 : step < 15 ? 4 : Math.min(SEATS, 4 + Math.floor(((step - 15) * (SEATS - 4)) / 23));
+    for (let k = 0; k < revealed; k++) lectern(REVEAL[k], r, 'success');
   }
-  for (let k = 0; k < revealed; k++) {
-    const seat = REVEAL[k]; if (!shown.has(seat) && !shrinking) continue;
-    const a = seatAngle(seat);
-    const x = Math.round(cx + Math.cos(a) * radius * 2), y = Math.round(cy + Math.sin(a) * radius);
-    put(grid, x, y, radial(a), 'success');
-  }
-  if (branded) {
-    const brandX = Math.min(W - 16, cx + Math.round(radius * 2) + 4);
-    put(grid, brandX, cy - 1, 'Kepos Communis', 'accent');
+  if (step >= 45) {
+    const brandX = Math.min(W - 16, cx + Math.round(maxR * 0.7 * 2) + 4);
+    put(grid, brandX, cy - 1, 'Kepos Communis', 'brand');
     put(grid, brandX, cy + 1, '议案 · 议会 · 48 席', 'dim');
   }
-  return grid.map(row => row.map(cell => cell.char ? F(cell.color, cell.char) : '').join('')).map(line => truncateToWidth(line, W));
+  return grid.map(row => row.map(cell => colorize(cell, theme)).join('')).map(line => truncateToWidth(line, W));
 }
+
 
 let played = false;
 export async function playSplash(ctx: any, config?: { motion?: boolean }): Promise<void> {
