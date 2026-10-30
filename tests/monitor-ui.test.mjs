@@ -101,7 +101,7 @@ test('three-column body is framed with embedded titles, welcome card and usage b
  const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
  const rows=desk.render(120);
  assert.ok(rows.some(l=>l.includes('╭')&&l.includes('代表席')),'crew panel frame');
- assert.ok(rows.some(l=>l.includes('╭')&&l.includes('正文')),'transcript panel frame');
+ assert.ok(rows.some(l=>l.includes('╭')&&l.includes('主案')),'transcript panel frame');
  assert.ok(rows.some(l=>l.includes('╭')&&l.includes('项目 / 对话')),'projects panel frame');
  assert.ok(rows.some(l=>l.includes('╭')&&l.includes('Kepos 议案')),'welcome card');
  assert.ok(rows.at(-2)?.includes('▓')&&rows.at(-2)?.includes('░'),'usage meter bar');
@@ -113,7 +113,7 @@ test('side panels carry the card background while the transcript stays untinted'
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
  const desk=new Desk({terminal:{rows:35},requestRender(){}},bgTheme,ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
  const rows=desk.render(120);
- const top=rows.find(l=>l.includes('╭')&&l.includes('正文'));
+ const top=rows.find(l=>l.includes('╭')&&l.includes('主案'));
  assert.equal((top.match(/\[toolSuccessBg\]/g)||[]).length,2,'left and right frames tinted, transcript clean');
  const content=rows.find(l=>l.includes('│')&&l.includes('│',20));
  assert.equal((content.match(/\[toolSuccessBg\]/g)||[]).length,2,'content rows tint the side panels only');

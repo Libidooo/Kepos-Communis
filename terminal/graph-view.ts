@@ -91,7 +91,7 @@ function bubble(grid: Cell[][], node: VisualNode, width: number, height: number)
   const task = node.task;
   const rows = [
     ` ${node.label}  ·  ${task?.status || task?.state || '未分配'}`,
-    `任务 ${task?.title || '尚未分配任务'}`,
+    `书案 ${task?.title || '尚未分配书案'}`,
     `工具 ${task?.tool || '—'}`,
     `进度 ${task?.checkpoint || '—'}`,
     `输出 ${task?.output || '等待结果'}`,
@@ -141,7 +141,7 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     rows.push(['', 'muted']);
   }
   const task = selected?.task;
-  rows.push([selected ? `选中 ${plain(selected.label)}` : '选中 主 Agent', 'accent']);
+  rows.push([task ? `${plain(selected!.label)} 书案` : selected ? `选中 ${plain(selected.label)}` : '选中 总理', 'accent']);
   if (task) {
     const elapsed = task.started ? Math.max(0, Math.round((now - task.started) / 1000)) + 's' : '—';
     rows.push([`状态 ${task.status || task.state || '—'} · ${elapsed}`, stateColor(task, selected!.index)]);
@@ -150,7 +150,7 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     rows.push([`输出 ${truncateToWidth(plain(task.output || '等待结果'), labelWidth - 3)}`, 'muted']);
     rows.push(['Enter 详情 · Ctrl+X 取消 · v 完整输出', 'muted']);
   } else {
-    rows.push([selected ? '尚无任务' : '主 Agent · Enter 输入目标', 'muted']);
+    rows.push([selected ? '尚无书案' : '总理 · Enter 输入目标', 'muted']);
     rows.push(['Enter 详情 · 单击选中坐席', 'muted']);
   }
   rows.push(['', 'muted'], ['拖动坐席 · 滚轮缩放 · F10 返回', 'muted']);
@@ -176,14 +176,27 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   const tasks = snapshot.tasks || [];
   const byAgent = new Map(agents.map(agent => [agent.name, agent]));
   const taskByAgent = new Map(tasks.filter(task => !task.parentWorkerId).map(task => [task.agent, task]));
-  const nodes: VisualNode[] = agents.map((agent, index) => ({ id: `agent:${agent.id}`, label: agent.name, kind: 'agent', task: taskByAgent.get(agent.name), groupKey: taskByAgent.get(agent.name)?.groupKey || 'default', index, x: 0, y: 0 }));
+  const realNodes: VisualNode[] = agents.map(agent => ({ id: `agent:${agent.id}`, label: agent.name, kind: 'agent', task: taskByAgent.get(agent.name), groupKey: taskByAgent.get(agent.name)?.groupKey || 'default', index: 0, x: 0, y: 0 }));
   for (const task of tasks) {
     const agent = byAgent.get(task.agent);
     if (agent && !task.parentWorkerId) continue;
-    nodes.push({ id: `task:${task.id}`, label: task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(nodes.length / 12)}`, index: nodes.length, x: 0, y: 0 });
+    realNodes.push({ id: `task:${task.id}`, label: task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(realNodes.length / 12)}`, index: 0, x: 0, y: 0 });
   }
-  for (let index = nodes.length; index < 48; index++) nodes.push({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
-  return nodes.slice(0, 48);
+  // 真实席位沿 48 槽均匀分布、空席填隙，避免全部挤在起弧的一段；多环（活跃>12）保持分组顺序。
+  const activeCount = tasks.filter(task => activeStates.has(task.state || '')).length;
+  const nodes: VisualNode[] = [];
+  if (realNodes.length < 48 && activeCount <= 12) {
+    const step = 48 / realNodes.length;
+    const slots: (VisualNode | undefined)[] = Array(48).fill(undefined);
+    realNodes.forEach((node, k) => { slots[Math.round(k * step) % 48] = node; });
+    const empty = (index: number): VisualNode => ({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
+    for (let index = 0; index < 48; index++) { const slot = slots[index]; if (slot) { slot.index = index; nodes.push(slot); } else nodes.push(empty(index)); }
+  } else {
+    nodes.push(...realNodes);
+    for (let index = nodes.length; index < 48; index++) nodes.push({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
+    if (nodes.length > 48) nodes.length = 48;
+  }
+  return nodes;
 }
 
 function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets) {
@@ -221,7 +234,9 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
     }
     if (!placed) occupied.add(key);
   }
-  return { center, nodes, ringCount };
+  // 单环时记录椭圆轨道参数，供渲染层画虚线轨道，让"圆桌"读得出轮廓。
+  const track = ringCount === 1 ? { cx: center.x, cy: center.y, rx: Math.max(10, Math.min(canvasWidth / 2 - 5, 40 * zoom)), ry: Math.max(3, Math.min(height / 2 - 3, 12 * zoom)) } : undefined;
+  return { center, nodes, ringCount, track };
 }
 
 export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}, now = Date.now(), council?: CouncilView): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
@@ -229,18 +244,28 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
+  if (layout.track) {
+    const { cx, cy, rx, ry } = layout.track;
+    const steps = Math.max(64, Math.round((rx + ry) * 2));
+    for (let i = 0; i < steps; i++) {
+      const angle = (i / steps) * Math.PI * 2;
+      const x = Math.round(cx + Math.cos(angle) * rx), y = Math.round(cy + Math.sin(angle) * ry);
+      const cell = grid[y]?.[x];
+      if (cell && cell.char === ' ') put(grid, x, y, '·', 'dim');
+    }
+  }
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
   for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
-  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '议会', 'accent');
+  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '总理', 'accent');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '·' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
+  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   sidebar(grid, snapshot, selectedNode, safeWidth, safeHeight, now, council);
-  if (detail) bubble(grid, selectedNode || { id: 'main', label: '议会', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
+  if (detail) bubble(grid, selectedNode || { id: 'main', label: '总理', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
   const lines = grid.map(row => colorize(row, theme));
-  const info = selected === -1 ? '主 Agent · 议会 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
+  const info = selected === -1 ? '总理 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · · 空席  ■ 代表  ⚒ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  ⚒ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }

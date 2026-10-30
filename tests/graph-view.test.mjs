@@ -12,7 +12,7 @@ test('unassigned seats have no connection; assigned seats connect to the main Ag
   const empty = renderGraph({ agents, tasks: [] }, 100, 32, -1, 1, theme);
   assert.equal(empty.hits.length, 49);
   assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
-  assert.ok(empty.lines.slice(0, 32).join('').includes('·'), 'empty seats fade to a dot');
+  assert.ok(empty.lines.slice(0, 32).join('').includes('○'), 'empty seats are hollow circles');
   assert.ok(!empty.lines.slice(0, 32).join('').includes('□'));
   assert.equal(/[─│╱╲┼]/.test(empty.lines.slice(0, 32).join('')), false);
   const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
@@ -292,4 +292,14 @@ test('running seats pulse between glyphs while queued stays static', () => {
   assert.notDeepEqual(run(0).lines, run(600).lines, 'running seat alternates ■/▪');
   const queued = now => renderGraph({ agents, tasks: [{ id: 'q', agent: 'A', state: 'QUEUED' }] }, 100, 24, -1, 1, theme, false, {}, now);
   assert.deepEqual(queued(0).lines, queued(600).lines, 'queued seat is static');
+});
+
+test('real seats spread evenly around the ring and the center is the 总理', () => {
+  const crew = Array.from({ length: 12 }, (_, i) => ({ id: String(i), name: 'R' + i }));
+  const tasks = crew.slice(0, 4).map((agent, i) => ({ id: 'w' + i, agent: agent.name, state: 'RUNNING' }));
+  const view = renderGraph({ agents: crew, tasks }, 140, 40, -1, 1, theme);
+  const slots = view.hits.slice(1).map((hit, i) => hit.taskId ? i : -1).filter(i => i >= 0);
+  assert.deepEqual(slots, [0, 4, 8, 12], 'occupied slots are evenly interleaved with empty ones');
+  assert.ok(view.lines.join('').includes('总理'), 'center node is the 总理');
+  assert.ok(view.lines.join('').includes('·'), 'orbit track drawn as dim dots');
 });
