@@ -26,6 +26,8 @@
 
 ## 待办（2026-10-30 新增）
 
+- **R2 MCP 临时授权（已实施，2026-10-30，人类改判：不再整体拒绝）**：MCP 服务器仍由人类配置（agent 目录 mcp.json / 项目 .pi/mcp.json）；主 Agent 本身保留全部已配置 MCP 工具，并可按任务给子 Agent 临时授权——`orbital_delegate` 的 `tasks[].mcp` 传 true（全部已配置）或显式服务器列表，逐个校验必须已在配置中，只读监督模式拒绝授权。执行器按 `--tools mcp__<server>__*` 只暴露被授予服务器的工具，授权随任务记录（mcpServers，orbital_tasks 可见）并随 Worker 进程销毁收回。边界：MCP 工具不受只读沙箱约束，授予即有意的权限扩展（见 SECURITY.md）。
+
 - **R1 中转商模型接入（已实施，2026-10-30）**：连接自定义 OpenAI/Anthropic 兼容中转端点、测试连通性、拉取模型列表。
   - CLI 三件套：`kepos relay add|test|models`（外加 list/remove）；探测双路径——先按运行时真实路径（全局 fetch，可能走系统代理），网络错误自动 `node:http` 直连兜底（本机实测发现 NODE_USE_ENV_PROXY 全局代理会拦 loopback，PI 的全局 dispatcher 也会接管 fetch）。
   - /login 集成：登录列表新增"中转商 / 自定义端点…"，引导流程含新增、从 cc-switch 导入（读 `~/.cc-switch/config.json`，key 引用 `$ANTHROPIC_AUTH_TOKEN` 跟随 cc-switch 当前激活项，不复制明文 token）、管理已有（测试/删除）。

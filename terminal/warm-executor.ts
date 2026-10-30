@@ -17,7 +17,7 @@ export function killTree(child: ChildProcess) {
  }
 }
 
-export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[] };
+export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[]; mcpServers?: string[] };
 // Workers get only what Node, the terminal and Pi credential lookup need; every other
 // variable in the operator's shell (API keys, cloud tokens) stays out of the child.
 const WORKER_ENV_KEYS = ['PATH', 'PATHEXT', 'COMSPEC', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP', 'SYSTEMROOT', 'SYSTEMDRIVE', 'LANG', 'LC_ALL', 'TERM', 'PI_CODING_AGENT_DIR', 'KEPOS_AGENT_DIR'];
@@ -48,13 +48,16 @@ export class WarmExecutor {
 
  constructor(readonly profile: WorkerProfile, spawnWorker: typeof spawn = spawn) {
   this.key = JSON.stringify(profile);
-  if (profile.mcp) throw Error('MCP requires server-scoped approval; warm executor refuses broad MCP access');
-  const args = [join(getPackageDir(), 'dist', 'cli.js'), '--mode', 'rpc', '--no-session', '--no-extensions', '--no-skills', '--no-mcp', '--no-context-files', '--no-prompt-templates', '--no-approve', '--offline',
-   ...(profile.tools.length ? ['--tools', profile.tools.join(',')] : ['--no-tools']),
+  // MCP is a per-task temporary grant: only servers the human configured may pass, and
+  // only their tools are exposed via patterns. An empty grant list means no MCP at all.
+  const mcpServers = profile.mcp ? (profile.mcpServers ?? []) : [];
+  const toolAllow = [...profile.tools, ...mcpServers.map(server => `mcp__${server}__*`)];
+  const args = [join(getPackageDir(), 'dist', 'cli.js'), '--mode', 'rpc', '--no-session', '--no-extensions', '--no-skills', ...(mcpServers.length ? [] : ['--no-mcp']), '--no-context-files', '--no-prompt-templates', '--no-approve', '--offline',
+   ...(toolAllow.length ? ['--tools', toolAllow.join(',')] : ['--no-tools']),
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
    ...sandboxArgs({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }, join(dirname(fileURLToPath(import.meta.url)), 'worker-sandbox.js')),
-   '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources. Assigned role: ${profile.role}.`];
+   '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources.${mcpServers.length ? ` Approved MCP servers for this task only: ${mcpServers.join(', ')}.` : ''} Assigned role: ${profile.role}.`];
   this.child = spawnWorker(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'worker-host.cjs'), ...args], {
    cwd: profile.cwd, env: workerEnv(process.env, process.pid), windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],

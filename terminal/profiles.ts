@@ -14,6 +14,8 @@ export interface AgentProfile {
   readScope?: 'project' | 'machine';
   /** Extra readable directories on top of the task directory. */
   readAllow?: string[];
+  /** MCP servers granted temporarily for a delegation; must exist in the human's mcp.json. */
+  mcpServers?: string[];
 }
 
 export interface ProfileRevision {

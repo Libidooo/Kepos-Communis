@@ -25,4 +25,12 @@ Delegated workers run as separate Pi processes with read-only tools only (read/g
 
 Boundaries: the sandbox intercepts the model's tool calls, not Pi's internal file access — a worker still reads the provider credentials it needs to call its model, which is unavoidable without a model-proxy architecture. Reads that are allowed still flow back to the lead agent as evidence. The capability stored in `mission_jobs` rows is now a hash, so a leaked database no longer hands out live handles.
 
+## MCP temporary grants (0.3.0-beta.5)
+
+MCP servers are configured only by the human (`<agent-dir>/mcp.json`, or a trusted project's `.pi/mcp.json`). The main agent sees all configured MCP tools itself; delegated workers get MCP only as an explicit per-task grant: `orbital_delegate` `tasks[].mcp` accepts `true` (every configured server) or an exact server list, validated against the human's configuration — the model cannot grant a server that is not configured, and readonly supervision mode grants no MCP at all.
+
+Enforcement is at tool level: the worker process runs with MCP enabled but exposes only `mcp__<server>__*` patterns for the granted servers. The grant is temporary by construction — it lives in the task record (`mcpServers`, visible via orbital_tasks) and dies with the worker process; nothing is written to any configuration file.
+
+Boundary: MCP tools are not covered by the read-only sandbox — a granted server can do whatever the human configured it to do. Granting MCP is therefore a deliberate capability expansion beyond read/grep/find/ls, and the granted server list is auditable per task.
+
 To report a security issue, open a private GitHub security report on the repository or contact the maintainer before publishing exploit details.

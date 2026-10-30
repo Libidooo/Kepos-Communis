@@ -9,7 +9,7 @@ import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from 
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
+export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
 const labels: Record<WorkerState, string> = { QUEUED: '排队中', STARTING: '启动中', RUNNING: '运行中', SUCCEEDED: '完成', FAILED: '失败', INTERRUPTED: '已中断', CANCEL_REQUESTED: '正在终止', CANCELLED: '已取消', TIMED_OUT: '超时' };
@@ -225,8 +225,7 @@ export class WorkerPool {
  private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean): WorkerProfile {
   if (!crew.model?.trim()) throw Error('Worker model is empty');
   if (tools.some(tool => !(READ_ONLY_TOOLS as readonly string[]).includes(tool))) throw Error('Unapproved tool; no child started');
-  if (mcp) throw Error('MCP server-scoped approval is not implemented; request human setup rather than broad access');
-  return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow };
+  return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers };
  }
  private executor(profile: WorkerProfile): WorkerExecutor | undefined {
   const key = JSON.stringify(profile);
@@ -440,7 +439,7 @@ export class WorkerPool {
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
-  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}) };
+  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));
    this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'queued', task.started, JSON.stringify({state:task.state,profileRevision:task.profileRevision}));
