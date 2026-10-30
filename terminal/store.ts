@@ -15,6 +15,7 @@ export interface Config {
   drafts: Record<string, string>;
   sessionLinks: Record<string, string>;
   initialized?: boolean;
+  approvalPolicy?: import('./approval.ts').ApprovalPolicy;
 }
 
 const snapshots = new WeakMap<Config, Config>();
