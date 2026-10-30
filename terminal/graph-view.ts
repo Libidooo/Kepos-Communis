@@ -11,6 +11,8 @@ type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: Gr
 const activeStates = new Set(['QUEUED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED', 'NEEDS_HUMAN']);
 const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
 
+// teal/blue/mauve exist only as orbital-76 vars; Pi's theme.fg rejects them, so emit them directly.
+const directColors: Record<string, string> = { approval: '1;38;2;255;223;84', queue: '38;2;157;126;76', idle: '38;2;116;139;129', teal: '38;2;142;181;173', blue: '38;2;153;172;187', mauve: '38;2;181;160;173' };
 const palette = ['teal', 'blue', 'mauve', 'accent'];
 const stateColor = (task: GraphViewTask | undefined, index: number) => {
   if (!task) return 'muted';
@@ -49,7 +51,14 @@ function put(grid: Cell[][], x: number, y: number, text: string, color?: string)
     column += width;
   }
 }
-function colorize(row: Cell[], theme: any): string { return row.map(cell => !cell.char ? '' : cell.char === ' ' ? ' ' : cell.color === 'approval' ? `\x1b[1;38;2;255;223;84m${cell.char}\x1b[0m` : cell.color === 'queue' ? `\x1b[38;2;157;126;76m${cell.char}\x1b[39m` : cell.color === 'idle' ? `\x1b[38;2;116;139;129m${cell.char}\x1b[39m` : theme.fg(cell.color || 'text', cell.char)).join(''); }
+function colorize(row: Cell[], theme: any): string {
+  return row.map(cell => {
+    if (!cell.char) return '';
+    if (cell.char === ' ') return ' ';
+    const direct = directColors[cell.color || ''];
+    return direct ? `\x1b[${direct}m${cell.char}\x1b[${cell.color === 'approval' ? 0 : 39}m` : theme.fg(cell.color || 'text', cell.char);
+  }).join('');
+}
 
 function bubble(grid: Cell[][], node: VisualNode, width: number, height: number) {
   const boxWidth = Math.min(38, width - 2), inner = boxWidth - 4;

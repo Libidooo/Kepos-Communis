@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { renderGraph } from '../dist/terminal/graph-view.js';
 import { Desk } from '../dist/terminal/desk.js';
 import { visibleWidth } from '@earendil-works/pi-tui';
+import { fileURLToPath } from 'node:url';
 
 const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
@@ -80,4 +81,32 @@ test('seat states distinguish idle, queued, review, success, failure and cancell
   assert.ok(state('SUCCEEDED').includes('[success]■'));
   assert.ok(state('FAILED').includes('[error]■'));
   assert.ok(state('CANCELLED').includes('[dim]■'));
+});
+
+test('real orbital-76 theme renders every running-task palette color without throwing', async () => {
+  // The theme loader is not a public export, so import it by file path.
+  const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
+  const real = loadThemeFromPath(fileURLToPath(new URL('../themes/orbital-76.json', import.meta.url)), 'truecolor');
+  // Character-code sums 0..3 mod 4 cover teal, blue, mauve and accent.
+  const groups = ['d', 'a', 'b', 'c'];
+  const crew = groups.map((name, index) => ({ id: String(index), name }));
+  const tasks = groups.map((name, index) => ({ id: 'w' + index, agent: name, state: 'RUNNING', status: '运行中', groupKey: name }));
+  for (const width of [100, 140]) {
+    const frame = renderGraph({ agents: crew, tasks }, width, 32, 0, 1, real, true);
+    assert.ok(frame.lines.some(line => line.includes('\x1b[38;2;142;181;173m')), 'teal is emitted directly');
+    assert.ok(frame.lines.some(line => line.includes('\x1b[38;2;153;172;187m')), 'blue is emitted directly');
+    assert.ok(frame.lines.some(line => line.includes('\x1b[38;2;181;160;173m')), 'mauve is emitted directly');
+  }
+});
+
+test('a failing graph frame falls back to the desk instead of throwing out of render', () => {
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  const strict = { fg: (color, value) => { if (color === 'accent') throw Error('Unknown theme color: accent'); return value; } };
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, strict, context, config, [], { tasks: [] }, () => {}, () => {});
+  desk.graphView = true;
+  const lines = desk.render(120);
+  assert.match(lines[0], /渲染出错/);
+  assert.equal(desk.graphView, false);
+  desk.dispose();
 });

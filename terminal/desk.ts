@@ -79,7 +79,12 @@ export class Desk {
  if(!preview&&this.live&&!(this.live.role==='custom'&&this.live.display===false)&&!entries.some(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp))){const base=this.historyCache[0]?.startsWith('尚无消息。')?[]:this.historyCache;return [...base,...historyLines([{type:'message',message:this.live}],width,this.expandedTools,this.theme)];}
  return this.historyCache;
  }
- render(width:number):string[]{const begin=performance.now();try{return this.renderFrame(width);}finally{this.renderMetrics.observe(performance.now()-begin);}}
+ render(width:number):string[]{const begin=performance.now();try{return this.renderFrame(width);}catch(error){
+  // Pi does not guard overlay rendering; a thrown frame would end the whole process.
+  if(this.graphView){this.graphView=false;this.graphDetail=false;}
+  const message=clean(error instanceof Error?error.message:error);this.notice='界面渲染出错：'+message;
+  return [fit('Kepos 界面渲染出错，已退回工作台：'+message,Math.max(1,width)),fit('按任意键重绘；问题持续时请报告此行。',Math.max(1,width))];
+ }finally{this.renderMetrics.observe(performance.now()-begin);}}
  private renderGraphFrame(width:number,rows:number):string[]{
   this.editor.focused=this.focused&&this.focus==='input';
   const input=this.editor.render(Math.max(8,width-2));
