@@ -1,4 +1,4 @@
-import { relayEnvName, modelsJsonPath, probeRelay, readRelays, removeRelay, resolveRelayKey, slugify, RELAY_ID_PREFIX, upsertRelay, type RelayApi } from '../terminal/relay.ts';
+import { normalizeRelayBaseUrl, relayEnvName, modelsJsonPath, probeRelay, readRelays, removeRelay, resolveRelayKey, slugify, RELAY_ID_PREFIX, upsertRelay, type RelayApi } from '../terminal/relay.ts';
 import { preparePaths, type AppPaths } from './config.ts';
 
 function printProbe(result: Awaited<ReturnType<typeof probeRelay>>): void {
@@ -27,9 +27,12 @@ export async function relayCommand(options: any, paths: AppPaths): Promise<void>
   const [action, name, positioned] = options.args;
   switch (action) {
     case 'add': {
-      if (!name || !positioned) throw Error('Usage: kepos relay add <名称> <baseUrl> [--api openai-completions|openai-responses|anthropic-messages] [--key-env NAME] [--key <key 仅测试>]');
+      if (!name || !positioned) throw Error('Usage: kepos relay add <名称> <baseUrl> [--api openai-completions|openai-responses|anthropic-messages] [--key-env NAME] [--key <key 仅测试>] [--full-url 不补全 /v1]');
       const api = (options.api as RelayApi) || 'openai-completions';
       if (!API_VALUES.includes(api)) throw Error('--api must be openai-completions, openai-responses or anthropic-messages');
+      const normalized = normalizeRelayBaseUrl(positioned, api);
+      const baseUrl = options.fullUrl || !normalized.changed ? positioned : normalized.url;
+      if (normalized.changed && !options.fullUrl) console.log(`URL 已自动补全：${positioned} → ${baseUrl}（按原样使用请加 --full-url）`);
       const keyEnv = options.keyEnv || relayEnvName(name);
       const id = RELAY_ID_PREFIX + slugify(name);
       // The key itself never lands on disk: models.json keeps a $ENV reference.

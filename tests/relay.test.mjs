@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:http';
-import { slugify, relayEnvName, modelsJsonPath, readRelays, upsertRelay, removeRelay, resolveRelayKey, probeRelay, readCcSwitchProviders, importCcSwitchProvider } from '../dist/terminal/relay.js';
+import { slugify, relayEnvName, modelsJsonPath, readRelays, upsertRelay, removeRelay, resolveRelayKey, probeRelay, readCcSwitchProviders, importCcSwitchProvider, normalizeRelayBaseUrl } from '../dist/terminal/relay.js';
 
 const agentDir = () => { const dir = mkdtempSync(join(tmpdir(), 'kepos-relay-')); mkdirSync(dir, { recursive: true }); return dir; };
 
@@ -12,6 +12,15 @@ test('relay ids slugging and env naming are stable and shell-safe',()=>{
  assert.equal(slugify('My Relay!'),'my_relay');
  assert.equal(relayEnvName('My Relay'),'KEPOS_RELAY_MY_RELAY');
  assert.equal(slugify('中文中转'),'relay');
+});
+
+test('openai-style base URLs gain /v1 automatically; anthropic and versioned URLs stay untouched',()=>{
+ assert.equal(normalizeRelayBaseUrl('https://r.example','openai-completions').url,'https://r.example/v1');
+ assert.equal(normalizeRelayBaseUrl('https://r.example','openai-responses').changed,true);
+ assert.equal(normalizeRelayBaseUrl('https://r.example/','openai-completions').url,'https://r.example/v1');
+ assert.equal(normalizeRelayBaseUrl('https://r.example/v1','openai-completions').changed,false);
+ assert.equal(normalizeRelayBaseUrl('https://r.example/v2','openai-responses').url,'https://r.example/v2');
+ assert.equal(normalizeRelayBaseUrl('https://r.example/api','anthropic-messages').url,'https://r.example/api');
 });
 
 test('upsert keeps unrelated providers and stores the key as an env reference only',()=>{

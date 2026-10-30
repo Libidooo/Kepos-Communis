@@ -12,7 +12,7 @@ export interface CliOptions {
   thinking?: ThinkingLevel;
   method?: 'api_key' | 'oauth';
   host?: string; port?: string; token?: string; tlsCert?: string; tlsKey?: string; days?: string; maxEvents?: string;
-  api?: string; keyEnv?: string; key?: string; enable?: string; all?: boolean;
+  api?: string; keyEnv?: string; key?: string; enable?: string; all?: boolean; fullUrl?: boolean;
   json?: boolean;
   help?: boolean;
 }
@@ -38,6 +38,7 @@ export function parseCli(argv: string[]): CliOptions {
       case '--engine-check': result.command = 'doctor'; result.json = true; commandSet = true; continue;
       case '--json': result.json = true; continue;
       case '--all': result.all = true; continue;
+      case '--full-url': result.fullUrl = true; continue;
       case '--continue': case '-c': result.continue = true; continue;
     }
     const key = VALUE_FLAGS[arg as keyof typeof VALUE_FLAGS];

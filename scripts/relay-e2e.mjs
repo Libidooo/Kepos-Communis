@@ -6,7 +6,7 @@ import {join} from 'node:path';
 
 const listing = JSON.stringify({data:[{id:'gpt-x'},{id:'claude-y'},{id:'deepseek-z'}]});
 const server = createServer((request,response)=>{
-  if(request.url==='/models'&&request.headers.authorization==='Bearer good'){
+  if((request.url==='/models'||request.url==='/v1/models')&&request.headers.authorization==='Bearer good'){
     response.setHeader('content-type','application/json');response.end(listing);return;
   }
   response.statusCode=401;response.end('{}');
