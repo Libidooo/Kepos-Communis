@@ -9,7 +9,8 @@ import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from 
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
+export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' };
+export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
 const labels: Record<WorkerState, string> = { QUEUED: '排队中', STARTING: '启动中', RUNNING: '运行中', SUCCEEDED: '完成', FAILED: '失败', INTERRUPTED: '已中断', CANCEL_REQUESTED: '正在终止', CANCELLED: '已取消', TIMED_OUT: '超时' };
@@ -128,7 +129,7 @@ export class WorkerPool {
  }
  private settle(task: Task, state: WorkerState, error?: string): Receipt {
   const ended = Date.now();
-  const complete = { ...task, state, status: labels[state], ended, tool: '', error, output: bounded(task.output), outputTruncated: task.outputTruncated || Buffer.byteLength(task.output) > 32768 };
+  const complete = { ...task, state, status: labels[state], ended, tool: '', reviewDue: false, stalled: false, error, output: bounded(task.output), outputTruncated: task.outputTruncated || Buffer.byteLength(task.output) > 32768 };
   const receipt: Receipt = { version: 1, workerId: task.id, parentSessionId: task.parentSessionId, correlationId: task.correlationId, state, started: task.started, ended, output: complete.output, profileSnapshot: task.profileSnapshot, profileRevision: task.profileRevision, outputTruncated: complete.outputTruncated, error, resultHash: hash(complete.output), usage: task.usage };
   // Publish the terminal state, result and event together; crashes cannot leave a
   // terminal task with no receipt between separate UPDATE statements.
@@ -478,7 +479,7 @@ export class WorkerPool {
   if (limits.perTaskCost && Number(usage.cost?.total) > limits.perTaskCost) return spent;
   return null;
  }
- launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number): WorkerHandle {
+ launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number, metadata: WorkerLaunchMetadata = {}): WorkerHandle {
   if (this.closed) throw Error('Pool closed');
   if (!parentSessionId) throw Error('A bound parent session is required');
   if (signal?.aborted) throw Error('Task cancelled');
@@ -502,7 +503,7 @@ export class WorkerPool {
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
   this.capabilities.set(id, capability);
-  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
+  const task: Task = { id, agent: crew.name, ...(crew.id ? { agentId: crew.id } : {}), ...(metadata.purpose ? { purpose: metadata.purpose } : {}), role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));
    this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'queued', task.started, JSON.stringify({state:task.state,profileRevision:task.profileRevision}));
@@ -558,8 +559,8 @@ export class WorkerPool {
    }
   } finally { this.pumping = false; }
  }
- async run(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number): Promise<Task> {
-  const handle = this.launch(crew, instruction, cwd, session, seconds, signal, parentSessionId || session, tools, skills, mcp, delegationDepth, parentWorkerId, budgetTokens);
+ async run(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number, metadata: WorkerLaunchMetadata = {}): Promise<Task> {
+  const handle = this.launch(crew, instruction, cwd, session, seconds, signal, parentSessionId || session, tools, skills, mcp, delegationDepth, parentWorkerId, budgetTokens, metadata);
   return this.completions.get(handle.workerId) || structuredClone(this.tasks.find(task => task.id === handle.workerId)!);
  }
 }

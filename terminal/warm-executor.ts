@@ -1,10 +1,13 @@
 import { spawn, type ChildProcess } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getPackageDir } from '@earendil-works/pi-coding-agent';
+import { existsSync } from 'node:fs';
+import { getAgentDir, getPackageDir } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
 import { dataRoot } from './paths.ts';
 import { sandboxEnv, type ReadScope } from './worker-sandbox.ts';
+import { workerEnv } from './worker-env.ts';
+export { workerEnv } from './worker-env.ts';
 
 export function killTree(child: ChildProcess) {
  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -18,16 +21,6 @@ export function killTree(child: ChildProcess) {
 }
 
 export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[]; mcpServers?: string[] };
-// Workers get only what Node, the terminal and Pi credential lookup need; every other
-// variable in the operator's shell (API keys, cloud tokens) stays out of the child.
-const WORKER_ENV_KEYS = ['PATH', 'PATHEXT', 'COMSPEC', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP', 'SYSTEMROOT', 'SYSTEMDRIVE', 'LANG', 'LC_ALL', 'TERM', 'PI_CODING_AGENT_DIR', 'KEPOS_AGENT_DIR'];
-export function workerEnv(base: NodeJS.ProcessEnv, pid: number): NodeJS.ProcessEnv {
- const passthrough = (base.KEPOS_WORKER_ENV_PASSTHROUGH || '').split(',').map(key => key.trim()).filter(Boolean);
- const env: NodeJS.ProcessEnv = {};
- for (const key of [...new Set([...WORKER_ENV_KEYS, ...passthrough])]) { const value = base[key]; if (value !== undefined) env[key] = value; }
- env.ORBITAL_PARENT_PID = String(pid);
- return env;
-}
 export class WarmExecutor {
  readonly child: ChildProcess;
  readonly key: string;
@@ -45,6 +38,7 @@ export class WarmExecutor {
  private bytes = 0;
  private idleTimer?: ReturnType<typeof setTimeout>;
  private failure?: Error;
+ private pingTimer?: ReturnType<typeof setInterval>;
 
  constructor(readonly profile: WorkerProfile, spawnWorker: typeof spawn = spawn) {
   this.key = JSON.stringify(profile);
@@ -52,16 +46,23 @@ export class WarmExecutor {
   // only their tools are exposed via patterns. An empty grant list means no MCP at all.
   const mcpServers = profile.mcp ? (profile.mcpServers ?? []) : [];
   const toolAllow = [...profile.tools, ...mcpServers.map(server => `mcp__${server}__*`)];
-  const args = [join(getPackageDir(), 'dist', 'cli.js'), '--mode', 'rpc', '--no-session', '--no-extensions', '--no-skills', ...(mcpServers.length ? [] : ['--no-mcp']), '--no-context-files', '--no-prompt-templates', '--no-approve', '--offline',
+  const runtimeFile = fileURLToPath(import.meta.url);
+  const runtimeDir = dirname(runtimeFile);
+  // Explicit -e survives --no-extensions. Use the sibling in this runtime (source or built),
+  // never a cwd-relative path or a stale dist fallback from a different installation.
+  const sandbox = join(runtimeDir, `worker-sandbox${extname(runtimeFile) === '.ts' ? '.ts' : '.js'}`);
+  if (!existsSync(sandbox)) throw Error('Worker sandbox extension is missing from the Kepos runtime');
+  const args = [join(getPackageDir(), 'dist', 'cli.js'), '--mode', 'rpc', '--no-session', '--no-extensions', '-e', sandbox, '--no-skills', ...(mcpServers.length ? [] : ['--no-mcp']), '--no-context-files', '--no-prompt-templates', '--no-approve', '--offline',
    ...(toolAllow.length ? ['--tools', toolAllow.join(',')] : ['--no-tools']),
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
    '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources.${mcpServers.length ? ` Approved MCP servers for this task only: ${mcpServers.join(', ')}.` : ''} Assigned role: ${profile.role}.`];
   // Sandbox scope travels via environment variables: Pi's CLI rejects unknown options,
   // so the read-guard configuration must never ride on argv.
-  const env = workerEnv(process.env, process.pid);
+  const env = workerEnv(process.env, process.pid, { provider: profile.provider, model: profile.model,
+   agentDir: process.env.PI_CODING_AGENT_DIR || process.env.KEPOS_AGENT_DIR || getAgentDir() });
   Object.assign(env, sandboxEnv({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }));
-  this.child = spawnWorker(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'worker-host.cjs'), ...args], {
+  this.child = spawnWorker(process.execPath, [join(runtimeDir, 'worker-host.cjs'), ...args], {
    cwd: profile.cwd, env, windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -70,8 +71,15 @@ export class WarmExecutor {
   this.child.stdout!.on('data', (chunk: string) => this.receive(chunk));
   this.child.stderr!.on('data', (text: string) => this.stderr = (this.stderr + text).slice(-4000));
   this.child.on('error', error => { this.failure = error; this.kill(); });
+  this.child.stdin!.on('error', error => { if (!this.stopping && !this.dead) this.fail(error); });
+  // 每 10 秒 ping 一次：worker-host 60 秒收不到任何入站流量即自尽——
+  // 即使父进程 PID 被系统复用、子进程的自保心跳被骗过，也不会有孤儿残留。
+  this.pingTimer = setInterval(() => { if (!this.stopping && !this.dead) this.request('get_state', {}, 2000).catch(() => {}); }, 10000);
+  this.pingTimer.unref?.();
   this.child.on('close', code => {
    this.dead = true;
+   clearInterval(this.pingTimer);
+   this.pingTimer = undefined;
    clearTimeout(this.idleTimer);
    const error = this.failure || Error(`Worker exited ${code}. ${this.stderr}`);
    this.rejectPending(error);
@@ -156,6 +164,9 @@ export class WarmExecutor {
  }
  kill() {
   clearTimeout(this.idleTimer);
+  clearInterval(this.pingTimer);
+  this.pingTimer = undefined;
+  if (this.stopping) return;
   this.stopping = true;
   this.rejectPending(this.failure || Error('Worker terminating'));
   if (!this.dead) killTree(this.child);

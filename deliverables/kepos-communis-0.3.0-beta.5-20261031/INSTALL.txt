@@ -1,0 +1,17 @@
+Kepos Communis 0.3.0-beta.5
+
+本地工作树构建（非公开 Release）。需要 Node.js 24+ 与 npm；安装依赖通常需要联网。
+
+1. 对照 SHA256SUMS.txt 核对压缩包。
+2. 在本目录运行：
+   npm install -g ./kepos-communis-0.3.0-beta.5.tgz
+3. 检查并启动：
+   kepos doctor --json
+   kepos
+4. 输入 /login，由你配置模型认证。模型调用可能产生费用。
+
+本包已检查文件/文档完整性，并在隔离 home 上运行包内 doctor。
+验证复用了项目 node_modules，不代表干净机器全局安装验收；未调用真实模型。
+当前工作树还含并行会话的运行代码改动，具体构建来源见 build-report.json。
+
+源码与正式发布信息：https://github.com/Libidooo/kepos-communis/releases
