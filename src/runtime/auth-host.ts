@@ -1,29 +1,36 @@
 import type { AgentSessionRuntime } from '@earendil-works/pi-coding-agent';
 import { tuiInteraction } from '../auth/interactions.ts';
 import type { AuthService } from '../auth/service.ts';
+import { relaySetupFlow } from '../../terminal/relay.ts';
 import type { KeposHost } from '../../terminal/index.ts';
+
+const RELAY_CHOICE = '中转商 / 自定义端点…';
 
 async function chooseProvider(auth: AuthService, ctx: any, configuredOnly: boolean): Promise<string | undefined> {
   const providers = auth.providers().filter(function availableProvider(provider) {
     if (configuredOnly) return provider.configured;
     return provider.methods.length > 0;
   });
-  if (!providers.length) {
-    if (configuredOnly) throw Error('没有已配置的登录；环境变量凭据需要在系统中管理。');
-    throw Error('没有支持交互登录的服务商。');
-  }
-  const labels = providers.map(provider => `${provider.name} · ${provider.id}`);
+  if (!providers.length && configuredOnly) throw Error('没有已配置的登录；环境变量凭据需要在系统中管理。');
+  const labels = [...providers.map(provider => `${provider.name} · ${provider.id}`), ...(configuredOnly ? [] : [RELAY_CHOICE])];
+  if (!labels.length) throw Error('没有支持交互登录的服务商。');
   const title = configuredOnly ? '退出登录' : '连接模型服务';
   const selected = await ctx.ui.select('Kepos · ' + title, labels);
+  if (selected === RELAY_CHOICE) return RELAY_CHOICE;
   return providers[labels.indexOf(selected)]?.id;
 }
 
-export function createAuthHost(auth: AuthService, getRuntime: () => AgentSessionRuntime): KeposHost {
+export function createAuthHost(auth: AuthService, getRuntime: () => AgentSessionRuntime, agentDir: string): KeposHost {
   return {
     async login(ctx: any, requested?: string): Promise<void> {
       if (!ctx.isIdle()) throw Error('请等待当前任务结束再登录');
       const provider = requested || await chooseProvider(auth, ctx, false);
       if (!provider) return;
+      if (provider === RELAY_CHOICE) {
+        await relaySetupFlow(ctx, agentDir);
+        ctx.ui.notify('中转商配置已保存。把 key 放入对应环境变量后 /reload，模型出现在 F4 列表。', 'info');
+        return;
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(Error('登录超时，请重试')), 300000);
       try {

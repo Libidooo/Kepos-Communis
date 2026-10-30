@@ -12,6 +12,7 @@ export interface CliOptions {
   thinking?: ThinkingLevel;
   method?: 'api_key' | 'oauth';
   host?: string; port?: string; token?: string; tlsCert?: string; tlsKey?: string; days?: string; maxEvents?: string;
+  api?: string; keyEnv?: string; key?: string; enable?: string; all?: boolean;
   json?: boolean;
   help?: boolean;
 }
@@ -19,6 +20,7 @@ export interface CliOptions {
 const VALUE_FLAGS = {
   '--home': 'home', '--cwd': 'cwd', '--model': 'model', '--provider': 'provider',
   '--session': 'session', '--theme': 'theme', '--thinking': 'thinking', '--method': 'method', '--host': 'host', '--port': 'port', '--token': 'token', '--tls-cert': 'tlsCert', '--tls-key': 'tlsKey', '--days': 'days', '--max-events': 'maxEvents',
+  '--api': 'api', '--key-env': 'keyEnv', '--key': 'key', '--enable': 'enable',
 } as const;
 
 export function parseCli(argv: string[]): CliOptions {
@@ -35,6 +37,7 @@ export function parseCli(argv: string[]): CliOptions {
       case '--version': case '-v': result.command = 'version'; commandSet = true; continue;
       case '--engine-check': result.command = 'doctor'; result.json = true; commandSet = true; continue;
       case '--json': result.json = true; continue;
+      case '--all': result.all = true; continue;
       case '--continue': case '-c': result.continue = true; continue;
     }
     const key = VALUE_FLAGS[arg as keyof typeof VALUE_FLAGS];
@@ -72,6 +75,10 @@ Usage: kepos [command] [options]
   kepos supervise <file>  Run a durable task plan from a JSON file
   kepos daemon            Run one cross-process scheduler owner
   kepos worker serve      Run an authenticated remote Worker executor
+  kepos relay add <name> <url>   Register an OpenAI/Anthropic-compatible relay (key stays in an env var)
+  kepos relay test <name>        Probe relay reachability and auth
+  kepos relay models <name>      List relay models (--enable id1,id2 or --all to enable)
+  kepos relay list|remove        Show or remove registered relays
   kepos retention         Archive old derived events
 
 Options:

@@ -26,16 +26,11 @@
 
 ## 待办（2026-10-30 新增）
 
-- **R1 中转商模型接入（人类标记：紧迫）**——当前只能官方渠道登录，需要接入自定义 OpenAI 兼容中转端点。
-  - 目标：① 连接中转商（baseUrl + API key）；② 测试中转 URL 连通性；③ 拉取可用模型列表并勾选启用。
-  - 现状：Pi SDK 已原生支持自定义 provider（`models.json` 的 `providers.<id>` 配 `baseUrl`/`apiKey`/`api: openai-completions`/`authHeader`/`headers`，模型条目可逐个声明；见 pi-coding-agent 的 `docs/models-configuration.md`）。Kepos 缺的只是入口与探测。
-  - 方案：
-    1. CLI：`kepos relay add <名称> <baseUrl>`、`kepos relay test <名称>`（GET `{baseUrl}/models` 带 Bearer，输出可达/鉴权失败/超时与延迟）、`kepos relay models <名称>`（列出 `data[].id`，`--enable` 写入 models.json）。
-    2. F2 工作台："自定义服务商"流程——填名称/URL/Key → 连通测试 → 模型列表多选启用 → 保存。
-    3. 凭据安全：API key 默认落 agent 目录 models.json（该文件含明文 key，需提示并纳入保护）；支持 `$ENV`/`!command` 引用形式避免明文落盘。
-    4. 保存后主 Agent 模型列表（F4）立即可见；子 Agent 经 D2 沙箱同样使用该端点。
-  - 验收：对一个 one-api/new-api 类中转完成 add → test → models → 主对话与子 Agent 分派全链路。
-  - 工作量估计：小到中等（Pi 能力现成，主要是 CLI/流程/探测与模型目录重载）。待人类确认后即可开工。
+- **R1 中转商模型接入（已实施，2026-10-30）**：连接自定义 OpenAI/Anthropic 兼容中转端点、测试连通性、拉取模型列表。
+  - CLI 三件套：`kepos relay add|test|models`（外加 list/remove）；探测双路径——先按运行时真实路径（全局 fetch，可能走系统代理），网络错误自动 `node:http` 直连兜底（本机实测发现 NODE_USE_ENV_PROXY 全局代理会拦 loopback，PI 的全局 dispatcher 也会接管 fetch）。
+  - /login 集成：登录列表新增"中转商 / 自定义端点…"，引导流程含新增、从 cc-switch 导入（读 `~/.cc-switch/config.json`，key 引用 `$ANTHROPIC_AUTH_TOKEN` 跟随 cc-switch 当前激活项，不复制明文 token）、管理已有（测试/删除）。
+  - key 安全：models.json 只写 `$ENV_NAME` 引用，明文 key 绝不落盘；粘贴的 key 仅用于当场探测。
+  - 验证：95 项单元测试（含本地 mock 中转的探测分类/鉴权失败/直连兜底/cc-switch 解析）+ CLI 对本地 mock 的 add/test/models/list/remove 端到端实测。待人类用自己的真实中转做一次真实验收。
 
 ---
 

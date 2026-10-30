@@ -50,6 +50,9 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     case 'worker': {
       const { workerCommand } = await import('./worker-command.ts'); await workerCommand(options, paths); return;
     }
+    case 'relay': {
+      const { relayCommand } = await import('./relay-cli.ts'); await relayCommand(options, paths); return;
+    }
     case 'daemon': {
       if (options.args.length) throw Error('daemon does not accept positional arguments');
       const { runDaemon } = await import('./daemon.ts'); await runDaemon(paths); return;

@@ -53,7 +53,7 @@ export async function createWorkspace(options: WorkspaceOptions = {}): Promise<W
   const auth = await createAuthService(paths.agentDir, { getDeviceId: () => deviceId(paths) });
   const cwd = resolve(options.cwd || process.cwd());
   let runtime: AgentSessionRuntime;
-  const host = createAuthHost(auth, () => runtime);
+  const host = createAuthHost(auth, () => runtime, paths.agentDir);
 
   const createRuntime: CreateAgentSessionRuntimeFactory = async function createProjectRuntime({ cwd: targetCwd, sessionManager, sessionStartEvent }) {
     const services = await createAgentSessionServices({

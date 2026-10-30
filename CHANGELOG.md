@@ -15,6 +15,7 @@ Scheduling and daemon:
 
 Workspace and council:
 
+- Relay providers: `/login` now offers 中转商/自定义端点 — guided setup for OpenAI/Anthropic-compatible relays with connectivity probing (dual-path: runtime fetch first, raw direct fallback when a global proxy swallows loopback), model listing and enablement. CLI trio `kepos relay add|test|models` (plus list/remove). Keys are never written to disk: models.json keeps `$ENV` references, and cc-switch providers can be imported following the active `$ANTHROPIC_AUTH_TOKEN`.
 - Budget gates: per-task token/cost caps (orbital_delegate budgetTokens) stop spend mid-run with evidence kept; daily caps refuse new dispatch; stalled tasks are flagged for review — termination is the human's call, confirmed per call in strict mode.
 - orbital_vote council voting: delegate votes via the VOTE output convention, the lead agent's own vote labeled as the dispatching party, tallies presented to the human; member risk notes in orbital_profiles.
 - Workspace completions: plan dependency tree, step rescheduling (scheduler.reschedule), gate veto flow, member Skill editing, project removal, Ctrl+K command palette, and mid-turn submission queueing.
