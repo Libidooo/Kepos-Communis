@@ -198,97 +198,119 @@ export function importCcSwitchProvider(agentDir: string, provider: CcSwitchProvi
  * Guided relay setup inside the workspace (/login → 中转商). Keys typed here are used
  * for the immediate probe only and are never persisted; models.json keeps $ENV refs.
  */
+function probeSummary(probe: ProbeResult): string {
+  return probe.ok
+    ? `连通成功 · ${probe.api} · ${probe.latencyMs}ms · 可用模型 ${probe.models?.length ?? 0} 个`
+    : `连通失败：${probe.error}${probe.status ? '（HTTP ' + probe.status + '）' : ''}`;
+}
+
+function probeDetailLines(probe: ProbeResult): string[] {
+  return probe.ok
+    ? [`✅ 连通成功 · ${probe.api} · ${probe.latencyMs}ms`, `可用模型 ${probe.models?.length ?? 0} 个`, probe.models?.length ? '示例：' + probe.models.slice(0, 8).join('、') + (probe.models.length > 8 ? ' …' : '') : '（端点可达但未返回模型列表）']
+    : [`❌ 连通失败：${probe.error}${probe.status ? '（HTTP ' + probe.status + '）' : ''}`, `耗时 ${probe.latencyMs}ms`, '提示：确认环境变量 key 已设置，或用 kepos relay test --key <key> 单次验证'];
+}
+
+/** Checkbox picker over the relay's model list; every model starts enabled. */
+async function pickModels(ui: any, models: string[]): Promise<string[]> {
+  const chosen = new Set<string>(models);
+  while (true) {
+    const rows = models.map(id => (chosen.has(id) ? '[✓] ' : '[ ] ') + id);
+    const pick = await ui.select(`可用模型 ${models.length} 个 · 已选 ${chosen.size} 个（Esc 保留当前选择）`, [...rows, '✔ 完成，保存当前选择', '全选', '全不选']);
+    if (pick === '✔ 完成，保存当前选择') break;
+    if (pick === '全选') { models.forEach(id => chosen.add(id)); continue; }
+    if (pick === '全不选') { chosen.clear(); continue; }
+    if (!pick) break;
+    const id = pick.slice(4);
+    if (chosen.has(id)) chosen.delete(id); else chosen.add(id);
+  }
+  return [...chosen];
+}
+
+/** Ask for the key's environment variable name; a pasted key is detected and pushed into the user environment via setx. */
+async function askRelayKeyEnv(ui: any, name: string): Promise<{ keyEnv: string; pastedKey?: string }> {
+  let keyEnv = (await ui.input('Key 环境变量名（key 只存引用，不写入文件）', relayEnvName(name)))?.trim() || relayEnvName(name);
+  let pastedKey: string | undefined;
+  // A very common slip: the key itself pasted into the env-name field. Detect and
+  // persist it to the user environment (registry via setx), never to models.json.
+  if (/^sk-/.test(keyEnv) || keyEnv.length > 64 || /[^A-Za-z0-9_]/.test(keyEnv)) {
+    pastedKey = keyEnv;
+    keyEnv = relayEnvName(name);
+    if (process.platform === 'win32' && await ui.confirm('检测到粘贴的是 key 本身', `key 不会写入配置文件。把它写入用户环境变量 ${keyEnv}（系统注册表，非明文文件）？选"否"则自行配置。`)) {
+      const { spawnSync } = await import('node:child_process');
+      const result = spawnSync('setx', [keyEnv, pastedKey], { encoding: 'utf8', windowsHide: true });
+      if (result.status === 0) { pastedKey = undefined; ui.notify(`已写入环境变量 ${keyEnv}；新开的进程生效。`); }
+      else ui.notify('写入环境变量失败：' + String(result.stderr || result.stdout).slice(0, 200), 'warning');
+    }
+  }
+  return { keyEnv, pastedKey };
+}
+
+/** Returns true when a relay was actually saved; cancellations return false to re-show the menu. */
+async function addRelayFlow(ui: any, agentDir: string): Promise<boolean> {
+  const name = (await ui.input('中转商名称', '如 my-relay'))?.trim();
+  if (!name) return false;
+  const rawBaseUrl = (await ui.input('API 地址', 'https://relay.example（OpenAI 兼容可省 /v1，会自动补全）'))?.trim();
+  if (!rawBaseUrl) return false;
+  const apiPick = await ui.select('协议类型', Object.values(RELAY_API_LABELS));
+  if (!apiPick) return false;
+  const api = (Object.keys(RELAY_API_LABELS) as RelayApi[]).find(key => RELAY_API_LABELS[key] === apiPick) || 'openai-completions';
+  const normalized = normalizeRelayBaseUrl(rawBaseUrl, api);
+  let baseUrl = rawBaseUrl;
+  if (normalized.changed) {
+    const urlChoice = await ui.select('URL 处理', [`自动补全 → ${normalized.url}`, `按原样使用（完整 URL，不补全）→ ${rawBaseUrl}`, '重新输入地址']);
+    if (!urlChoice || urlChoice.startsWith('重新输入')) return false;
+    baseUrl = urlChoice.startsWith('自动补全') ? normalized.url : rawBaseUrl;
+  } else {
+    baseUrl = normalized.url;
+  }
+  const { keyEnv, pastedKey } = await askRelayKeyEnv(ui, name);
+  const instantKey = pastedKey ?? (await ui.input('立即测试？可粘贴 key（仅本次使用，绝不保存；留空则用环境变量）', ''))?.trim();
+  const probe = await probeRelay(baseUrl, instantKey || process.env[keyEnv]);
+  if (!await ui.confirm(probe.ok ? '连通成功' : '连通失败', probeSummary(probe) + '\n仍按当前配置保存？')) return false;
+  const enabled = probe.ok && probe.models?.length ? await pickModels(ui, probe.models) : undefined;
+  upsertRelay(agentDir, RELAY_ID_PREFIX + slugify(name), { name, baseUrl, api, apiKey: '$' + keyEnv }, enabled);
+  if (!enabled.length) ui.notify('⚠ 未启用任何模型：该中转不会出现在模型列表里。重新走一遍流程并勾选模型。', 'warning');
+  ui.notify(`已保存 ${name}（${baseUrl}），key 引用 $${keyEnv}。请完全退出 Kepos 并从新终端重启（模型目录和环境变量都在启动时加载，/reload 不够）。`, 'info');
+  return true;
+}
+
+/** Returns true when a provider was imported. */
+async function importCcSwitchFlow(ui: any, agentDir: string): Promise<boolean> {
+  const { homedir } = await import('node:os');
+  const providers = readCcSwitchProviders(homedir());
+  if (!providers.length) { ui.notify('未找到 cc-switch 配置（~/.cc-switch/config.json）或其中没有可用供应商', 'warning'); return false; }
+  const pick = await ui.select('选择要导入的 cc-switch 供应商（key 引用 $ANTHROPIC_AUTH_TOKEN，跟随 cc-switch 当前激活项）', providers.map(provider => `${provider.name} · ${provider.baseUrl}`));
+  if (!pick) return false;
+  const provider = providers.find(item => `${item.name} · ${item.baseUrl}` === pick)!;
+  const id = importCcSwitchProvider(agentDir, provider);
+  ui.notify(`已导入 ${id}。key 跟随 cc-switch 当前激活项（$ANTHROPIC_AUTH_TOKEN）；/reload 生效。`, 'info');
+  return true;
+}
+
+/** One manage pass: pick a relay, then test or delete it. */
+async function manageRelaysFlow(ui: any, agentDir: string): Promise<void> {
+  const relays = readRelays(agentDir);
+  const ids = Object.keys(relays);
+  if (!ids.length) { ui.notify('还没有已保存的中转商', 'info'); return; }
+  const pick = await ui.select('选择中转商（Enter 查看/删除）', ids.map(id => `${id} · ${relays[id].baseUrl}`));
+  if (!pick) return;
+  const id = pick.split(' · ')[0];
+  const action = await ui.select(id, ['测试连通（用当前环境变量 key）', '删除', '返回']);
+  if (action === '删除') {
+    if (await ui.confirm('删除 ' + id + '？', '只移除 models.json 中的条目；环境变量不动。')) { removeRelay(agentDir, id); ui.notify('已删除 ' + id + '；/reload 生效。'); }
+  } else if (action === '测试连通（用当前环境变量 key）') {
+    const probe = await probeRelay(relays[id].baseUrl, resolveRelayKey(relays[id]));
+    await ui.confirm(probe.ok ? '✅ 连通成功' : '❌ 连通失败', probeDetailLines(probe).join('\n'));
+  }
+}
+
 export async function relaySetupFlow(ctx: any, agentDir: string): Promise<void> {
   const ui = ctx.ui;
   while (true) {
     const choice = await ui.select('Kepos · 中转商 / 自定义端点', ['新增中转商', '从 cc-switch 导入', '管理已有中转商', '返回']);
-    if (choice !== '新增中转商' && choice !== '从 cc-switch 导入' && choice !== '管理已有中转商') return;
-    if (choice === '新增中转商') {
-      const name = (await ui.input('中转商名称', '如 my-relay'))?.trim();
-      if (!name) continue;
-      const rawBaseUrl = (await ui.input('API 地址', 'https://relay.example（OpenAI 兼容可省 /v1，会自动补全）'))?.trim();
-      if (!rawBaseUrl) continue;
-      const apiPick = await ui.select('协议类型', Object.values(RELAY_API_LABELS));
-      if (!apiPick) continue;
-      const api = (Object.keys(RELAY_API_LABELS) as RelayApi[]).find(key => RELAY_API_LABELS[key] === apiPick) || 'openai-completions';
-      const normalized = normalizeRelayBaseUrl(rawBaseUrl, api);
-      let baseUrl = rawBaseUrl;
-      if (normalized.changed) {
-        const urlChoice = await ui.select('URL 处理', [`自动补全 → ${normalized.url}`, `按原样使用（完整 URL，不补全）→ ${rawBaseUrl}`, '重新输入地址']);
-        if (!urlChoice || urlChoice.startsWith('重新输入')) continue;
-        baseUrl = urlChoice.startsWith('自动补全') ? normalized.url : rawBaseUrl;
-      } else {
-        baseUrl = normalized.url;
-      }
-      let keyEnv = (await ui.input('Key 环境变量名（key 只存引用，不写入文件）', relayEnvName(name)))?.trim() || relayEnvName(name);
-      let pastedKey: string | undefined;
-      // A very common slip: the key itself pasted into the env-name field. Detect and
-      // persist it to the user environment (registry via setx), never to models.json.
-      if (/^sk-/.test(keyEnv) || keyEnv.length > 64 || /[^A-Za-z0-9_]/.test(keyEnv)) {
-        pastedKey = keyEnv;
-        keyEnv = relayEnvName(name);
-        if (process.platform === 'win32' && await ui.confirm('检测到粘贴的是 key 本身', `key 不会写入配置文件。把它写入用户环境变量 ${keyEnv}（系统注册表，非明文文件）？选"否"则自行配置。`)) {
-          const { spawnSync } = await import('node:child_process');
-          const result = spawnSync('setx', [keyEnv, pastedKey], { encoding: 'utf8', windowsHide: true });
-          if (result.status === 0) { pastedKey = undefined; ui.notify(`已写入环境变量 ${keyEnv}；新开的进程生效。`); }
-          else ui.notify('写入环境变量失败：' + String(result.stderr || result.stdout).slice(0, 200), 'warning');
-        }
-      }
-      const instantKey = pastedKey ?? (await ui.input('立即测试？可粘贴 key（仅本次使用，绝不保存；留空则用环境变量）', ''))?.trim();
-      const probe = await probeRelay(baseUrl, instantKey || process.env[keyEnv]);
-      const summary = probe.ok
-        ? `连通成功 · ${probe.api} · ${probe.latencyMs}ms · 可用模型 ${probe.models?.length ?? 0} 个`
-        : `连通失败：${probe.error}${probe.status ? '（HTTP ' + probe.status + '）' : ''}`;
-      if (!await ui.confirm(probe.ok ? '连通成功' : '连通失败', summary + '\n仍按当前配置保存？')) continue;
-      let enabled: string[] | undefined;
-      if (probe.ok && probe.models?.length) {
-        // Checkbox-style picker, all models pre-enabled: the user unchecks what they
-        // do not want. An empty save would make the relay invisible in the model list.
-        const chosen = new Set<string>(probe.models);
-        while (true) {
-          const rows = probe.models.map(id => (chosen.has(id) ? '[✓] ' : '[ ] ') + id);
-          const pick = await ui.select(`可用模型 ${probe.models.length} 个 · 已选 ${chosen.size} 个（Esc 保留当前选择）`, [...rows, '✔ 完成，保存当前选择', '全选', '全不选']);
-          if (pick === '✔ 完成，保存当前选择') break;
-          if (pick === '全选') { probe.models.forEach(id => chosen.add(id)); continue; }
-          if (pick === '全不选') { chosen.clear(); continue; }
-          if (!pick) break;
-          const id = pick.slice(4);
-          if (chosen.has(id)) chosen.delete(id); else chosen.add(id);
-        }
-        if (chosen.size) enabled = [...chosen];
-      }
-      upsertRelay(agentDir, RELAY_ID_PREFIX + slugify(name), { name, baseUrl, api, apiKey: '$' + keyEnv }, enabled);
-      if (!enabled?.length) ui.notify('⚠ 未启用任何模型：该中转不会出现在模型列表里。重新走一遍流程并勾选模型。', 'warning');
-      ui.notify(`已保存 ${name}（${baseUrl}），key 引用 $${keyEnv}。请完全退出 Kepos 并从新终端重启（模型目录和环境变量都在启动时加载，/reload 不够）。`, 'info');
-      return;
-    }
-    if (choice === '从 cc-switch 导入') {
-      const { homedir } = await import('node:os');
-      const providers = readCcSwitchProviders(homedir());
-      if (!providers.length) { ui.notify('未找到 cc-switch 配置（~/.cc-switch/config.json）或其中没有可用供应商', 'warning'); continue; }
-      const pick = await ui.select('选择要导入的 cc-switch 供应商（key 引用 $ANTHROPIC_AUTH_TOKEN，跟随 cc-switch 当前激活项）', providers.map(provider => `${provider.name} · ${provider.baseUrl}`));
-      if (!pick) continue;
-      const provider = providers.find(item => `${item.name} · ${item.baseUrl}` === pick)!;
-      const id = importCcSwitchProvider(agentDir, provider);
-      ui.notify(`已导入 ${id}。key 跟随 cc-switch 当前激活项（$ANTHROPIC_AUTH_TOKEN）；/reload 生效。`, 'info');
-      return;
-    }
-    // 管理已有中转商
-    const relays = readRelays(agentDir);
-    const ids = Object.keys(relays);
-    if (!ids.length) { ui.notify('还没有已保存的中转商', 'info'); continue; }
-    const pick = await ui.select('选择中转商（Enter 查看/删除）', ids.map(id => `${id} · ${relays[id].baseUrl}`));
-    if (!pick) continue;
-    const id = pick.split(' · ')[0];
-    const action = await ui.select(id, ['测试连通（用当前环境变量 key）', '删除', '返回']);
-    if (action === '删除') {
-      if (await ui.confirm('删除 ' + id + '？', '只移除 models.json 中的条目；环境变量不动。')) { removeRelay(agentDir, id); ui.notify('已删除 ' + id + '；/reload 生效。'); }
-    } else if (action === '测试连通（用当前环境变量 key）') {
-      const probe = await probeRelay(relays[id].baseUrl, resolveRelayKey(relays[id]));
-      const lines = probe.ok
-        ? [`✅ 连通成功 · ${probe.api} · ${probe.latencyMs}ms`, `可用模型 ${probe.models?.length ?? 0} 个`, probe.models?.length ? '示例：' + probe.models.slice(0, 8).join('、') + (probe.models.length > 8 ? ' …' : '') : '（端点可达但未返回模型列表）']
-        : [`❌ 连通失败：${probe.error}${probe.status ? '（HTTP ' + probe.status + '）' : ''}`, `耗时 ${probe.latencyMs}ms`, '提示：确认环境变量 key 已设置，或用 kepos relay test --key <key> 单次验证'];
-      await ui.confirm(probe.ok ? '✅ 连通成功' : '❌ 连通失败', lines.join('\n'));
-    }
+    if (choice === '新增中转商') { if (await addRelayFlow(ui, agentDir)) return; }
+    else if (choice === '从 cc-switch 导入') { if (await importCcSwitchFlow(ui, agentDir)) return; }
+    else if (choice === '管理已有中转商') await manageRelaysFlow(ui, agentDir);
+    else return;
   }
 }
