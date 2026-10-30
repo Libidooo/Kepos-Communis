@@ -10,6 +10,10 @@ export interface AgentProfile {
   roleKey?: string;
   tools?: string[];
   skills?: string[];
+  /** Read visibility for delegated workers: 'project' confines to the task directory, 'machine' allows everything except Kepos data and credential locations. */
+  readScope?: 'project' | 'machine';
+  /** Extra readable directories on top of the task directory. */
+  readAllow?: string[];
 }
 
 export interface ProfileRevision {

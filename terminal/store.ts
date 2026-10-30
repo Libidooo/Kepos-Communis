@@ -16,6 +16,8 @@ export interface Config {
   sessionLinks: Record<string, string>;
   initialized?: boolean;
   approvalPolicy?: import('./approval.ts').ApprovalPolicy;
+  /** Default read scope for delegated workers; tasks and members may override. */
+  workerReadScope?: import('./worker-sandbox.ts').ReadScope;
 }
 
 const snapshots = new WeakMap<Config, Config>();

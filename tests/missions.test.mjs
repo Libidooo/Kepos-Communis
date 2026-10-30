@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {createHash} from 'node:crypto';
 import {OrbitalDatabase} from '../dist/terminal/database.js';
 import {MissionScheduler} from '../dist/terminal/scheduler.js';
 const agent={name:'Expert',model:'fixture',provider:'fixture',role:'read only'};
@@ -62,4 +63,16 @@ test('stopping a drained scheduler permits a new runner to continue a human-appr
 test('mission scope only starts the explicitly selected plan',async t=>{
  const f=fixture(t);const a=f.enqueue([{agent,task:'A'}]);const b=f.enqueue([{agent,task:'B'}]);
  const scoped=new MissionScheduler(f.db,f.pool,{missionIds:[a.id]});try{await scoped.tick();assert.equal(f.dispatch.length,1);assert.match(f.dispatch[0].text,/Assigned step: A/);assert.equal(f.scheduler.get(b.id).state,'QUEUED');}finally{scoped.cancel(a.id,'parent');await scoped.tick();scoped.stop();}
+});
+
+test('dispatch persists a hashed capability, not the live one',async t=>{
+ const f=fixture(t);const agentWithScope={...agent,readScope:'machine',readAllow:['C:/refs']};const m=f.enqueue([{id:'scan',agent:agentWithScope,task:'scan'}]);
+ await f.scheduler.tick();assert.equal(f.dispatch.length,1);
+ const row=f.db.prepare('SELECT handle FROM mission_jobs WHERE mission_id=?').get(m.id);
+ const stored=JSON.parse(row.handle);
+ assert.equal(stored.capability,createHash('sha256').update('fake').digest('hex'));
+ assert.notEqual(stored.capability,f.dispatch[0].h.capability);
+ // The dispatched worker keeps read-scope metadata for the sandbox flags.
+ assert.equal(f.dispatch[0].a.readScope,'machine');
+ assert.deepEqual(f.dispatch[0].a.readAllow,['C:/refs']);
 });

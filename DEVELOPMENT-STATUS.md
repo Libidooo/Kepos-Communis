@@ -9,7 +9,7 @@
 ## 已知问题与待决事项（需人类拍板）
 
 - D1（已决策并实施，2026-10-30）主 Agent 绕过人工门禁：新增三态审批模式（F2 → 审批模式，存于配置）——严格（默认：拦截触碰门禁/Kepos 数据的 bash/edit/write，弹人工确认，无界面时直接拦截）、代理审批（模型可用 orbital_plan approve 自主批准并留痕）、只读监督（移除 bash/powershell/edit/write）。边界说明：严格/代理是确认与审计屏障，防顺手绕过不防刻意混淆；硬边界是只读模式，见 SECURITY.md。
-- D2 子 Agent 继承全部环境变量且可读项目外文件；建议环境变量白名单、默认仅项目目录、永不读 Kepos home 与凭据。
+- D2（已决策并实施，2026-10-30）子 Agent 沙箱：环境变量白名单（KEPOS_WORKER_ENV_PASSTHROUGH 可显式放行）、worker 内置读取沙箱扩展（永远拒绝 Kepos 数据目录与凭据位置；读取范围按次分派可调——默认 project 限任务目录，可声明 machine 或 readAllow 白名单）、mission_jobs 的 capability 改存哈希。边界：模型调用仍需自读服务商凭据（无模型代理架构前不可避免），见 SECURITY.md。
 - D3 Windows 服务经 sc.exe 注册很可能无法启动（未验证）；建议改为登录时计划任务。
 - D4 TUI、CLI、daemon 各自维护 WorkerPool；需先写统一调度设计再实施。
 - D5 四种模式、Tab 排队、Ctrl+K、计划步骤树等交互设想需先出界面草图再实现。

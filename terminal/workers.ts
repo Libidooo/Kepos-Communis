@@ -219,7 +219,7 @@ export class WorkerPool {
   if (!crew.model?.trim()) throw Error('Worker model is empty');
   if (tools.some(tool => !(READ_ONLY_TOOLS as readonly string[]).includes(tool))) throw Error('Unapproved tool; no child started');
   if (mcp) throw Error('MCP server-scoped approval is not implemented; request human setup rather than broad access');
-  return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role };
+  return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow };
  }
  private executor(profile: WorkerProfile): WorkerExecutor | undefined {
   const key = JSON.stringify(profile);

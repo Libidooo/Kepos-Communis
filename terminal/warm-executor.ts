@@ -3,6 +3,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
+import { dataRoot } from './paths.ts';
+import { sandboxArgs, type ReadScope } from './worker-sandbox.ts';
 
 export function killTree(child: ChildProcess) {
  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -15,7 +17,17 @@ export function killTree(child: ChildProcess) {
  }
 }
 
-export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string };
+export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[] };
+// Workers get only what Node, the terminal and Pi credential lookup need; every other
+// variable in the operator's shell (API keys, cloud tokens) stays out of the child.
+const WORKER_ENV_KEYS = ['PATH', 'PATHEXT', 'COMSPEC', 'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'TEMP', 'TMP', 'SYSTEMROOT', 'SYSTEMDRIVE', 'LANG', 'LC_ALL', 'TERM', 'PI_CODING_AGENT_DIR', 'KEPOS_AGENT_DIR'];
+export function workerEnv(base: NodeJS.ProcessEnv, pid: number): NodeJS.ProcessEnv {
+ const passthrough = (base.KEPOS_WORKER_ENV_PASSTHROUGH || '').split(',').map(key => key.trim()).filter(Boolean);
+ const env: NodeJS.ProcessEnv = {};
+ for (const key of [...new Set([...WORKER_ENV_KEYS, ...passthrough])]) { const value = base[key]; if (value !== undefined) env[key] = value; }
+ env.ORBITAL_PARENT_PID = String(pid);
+ return env;
+}
 export class WarmExecutor {
  readonly child: ChildProcess;
  readonly key: string;
@@ -41,9 +53,10 @@ export class WarmExecutor {
    ...(profile.tools.length ? ['--tools', profile.tools.join(',')] : ['--no-tools']),
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
+   ...sandboxArgs({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }, join(dirname(fileURLToPath(import.meta.url)), 'worker-sandbox.js')),
    '--append-system-prompt', `Delegated role: ${profile.role}. Read-only scope. Do not access credentials. Work only on the assigned task; return verifiable findings.`];
   this.child = spawnWorker(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'worker-host.cjs'), ...args], {
-   cwd: profile.cwd, env: { ...process.env, ORBITAL_PARENT_PID: String(process.pid) }, windowsHide: true,
+   cwd: profile.cwd, env: workerEnv(process.env, process.pid), windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
   this.child.stdout!.setEncoding('utf8');

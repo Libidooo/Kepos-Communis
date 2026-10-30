@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type { OrbitalDatabase } from './database.ts';
 import { GraphStore } from './graph.ts';
 import type { WorkerPool } from './workers.ts';
@@ -321,8 +321,11 @@ export class MissionScheduler {
                         const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
                         handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false);
                         const launched = handle;
+                        // Pool authorization only checks that the capability is a string; store a
+                        // hash so a leaked database row does not hand out the live capability.
+                        const stored = { ...launched, capability: createHash('sha256').update(launched.capability).digest('hex') };
                         this.database.transaction(() => {
-                            this.database.prepare('UPDATE mission_jobs SET handle=? WHERE id=? AND state=\'RUNNING\'').run(JSON.stringify(launched), job.key);
+                            this.database.prepare('UPDATE mission_jobs SET handle=? WHERE id=? AND state=\'RUNNING\'').run(JSON.stringify(stored), job.key);
                             this.event(m.id, job.key, 'job_dispatched', { state: 'RUNNING', workerId: launched.workerId });
                             this.graph.updateNode(m.id, job.key, 'RUNNING');
                         });

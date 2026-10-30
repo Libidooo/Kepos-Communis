@@ -16,4 +16,13 @@ The main agent runs with the Pi SDK's default tools (read/bash/edit/write), so a
 
 This is an application-level control: pattern matching can be evaded by a model deliberately obfuscating commands, and the strict/proxy postures are audit-and-confirm barriers rather than cryptographic guarantees. The hard boundary is the readonly posture. OS-level isolation of the store is tracked as future work.
 
+## Worker sandbox (0.3.0-beta.5)
+
+Delegated workers run as separate Pi processes with read-only tools only (read/grep/find/ls; anything else is refused at launch). Two controls bound what they can reach:
+
+- **Environment whitelist**: worker processes receive only Node/runtime essentials, Pi's credential-directory variables, and `ORBITAL_PARENT_PID`. Secrets in the operator's shell (API keys, cloud tokens) no longer reach workers. Providers that authenticate through environment variables can be passed explicitly with `KEPOS_WORKER_ENV_PASSTHROUGH=KEY1,KEY2`.
+- **Read sandbox**: a sandbox extension loaded into every worker guards the read tools' targets. Always refused, with no override: the Kepos data directory (`workspace.json`, `orbital.sqlite`), credential stores (`.ssh`, `.aws`, `.gnupg`, `.azure`, `.kube`, `.docker`, `.gcloud`), and auth-style files (`auth.json`, `.env`, `credentials`, `id_rsa`) under the user home. Beyond that, read scope is adjustable per delegation: `project` (default — the task directory plus `readAllow` directories) or `machine` (everything except the deny list). Confidentiality-sensitive delegations should stay on `project`.
+
+Boundaries: the sandbox intercepts the model's tool calls, not Pi's internal file access — a worker still reads the provider credentials it needs to call its model, which is unavoidable without a model-proxy architecture. Reads that are allowed still flow back to the lead agent as evidence. The capability stored in `mission_jobs` rows is now a hash, so a leaked database no longer hands out live handles.
+
 To report a security issue, open a private GitHub security report on the repository or contact the maintainer before publishing exploit details.
