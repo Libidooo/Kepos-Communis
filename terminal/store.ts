@@ -133,6 +133,8 @@ export function restoreProfile(config: Config, agentId: string, revision: string
   if (config.agents.some(agent => agent.id !== agentId && agent.name === saved.profile.name)) {
     throw Error('恢复后的名称与现有成员冲突，请先调整名称');
   }
+  // Replace the whole profile: optional fields absent from the old revision must not survive the restore.
+  for (const key of ['roleKey', 'skills', 'tools'] as const) delete member[key];
   Object.assign(member, structuredClone(saved.profile));
   saveConfig(config);
   return member;

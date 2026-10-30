@@ -57,3 +57,27 @@ test('worker defaults respect saved readonly tool presets and preserve the profi
  assert.equal(pool.result(handle, 'parent').profileRevision, agentRevision(profile));
  pool.close(); db.close();
 });
+
+test('roleKey is part of the revision, so choosing a custom role after a preset saves cleanly', async () => {
+ const { loadConfig, saveConfig, profileHistory } = await import('../dist/terminal/store.js');
+ const config = loadConfig();
+ const member = { id: 'rolekey', name: 'Rolekey', model: 'fixture', provider: 'fixture', role: 'Audit', roleKey: 'auditor', tools: ['read'] };
+ config.agents.push(member); saveConfig(config);
+ assert.notEqual(agentRevision(member), agentRevision({ ...member, roleKey: undefined }));
+ delete config.agents.find(agent => agent.id === 'rolekey').roleKey;
+ assert.doesNotThrow(() => saveConfig(config));
+ assert.equal(profileHistory().list('rolekey').length, 2);
+});
+
+test('restoring a revision without roleKey or skills clears them from the current profile', async () => {
+ const { loadConfig, saveConfig, restoreProfile } = await import('../dist/terminal/store.js');
+ const config = loadConfig();
+ const plain = { id: 'restore-clear', name: 'Restore clear', model: 'fixture', provider: 'fixture', role: 'Plain', tools: ['read'] };
+ config.agents.push({ ...plain }); saveConfig(config);
+ const first = agentRevision(plain);
+ Object.assign(config.agents.find(agent => agent.id === plain.id), { roleKey: 'auditor', skills: ['fixture-skill'], role: 'Audit' }); saveConfig(config);
+ const restored = restoreProfile(config, plain.id, first);
+ assert.equal(restored.role, 'Plain');
+ assert.equal('roleKey' in restored, false);
+ assert.equal('skills' in restored, false);
+});

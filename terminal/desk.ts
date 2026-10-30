@@ -35,7 +35,7 @@ export class Desk {
  this.sending=!ctx.isIdle();this.folded=new Set(config.folded);this.editor=new Editor(tui,{borderColor:(s:string)=>theme.fg('borderMuted',s),selectList:getSelectListTheme()},{paddingX:1});
  this.savedDraftBeforeCommand=config.drafts[this.sessionKey()]||'';this.editor.setText(this.savedDraftBeforeCommand);this.editor.focused=true;
  this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...localCommands,...commands.filter((c:any)=>!localCommands.some(l=>l.name===c.name)).map((c:any)=>({name:c.name,description:(c.source==='skill'?'[Skill] ':c.source==='prompt'?'[提示词] ':'[扩展命令] ')+(c.description||'')}))],ctx.cwd));
- this.editor.onChange=()=>{const draft=this.editor.getExpandedText();if(draft&&!draft.startsWith('/'))this.savedDraftBeforeCommand=draft;config.drafts[this.sessionKey()]=this.editor.getExpandedText();clearTimeout(this.draftTimer);this.draftTimer=setTimeout(()=>{try{saveConfig(config)}catch{}},250);};
+ this.editor.onChange=()=>{const draft=this.editor.getExpandedText();if(draft&&!draft.startsWith('/'))this.savedDraftBeforeCommand=draft;config.drafts[this.sessionKey()]=this.editor.getExpandedText();clearTimeout(this.draftTimer);this.draftTimer=setTimeout(()=>{try{saveConfig(config)}catch(error){this.notice='草稿保存失败：'+clean(error);this.refresh();}},250);};
  this.editor.onSubmit=text=>this.send(text);
  }
  sessionTasks(){return this.pool.tasks.filter(t=>t.cwd===this.ctx.cwd&&t.parentSessionId===this.ctx.sessionManager.getSessionId());}
@@ -158,7 +158,7 @@ export class Desk {
  if(this.focus==='input'){this.editor.focused=this.focused;this.editor.handleInput(data);return;}
  if(matchesKey(data,Key.up)){if(this.focus==='projects')this.selected=Math.max(0,this.selected-1);else this.crewIndex=Math.max(0,this.crewIndex-1);this.readStart=null;}
  if(matchesKey(data,Key.down)){if(this.focus==='projects')this.selected=Math.min(this.rows().length-1,this.selected+1);else this.crewIndex=Math.min(this.config.agents.length-1,this.crewIndex+1);this.readStart=null;}
- if(matchesKey(data,Key.enter)){if(this.focus==='crew'){this.finish({kind:'crew',id:this.config.agents[this.crewIndex]?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch{}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
+ if(matchesKey(data,Key.enter)){if(this.focus==='crew'){this.finish({kind:'crew',id:this.config.agents[this.crewIndex]?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch(error){this.notice='配置保存失败：'+clean(error);}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
  this.refresh();
  }
  handleMouse(e:any){if(e.shift)return;

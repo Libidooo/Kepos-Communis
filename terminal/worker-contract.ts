@@ -26,7 +26,8 @@ export type AgentProfileSnapshot = {
     mcp: boolean;
     revision: string;
 };
+// v2 adds roleKey: stored revisions carry it, so two profiles differing only by roleKey must not share a hash.
 export const profileRevision = (profile: Omit<AgentProfileSnapshot, 'revision'>) => createHash('sha256').update(JSON.stringify({
-    name: profile.name, role: profile.role, model: profile.model, provider: profile.provider,
+    v: 2, name: profile.name, role: profile.role, roleKey: profile.roleKey || null, model: profile.model, provider: profile.provider,
     tools: [...new Set(profile.tools)].sort(), skills: [...new Set(profile.skills)].sort(), mcp: profile.mcp,
 })).digest('hex');

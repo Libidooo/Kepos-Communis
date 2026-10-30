@@ -38,7 +38,7 @@ function canonicalProfile(profile: AgentProfile): AgentProfile {
 
 export function agentRevision(profile: AgentProfile): string {
   const value = canonicalProfile(profile);
-  return profileRevision({ name: value.name, model: value.model, provider: value.provider, role: value.role, tools: value.tools!, skills: value.skills ?? [], mcp: false });
+  return profileRevision({ name: value.name, model: value.model, provider: value.provider, role: value.role, roleKey: value.roleKey, tools: value.tools!, skills: value.skills ?? [], mcp: false });
 }
 
 /** Revision history belongs to a stable profile ID; deleting a member keeps its history. */
