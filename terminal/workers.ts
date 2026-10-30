@@ -363,15 +363,11 @@ export class WorkerPool {
      if (task.stalled) { task.stalled = false; this.persist(task, 'progress_resumed'); }
      task.usage = usage;
      setOutput(typeof final.content === 'string' ? final.content : (final.content || []).filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n'));
-     if (usage) {
-      const limits = budgetProvider();
-      const tokenCap = task.budgetTokens ?? limits.perTaskTokens;
-      const spent = spentTokens(usage);
-      if ((tokenCap && spent > tokenCap) || (limits.perTaskCost && Number(usage.cost?.total) > limits.perTaskCost)) {
-       this.emit({ type: 'task_budget_stop', task: { ...task }, spentTokens: spent });
-       terminate('CANCELLED', '到达预算上限，已停止消耗；证据保留，请人工审核后调整预算重新分派');
-       return;
-      }
+     const breach = usage ? this.budgetBreach(task, usage) : null;
+     if (breach !== null) {
+      this.emit({ type: 'task_budget_stop', task: { ...task }, spentTokens: breach });
+      terminate('CANCELLED', '到达预算上限，已停止消耗；证据保留，请人工审核后调整预算重新分派');
+      return;
      }
     }
     if (event.type === 'tool_execution_start') { task.tool = event.toolName; this.persist(task, 'tool_start'); }
@@ -411,6 +407,15 @@ export class WorkerPool {
    cost += Number(usage.cost?.total) || 0;
   }
   return { tokens, cost };
+ }
+ /** The spent-token total when this usage crosses the task's budget, else null. */
+ private budgetBreach(task: Task, usage: any): number | null {
+  const limits = budgetProvider();
+  const tokenCap = task.budgetTokens ?? limits.perTaskTokens;
+  const spent = spentTokens(usage);
+  if (tokenCap && spent > tokenCap) return spent;
+  if (limits.perTaskCost && Number(usage.cost?.total) > limits.perTaskCost) return spent;
+  return null;
  }
  launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number): WorkerHandle {
   if (this.closed) throw Error('Pool closed');
