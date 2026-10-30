@@ -242,24 +242,75 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const list=await models(ctx);if(!list.length)throw Error('没有已认证的可用模型，请先使用 /login。');
  const pick=await ctx.ui.select('选择真实模型',list.map((m:any)=>`${m.provider} / ${m.id}`));if(!pick)return;const model=list.find((m:any)=>`${m.provider} / ${m.id}`===pick);if(!model)return;
   const options=roleOptions(locale);const labels=options.map(option=>option.label);
-  const aiLabel=locale==='en'?'✨ Generate with AI (describe the goal)':'✨ AI 生成职责（输入目标想法）';
-  const customLabel=locale==='en'?'✏️ Custom role (manual input)':'✏️ 自定义职责（手动输入）';
+  const aiLabel=locale==='en'?'AI 生成职责 · 输入目标自动起草':'AI 生成职责 · 输入目标自动起草';
+  const customLabel=locale==='en'?'Custom role · manual input':'自定义职责 · 手动输入';
   const initialRole=old?.roleKey&&councilRole(old.roleKey)?.key||options[0]?.key;
+  let skills=old?.skills;let aiSkills=false;
   const rolePick=await ctx.ui.select('选择 Council 代表角色',[aiLabel,customLabel,...labels]);if(!rolePick)return;
   let roleKey: CouncilRoleKey|undefined;
   let roleText=old?.role||'独立只读调查；返回可复核证据，不修改文件。';
   const editorTitle=`职责指令（只读，默认 ${DEFAULT_TASK_SECONDS/60} 分钟；每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核）`;
   if(rolePick===aiLabel){
-   // 让主 Agent 生成代表配置：一次前台模型调用，产出可编辑的职责指令。
+   // 三步：GitHub 找同类 Skill 学习 → 主 Agent 结合已装目录起草 → 人类定稿。
    const idea=await ctx.ui.input('描述这位代表的目标/想法','如：盯住项目风险，每天汇总成清单');
    if(!idea?.trim())return;
-   ctx.ui.notify('正在生成职责…（一次模型调用，约 1-2 分钟）');
+   ctx.ui.notify('正在检索 skills.sh 同类 Skill 并起草职责…（一次模型调用，约 1-2 分钟）');
+   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
+   const found:{id:string;source:string;skillId:string;installs:number;md:string}[]=[];
    try{
+    const search=await fetch('https://www.skills.sh/api/search?q='+encodeURIComponent(idea.trim().slice(0,60)),{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.json());
+    for(const entry of ((search?.skills||[]) as any[]).slice(0,3)){
+     let md='';
+     for(const path of [entry.skillId+'/SKILL.md','skills/'+entry.skillId+'/SKILL.md']){
+      const res=await fetch(`https://raw.githubusercontent.com/${entry.source}/HEAD/${path}`,{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)});
+      if(res.ok){md=await res.text();break;}
+     }
+     if(md)found.push({id:entry.id,source:entry.source,skillId:entry.skillId,installs:entry.installs||0,md});
+    }
+   }catch{}
+   if(!found.length){
+    // skills.sh 无匹配时退回 GitHub 仓库检索，只取方法论作为起草参考。
+    try{
+     const search=await fetch('https://api.github.com/search/repositories?q='+encodeURIComponent(idea.trim().slice(0,60))+'+skill&sort=stars&per_page=3',{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.json());
+     for(const repo of ((search?.items||[]) as any[]).slice(0,3)){
+      const readme=await fetch('https://api.github.com/repos/'+repo.full_name+'/readme',{headers:{'user-agent':'kepos',accept:'application/vnd.github.raw'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.text()).catch(()=>'');
+      found.push({id:repo.full_name,source:repo.full_name,skillId:'',installs:repo.stargazers_count||0,md:String(readme||'').replace(/\s+/g,' ').slice(0,1100)});
+     }
+    }catch{}
+   }
+   let githubNote='';
+   const installedNow:string[]=[];
+   for(const item of found){
+    if(!item.md)continue;
+    githubNote+=`\nSkill ${item.id}（热度 ${item.installs}）：\n${item.md.replace(/\s+/g,' ').slice(0,1100)}\n`;
+   }
+   const top=found.find(item=>item.skillId&&item.md);
+   if(top&&await ctx.ui.confirm('发现匹配的 Skill',`\`${top.id}\`（热度 ${top.installs}）。\n安装到本地 skills 目录，供这位代表（以及所有代表）直接引用？`)){
+    try{
+     const {mkdirSync,writeFileSync}=await import('node:fs');
+     const dir=join(agentDir,'skills',top.skillId);
+     mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'SKILL.md'),top.md);
+     installedNow.push(top.skillId);
+     ctx.ui.notify(`已安装 Skill ${top.skillId}（重启后对所有代表生效）`);
+    }catch(error){ctx.ui.notify('安装失败：'+clean(error),'warning');}
+   }
+   if(!githubNote)githubNote='（无检索结果，仅依据已安装 Skill 目录起草）';
+   try{
+    const {catalog}=skillIndex();
+    const installedList=catalog.slice(0,40).map(skill=>`${skill.name}：${String(skill.description||'').slice(0,80)}`).join('\n')||'（无已安装 Skill）';
+    const installedNowNote=installedNow.length?`\n本次已安装（skills 可直接引用）：${installedNow.join(', ')}`:'';
     const generator={id:'config-generator',name:'配置生成器',model:ctx.model?.id||'',provider:ctx.model?.provider||'',role:'Kepos 代表配置生成助手',tools:['read']};
-    const task=await pool.run(generator,`根据下面的人类目标，为一位 Kepos 只读代表撰写职责指令。\n要求：200 字以内；包含只读边界、证据优先、复核节奏和交付物；语言跟随目标。\n直接输出职责指令正文，不要解释，不要 JSON。\n\n目标：${idea.trim()}`,ctx.cwd,ctx.sessionManager.getSessionFile()||'',120,undefined,ctx.sessionManager.getSessionId(),['read']);
-    if(task.output?.trim())roleText=task.output.trim();
-   }catch(error){ctx.ui.notify('生成失败，请改用手动填写：'+clean(error),'warning');}
-   const edited=await ctx.ui.editor(`职责指令（AI 已生成，可修改。${editorTitle}）`,roleText);
+    const instruction=`根据人类目标，为一位 Kepos 只读代表生成配置（JSON）。\n\n人类目标：${idea.trim()}\n\n已安装 Skill 目录（skills 字段只能从这里选，0-3 个）：\n${installedList}${installedNowNote}\n${githubNote?`\n检索到的同类 Skill 原文（学习其方法论；对应 Skill 未安装时，把方法要点写进 role 正文，并在 role 末尾加一行"可参考：来源链接"）：${githubNote}\n`:''}\n输出要求：只输出一个 JSON 对象，格式：\n{"role":"职责指令正文，300 字内：只读边界、证据优先、复核节奏、交付物；若引用了 Skill，写明何时用哪个","skills":["已安装 Skill 名"]}`;
+    const task=await pool.run(generator,instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',180,undefined,ctx.sessionManager.getSessionId(),['read']);
+    const cleaned=String(task.output||'').replace(/```(?:json)?/g,'').trim();
+    const parsed=JSON.parse(cleaned.slice(cleaned.indexOf('{'),cleaned.lastIndexOf('}')+1));
+    if(typeof parsed.role==='string'&&parsed.role.trim())roleText=parsed.role.trim();
+    const {names}=skillIndex();
+    const allowed=new Set([...names,...installedNow]);
+    const referenced=(Array.isArray(parsed.skills)?parsed.skills:[]).map((s:string)=>String(s)).filter((s:string)=>allowed.has(s)||allowed.has('skill:'+s));
+    if(referenced.length){skills=referenced;aiSkills=true;ctx.ui.notify('已引用 Skill：'+referenced.join('、'));}
+   }catch(error){ctx.ui.notify('生成失败，请改用下方自定义职责手动填写：'+clean(error),'warning');}
+   const edited=await ctx.ui.editor(`职责指令（AI 已起草，可修改。${editorTitle}）`,roleText);
    if(!edited?.trim())return;roleText=edited;
   } else if(rolePick===customLabel){
    const edited=await ctx.ui.editor(editorTitle,roleText);
@@ -276,8 +327,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(old){const presets=[{label:'全部只读工具',tools:Array.from(READ_ONLY_TOOLS)},{label:'仅读取文件',tools:['read']},{label:'不使用工具',tools:[]}];
  const existing=JSON.stringify([...(tools??READ_ONLY_TOOLS)].sort());presets.sort((a,b)=>Number(JSON.stringify([...b.tools].sort())===existing)-Number(JSON.stringify([...a.tools].sort())===existing));
  const pick=await ctx.ui.select('专家只读工具范围',presets.map(p=>p.label));if(!pick)return;tools=presets.find(p=>p.label===pick)!.tools;}
- let skills=old?.skills;
- if(old){
+ if(old&&!aiSkills){
   const {names}=skillIndex();
   const input=await ctx.ui.input('已装 Skill（逗号分隔；留空保留现有）',(old.skills??[]).join(','));
   if(input===undefined)return;
