@@ -46,6 +46,7 @@ export class WorkerPool {
  change: () => void = () => {};
  readonly epoch = randomUUID();
  readonly executors = new Set<WorkerExecutor>();
+ private executorsByTask = new Map<string, WorkerExecutor>();
  private completions = new Map<string, Promise<Task>>();
  private closed = false;
  private queued = new Map<string, { task: Task; handle: WorkerHandle; profile: WorkerProfile; instruction: string; signal?: AbortSignal; timer: ReturnType<typeof setTimeout>; abort: () => void }>();
@@ -175,6 +176,22 @@ export class WorkerPool {
   }
   return { state: task.state, reviewDue: !!task.reviewDue, reviewAt: task.reviewAt, reviewCount: task.reviewCount || 0 };
  }
+ /** Forward a follow-up human message into a running worker's session (Pi queues it mid-turn). */
+ async sendMessage(handle: WorkerHandle, parent: string, text: string) {
+  const task = this.tasks.find(item => item.id === handle.workerId && item.parentSessionId === parent);
+  if (!task || !this.authorize(handle, parent)) return { state: 'UNKNOWN_HANDLE', delivered: false };
+  if (terminalStates.has(task.status)) return { state: task.state, delivered: false, error: '任务已结束，无法追加消息' };
+  const executor = this.executorsByTask.get(handle.workerId);
+  if (!executor) return { state: task.state, delivered: false, error: '执行器不可达，请稍后重试或终止任务' };
+  this.emit({ type: 'task_message_forwarded', task: { ...task } });
+  let outcome: any = { disposition: 'pending' };
+  const requestPromise = executor.request('prompt', { message: text }, 120000)
+   .then((result: any) => { outcome = result || { disposition: 'started' }; }, (error: Error) => { outcome = { disposition: 'failed', error: error.message }; });
+  await Promise.race([requestPromise, new Promise(resolve => setTimeout(resolve, 1500))]);
+  if (outcome.disposition === 'failed') return { state: task.state, delivered: false, error: outcome.error };
+  if (outcome.disposition === 'pending') return { state: task.state, delivered: true, queued: true, agent: task.agent };
+  return { state: task.state, delivered: outcome.disposition !== 'handled', agent: task.agent };
+ }
  cancel(id: string) {
   const pending = this.queued.get(id);
   if (pending) {
@@ -267,6 +284,7 @@ export class WorkerPool {
   task.queueWaitMs = task.dispatchedAt - task.started;
   task.workerReused = executor.uses > 0;
   this.children.set(id, executor.child);
+  this.executorsByTask.set(id, executor);
   this.transition(task, 'STARTING');
   {
 
@@ -310,6 +328,7 @@ export class WorkerPool {
     signal?.removeEventListener('abort', cancel);
     this.cancelCallbacks.delete(id);
     this.children.delete(id);
+    this.executorsByTask.delete(id);
     executor.onEvent = undefined;
     executor.onExit = undefined;
     task.usage = usage;
