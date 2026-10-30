@@ -37,7 +37,7 @@ export function buildSplashFrame(step: number, width: number, rows: number, them
   const cx = Math.floor(W / 2), cy = Math.floor(H / 2);
   const maxR = Math.max(7, Math.min(Math.floor(W * 0.2), cy - 6, 16));
   const seatAngle = (k: number) => -Math.PI / 2 + (k / SEATS) * Math.PI * 2;
-  const scale = (step >= 38 ? 0.75 : step < 10 ? easeOut(step / 10) : 1);
+  const scale = step < 10 ? easeOut(step / 10) : 1;
   const r = Math.max(4, Math.round(maxR * scale));
   // 圆环自描：48 个红圆点从顶部顺时针依次落位，无任何杂点。
   for (let k = 0; k < SEATS; k++) {
