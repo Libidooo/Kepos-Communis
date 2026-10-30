@@ -2,6 +2,9 @@ import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-c
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+import { visibleWidth } from '@earendil-works/pi-tui';
 import { Desk, fit, historyLines } from './desk.ts';
 import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, profileHistory, restoreProfile, type Crew } from './store.ts';
 import { orbitalSessionStore } from './session-store.ts';
@@ -13,6 +16,7 @@ import { agentRevision } from './profiles.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
 import { MissionScheduler } from './scheduler.ts';
 import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk } from './monitor.ts';
+import { readRelays } from './relay.ts';
 import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, configureWorkerBudget, spentTokens, type WorkerHandle } from './workers.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -326,7 +330,14 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(action.kind==='delegate'){await delegateForm(local);return;}
   if(action.kind==='cancel-selected'){const task=pool.tasks.find(item=>item.id===action.id&&item.parentSessionId===ctx.sessionManager.getSessionId());if(task&&!terminalStates.has(task.status)&&await ui.confirm('销毁这个子 Worker？',task.agent+' · '+task.title.slice(0,100))){pool.cancel(task.id);ui.notify('已请求终止 '+task.agent);}return;}
  if(action.kind==='cancel'){const tasks=pool.tasks.filter(t=>t.parentSessionId===ctx.sessionManager.getSessionId()&&!terminalStates.has(t.status));if(!tasks.length){ui.notify('当前会话没有运行中的子任务');return;}const labels=tasks.map(t=>t.agent+' / '+t.id);const selected=await ui.select('中止子任务',labels);const task=tasks[labels.indexOf(selected)];if(task&&await ui.confirm('中止任务？',task.title))pool.cancel(task.id);return;}
- if(action.kind==='model'){if(blocked(ctx))throw Error('请等待当前任务结束再切换模型');const list=await models(ctx);const currentModel=ctx.model?.id&&ctx.model.id!=='unknown'?`${ctx.model?.provider||'—'} / ${ctx.model.id}`:'尚未登录';const origin=(providerId:any)=>String(providerId||'').startsWith('relay_')?' · 中转':' · 官方';const selected=await ui.select(`更换主 Agent 模型 · 当前 ${currentModel}`,list.map((m:any)=>`${m.provider} / ${m.id}${origin(m.provider)}`));const model=list.find((m:any)=>`${m.provider} / ${m.id}${origin(m.provider)}`===selected);if(model){if(!await pi.setModel(model))throw Error('模型认证不可用');ui.notify('模型已切换：'+model.provider+' / '+model.id);}return;}
+ if(action.kind==='model'){if(blocked(ctx))throw Error('请等待当前任务结束再切换模型');const list=await models(ctx);const currentModel=ctx.model?.id&&ctx.model.id!=='unknown'?`${ctx.model?.provider||'—'} / ${ctx.model.id}`:'尚未登录';
+  const relays=readRelays(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));
+  const origin=(providerId:any)=>{const pid=String(providerId||'');return pid.startsWith('relay_')?`中转 · ${relays[pid]?.name||pid.slice(6)}`:'官方';};
+  const rowWidth=Math.max(40,(process.stdout.columns||110)-4);
+  const rowOf=(m:any)=>{const label=`${m.provider} / ${m.id}`;const tag=` · ${origin(m.provider)}`;return fit(label,Math.max(20,rowWidth-visibleWidth(tag)))+tag;};
+  const selected=await ui.select(`更换主 Agent 模型 · 当前 ${currentModel}`,list.map(rowOf));
+  const model=list.find((m:any)=>rowOf(m)===selected);
+  if(model){if(!await pi.setModel(model))throw Error('模型认证不可用');ui.notify('模型已切换：'+model.provider+' / '+model.id);}return;}
  if(action.kind==='project'){const input=await ui.input('新项目 / 本地绝对目录','文件夹必须已存在');if(!input?.trim())return;const path=projectPath(input);if(!config.projects.includes(path))config.projects.push(path);save();if(!await ui.confirm('项目已收录','是否进入此项目并新建对话？'))return;action={kind:'new',path};}
  if(action.kind==='new'){if(blocked(ctx))throw Error('请等待任务结束再新建会话');const title=await ui.input('新对话名称','输入会话名称');if(!title?.trim())return;desk?.finish({kind:'switch',path:createLinkedSession(ctx,action.path||ctx.cwd,title.trim())});return;}
  }

@@ -220,9 +220,22 @@ export async function relaySetupFlow(ctx: any, agentDir: string): Promise<void> 
       } else {
         baseUrl = normalized.url;
       }
-      const keyEnv = (await ui.input('Key 环境变量名（key 只存引用，不写入文件）', relayEnvName(name)))?.trim() || relayEnvName(name);
-      const instantKey = await ui.input('立即测试？可粘贴 key（仅本次使用，绝不保存；留空则用环境变量）', '');
-      const probe = await probeRelay(baseUrl, instantKey?.trim() || process.env[keyEnv]);
+      let keyEnv = (await ui.input('Key 环境变量名（key 只存引用，不写入文件）', relayEnvName(name)))?.trim() || relayEnvName(name);
+      let pastedKey: string | undefined;
+      // A very common slip: the key itself pasted into the env-name field. Detect and
+      // persist it to the user environment (registry via setx), never to models.json.
+      if (/^sk-/.test(keyEnv) || keyEnv.length > 64 || /[^A-Za-z0-9_]/.test(keyEnv)) {
+        pastedKey = keyEnv;
+        keyEnv = relayEnvName(name);
+        if (process.platform === 'win32' && await ui.confirm('检测到粘贴的是 key 本身', `key 不会写入配置文件。把它写入用户环境变量 ${keyEnv}（系统注册表，非明文文件）？选"否"则自行配置。`)) {
+          const { spawnSync } = await import('node:child_process');
+          const result = spawnSync('setx', [keyEnv, pastedKey], { encoding: 'utf8', windowsHide: true });
+          if (result.status === 0) { pastedKey = undefined; ui.notify(`已写入环境变量 ${keyEnv}；新开的进程生效。`); }
+          else ui.notify('写入环境变量失败：' + String(result.stderr || result.stdout).slice(0, 200), 'warning');
+        }
+      }
+      const instantKey = pastedKey ?? (await ui.input('立即测试？可粘贴 key（仅本次使用，绝不保存；留空则用环境变量）', ''))?.trim();
+      const probe = await probeRelay(baseUrl, instantKey || process.env[keyEnv]);
       const summary = probe.ok
         ? `连通成功 · ${probe.api} · ${probe.latencyMs}ms · 可用模型 ${probe.models?.length ?? 0} 个`
         : `连通失败：${probe.error}${probe.status ? '（HTTP ' + probe.status + '）' : ''}`;
@@ -245,7 +258,8 @@ export async function relaySetupFlow(ctx: any, agentDir: string): Promise<void> 
         if (chosen.size) enabled = [...chosen];
       }
       upsertRelay(agentDir, RELAY_ID_PREFIX + slugify(name), { name, baseUrl, api, apiKey: '$' + keyEnv }, enabled);
-      ui.notify(`已保存 ${name}（${baseUrl}）。把 key 放入环境变量 ${keyEnv}，然后 /reload 或重启使模型列表生效。`, 'info');
+      if (!enabled?.length) ui.notify('⚠ 未启用任何模型：该中转不会出现在模型列表里。重新走一遍流程并勾选模型。', 'warning');
+      ui.notify(`已保存 ${name}（${baseUrl}），key 引用 $${keyEnv}。请完全退出 Kepos 并从新终端重启（模型目录和环境变量都在启动时加载，/reload 不够）。`, 'info');
       return;
     }
     if (choice === '从 cc-switch 导入') {
