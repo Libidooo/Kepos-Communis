@@ -8,8 +8,10 @@ import { routeCommand, localCommands } from './command-routing.ts';
 import { TimingWindow } from './metrics.ts';
 import { PRODUCT_NAME, sessionUsage, usageText, formatTokens, meter } from './presentation.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
-export const fit=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
-export const fitRight=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return ' '.repeat(Math.max(0,width-visibleWidth(s)))+s;};
+ // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
+ const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
+ export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
+ export const fitRight=(text:string,width:number)=>{const s=truncateFit(text,width);return ' '.repeat(Math.max(0,width-visibleWidth(s)))+s;};
 export function historyLines(entries:any[],width:number,expanded=false,theme?:any):string[]{
  const lines:string[]=[];for(const entry of entries){if(entry.type==='compaction'||entry.type==='branch_summary'){lines.push(entry.type==='compaction'?'[上下文已压缩 / 以下为摘要]':'[分支背景摘要]',...wrapTextWithAnsi(clean(entry.summary),width),'');continue;}if(entry.type==='custom_message'&&entry.display===false)continue;if(entry.type!=='message'&&entry.type!=='custom_message')continue;const m=entry.message||{role:'custom',content:entry.content};if(m.role==='custom'&&m.display===false)continue;if(!['user','assistant','toolResult','custom'].includes(m.role))continue;
  lines.push(m.role==='user'?'›':m.role==='assistant'?'Kepos':m.role==='custom'?'·':`┊ ${clean(m.toolName)}`);
