@@ -24,6 +24,6 @@ test('F8/F9 are human-only views and repeated renders reuse source history',()=>
  for(let n=0;n<30;n++)desk.render(150);assert.equal(reads,1);
  desk.handleInput('\x1b[19~');assert.equal(desk.taskScope,'all');assert.ok(desk.render(150).join('\n').includes('FOREIGN_EVIDENCE'));
  desk.handleInput('\x1b[20~');assert.ok(desk.render(150).join('\n').includes('APPROVAL_REQUIRED'));desk.editor.setText('must not send');desk.send();assert.equal(sent,0);
- for(const width of [24,40,79,80,109,110,150])for(const line of desk.render(width))assert.ok(visibleWidth(line)<=width);
+ for(const width of [24,40,79,80,100,109,110,120,150])for(const line of desk.render(width))assert.ok(visibleWidth(line)<=width);
  desk.event({type:'agent_settled'});desk.render(150);assert.equal(reads,2);desk.dispose();
 });

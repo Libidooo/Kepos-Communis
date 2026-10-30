@@ -4,11 +4,15 @@ import { stripVTControlCharacters } from 'node:util';
 export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string };
 export type GraphViewTask = { id: string; agent: string; status?: string; state?: string; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; reviewDue?: boolean; error?: string; groupKey?: string };
 export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask[] };
-export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number };
+export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number; taskId?: string };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
 type Cell = { char: string; color?: string };
 type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number };
-const activeStates = new Set(['QUEUED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED', 'NEEDS_HUMAN']);
+// 活跃=正在执行；NEEDS_HUMAN 归入"待处理"。desk 议会头部与这里 sidebar 的计数必须同源。
+export const activeStates = new Set(['QUEUED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED']);
+const connectedStates = new Set([...activeStates, 'NEEDS_HUMAN']);
+export const countActive = (tasks: GraphViewTask[]) => tasks.filter(task => activeStates.has(task.state || '')).length;
+export const countPending = (tasks: GraphViewTask[]) => tasks.filter(task => task.state === 'NEEDS_HUMAN' || task.reviewDue).length;
 const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
 
 // teal/blue/mauve exist only as orbital-76 vars; Pi's theme.fg rejects them, so emit them directly.
@@ -71,7 +75,7 @@ function bubble(grid: Cell[][], node: VisualNode, width: number, height: number)
     `工具 ${task?.tool || '—'}`,
     `进度 ${task?.checkpoint || '—'}`,
     `输出 ${task?.output || '等待结果'}`,
-    'Enter 输入主 Agent 指令 · Esc 返回',
+    'Esc 关闭详情 · F6 切到输入可发送',
   ];
   put(grid, x, y, '╭' + '─'.repeat(boxWidth - 2) + '╮', 'accent');
   rows.forEach((row, index) => {
@@ -85,11 +89,11 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
   if (width < 120) return;
   const x = width - 42, labelX = x + 3, labelWidth = 36;
   for (let y = 0; y < height; y++) put(grid, x, y, '│', 'borderMuted');
-  const active = snapshot.tasks.filter(task => activeStates.has(task.state || '')).length;
-  const attention = snapshot.tasks.filter(task => task.state === 'NEEDS_HUMAN' || task.reviewDue).length;
+  const active = countActive(snapshot.tasks);
+  const attention = countPending(snapshot.tasks);
   const rows = [
     ['议会观察', 'accent'],
-    [`活跃 ${active} / 48    待处理 ${attention}`, attention ? 'warning' : 'muted'],
+    [`活跃 ${active} · 待处理 ${attention}`, attention ? 'warning' : 'muted'],
     ['', 'muted'],
     ['□ 空席    ■ 已配置', 'muted'],
     ['▣ 选中    ⚒ 人工审批', 'muted'],
@@ -146,17 +150,17 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
-  for (const node of layout.nodes) { if (!node.task || (!activeStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
+  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
   put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '主', 'accent');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const marker = empty ? '□' : selectedNode ? '▣' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y }); }
+  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const marker = empty ? '□' : selectedNode ? '▣' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   sidebar(grid, snapshot, selectedNode, safeWidth, safeHeight);
   if (detail) bubble(grid, selectedNode || { id: 'main', label: 'Kepos Council', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
   const lines = grid.map(row => colorize(row, theme));
   const info = selected === -1 ? '主 Agent · Kepos Council · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
-  if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · 双击详情 · Ctrl+X 销毁 Worker`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
+  if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
   else lines.push(theme.fg('dim', truncateToWidth('议会 · □ 空席  ■ 代表  ! 待处理 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }

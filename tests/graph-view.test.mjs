@@ -27,6 +27,69 @@ test('wide council keeps the ring compact and uses a right-side inspector', () =
   assert.ok(view.lines.every(line => visibleWidth(line) <= 160));
 });
 
+test('council seats expose the task a cancel action should target', () => {
+  const view = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, 0, 1, theme);
+  assert.equal(view.hits.find(hit => hit.id === 'agent:a')?.taskId, 'task-a');
+  const sub = renderGraph({ agents, tasks: [{ id: 'sub', agent: 'X', state: 'RUNNING', parentWorkerId: 'task-a' }] }, 100, 32, 1, 1, theme);
+  assert.equal(sub.hits.find(hit => hit.id === 'task:sub')?.taskId, 'sub');
+  assert.equal(sub.hits.find(hit => hit.id === 'agent:a')?.taskId, undefined);
+});
+
+test('council header and sidebar counts share one definition of active and pending', () => {
+  const snapshot = { agents: [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }], tasks: [
+    { id: 't1', agent: 'A', state: 'RUNNING' },
+    { id: 't2', agent: 'B', state: 'NEEDS_HUMAN', status: '等待人类审批', title: 'gate' },
+  ] };
+  const body = renderGraph(snapshot, 140, 32, -1, 1, theme).lines.join('\n');
+  assert.match(body, /活跃 1 · 待处理 1/);
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {});
+  desk.graph = { snapshot: () => snapshot };
+  desk.graphView = true;
+  assert.match(desk.render(140)[0], /活跃1 · 待处理1/);
+  desk.dispose();
+});
+
+test('council keyboard flow: draft Enter opens detail, Esc peels layers, F1 shows help', () => {
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  let sent = 0;
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => sent++, () => {});
+  desk.editor.setText('这是未发送草稿');
+  desk.handleInput('\x1b[21~'); // F10 enters the council with ring focus even with a draft
+  assert.equal(desk.graphView, true);
+  assert.equal(desk.graphFocus, 'ring');
+  desk.handleInput('\x1b[B'); // down selects the first seat
+  assert.equal(desk.graphSelected, 0);
+  desk.handleInput('\r'); // Enter opens the seat detail instead of sending the draft
+  assert.equal(desk.graphDetail, true);
+  assert.equal(sent, 0);
+  desk.handleInput('\x1b'); // Esc closes the detail first and stays in the council
+  assert.equal(desk.graphDetail, false);
+  assert.equal(desk.graphView, true);
+  desk.handleInput('\x1b'); // Esc again leaves the council
+  assert.equal(desk.graphView, false);
+  desk.handleInput('\x1b[21~'); // F10 again, then F1: help must be visible in the council
+  desk.handleInput('\x1bOP');
+  assert.match(desk.render(120).join('\n'), /操作指南/);
+  desk.dispose();
+});
+
+test('Ctrl+X on an assigned agent seat cancels that seat task instead of aborting', async () => {
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  const actions = [];
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {}, [], undefined, async action => { actions.push(action); });
+  desk.graph = { snapshot: () => ({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING', title: '检查' }] }) };
+  desk.handleInput('\x1b[21~');
+  desk.handleInput('\x1b[B');
+  desk.render(120); // fills graphHits so the Ctrl+X lookup can resolve the seat's task
+  desk.handleInput('\x18'); // ctrl+x
+  assert.deepEqual(actions, [{ kind: 'cancel-selected', id: 'task-a' }]);
+  desk.dispose();
+});
+
 test('ring layout is stable between renders and dragging changes only the chosen seat', () => {
   const snapshot = { agents, tasks: [] };
   const first = renderGraph(snapshot, 120, 32, 0, 1, theme);
