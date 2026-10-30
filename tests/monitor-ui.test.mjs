@@ -47,9 +47,10 @@ test('desk column widths follow the body-first breakpoint table and F11 maximize
 test('crew list is two lines per member and Enter opens the member task first',()=>{
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
  const agents=[{id:'a',name:'Alice',model:'gpt-x'},{id:'b',name:'Bob',model:'claude-x'}];
- const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',cwd:home,parentSessionId:'local'}],children:new Map()},()=>{},()=>{});
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',state:'RUNNING',cwd:home,parentSessionId:'local'}],children:new Map()},()=>{},()=>{});
  const frame=desk.render(120).join('\n');
  assert.ok(frame.includes('Alice'));assert.ok(frame.includes('未分派'));assert.ok(!frame.includes('gpt-x'),'per-member model moved out of the list');
+ assert.ok(frame.includes('● 1 运行'),'header carries a running badge');
  desk.setFocus('crew');desk.crewIndex=0;
  desk.handleInput('\r');
  assert.equal(desk.taskView,true);assert.equal(desk.taskIndex,0);
@@ -92,5 +93,17 @@ test('scrolling back pauses follow and says so until Ctrl+End resumes',()=>{
  assert.ok(desk.render(120).at(-2).includes('已暂停跟随'));
  desk.readStart=null;
  assert.ok(!desk.render(120).at(-2).includes('已暂停跟随'));
+ desk.dispose();
+});
+
+test('three-column body is framed with embedded titles, welcome card and usage bar',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,getContextUsage:()=>({tokens:4200,contextWindow:10000,percent:42}),sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ const rows=desk.render(120);
+ assert.ok(rows.some(l=>l.includes('╭')&&l.includes('代表席')),'crew panel frame');
+ assert.ok(rows.some(l=>l.includes('╭')&&l.includes('正文')),'transcript panel frame');
+ assert.ok(rows.some(l=>l.includes('╭')&&l.includes('项目 / 对话')),'projects panel frame');
+ assert.ok(rows.some(l=>l.includes('╭')&&l.includes('Kepos 议案')),'welcome card');
+ assert.ok(rows.at(-2)?.includes('▓')&&rows.at(-2)?.includes('░'),'usage meter bar');
  desk.dispose();
 });

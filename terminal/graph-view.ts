@@ -7,7 +7,7 @@ export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask
 export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number; taskId?: string };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
 export type CouncilFilter = 'active' | 'pending' | 'all';
-export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number };
+export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number; focus?: 'ring' | 'list' | 'input' };
 type Cell = { char: string; color?: string };
 type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number };
 // 活跃=正在执行；NEEDS_HUMAN 归入"待处理"。desk 议会头部与这里 sidebar 的计数必须同源。
@@ -105,15 +105,24 @@ function bubble(grid: Cell[][], node: VisualNode, width: number, height: number)
   put(grid, x, y + 7, '╰' + '─'.repeat(boxWidth - 2) + '╯', 'accent');
 }
 
-// 右侧常驻面板：计数、可筛选任务列表、选中详情。列表负责寻找，详情负责判断和行动。
+// 右侧常驻面板：框线容器 + 计数、可筛选任务列表、选中详情。列表负责寻找，详情负责判断和行动。
 function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNode | undefined, width: number, height: number, now: number, council?: CouncilView) {
   if (width < 120) return;
-  const x = width - 42, labelX = x + 3, labelWidth = 36;
-  for (let y = 0; y < height; y++) put(grid, x, y, '│', 'borderMuted');
+  const x = width - 42, labelX = x + 3, labelWidth = 36, right = width - 1, focused = council?.focus === 'list';
+  const frameColor = focused ? 'borderAccent' : 'borderMuted';
+  const title = '─ 议会观察 ';
+  const titleWidth = visibleWidth(title);
+  const fill = Math.max(1, (right - x - 2) - titleWidth);
+  put(grid, x, 0, '╭' + title, focused ? 'accent' : 'borderAccent');
+  for (let cx = x + titleWidth + 1; cx < right; cx++) put(grid, cx, 0, '─', frameColor);
+  put(grid, right, 0, '╮', frameColor);
+  for (let y = 1; y < height - 1; y++) { put(grid, x, y, '│', frameColor); put(grid, right, y, '│', frameColor); }
+  put(grid, x, height - 1, '╰', frameColor);
+  for (let cx = x + 1; cx < right; cx++) put(grid, cx, height - 1, '─', frameColor);
+  put(grid, right, height - 1, '╯', frameColor);
   const active = countActive(snapshot.tasks);
   const attention = countPending(snapshot.tasks);
   const rows: [string, string][] = [
-    ['议会观察', 'accent'],
     [`活跃 ${active} · 待处理 ${attention}`, attention ? 'warning' : 'muted'],
     ['', 'muted'],
   ];
@@ -145,7 +154,7 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     rows.push(['Enter 详情 · 单击选中坐席', 'muted']);
   }
   rows.push(['', 'muted'], ['拖动坐席 · 滚轮缩放 · F10 返回', 'muted']);
-  rows.forEach(([label, color], index) => { if (index < height) put(grid, labelX, index, truncateToWidth(plain(label), labelWidth), color); });
+  rows.forEach(([label, color], index) => { const y = index + 1; if (y < height - 1) put(grid, labelX, y, truncateToWidth(plain(label), labelWidth), color); });
 }
 
 // 窄屏没有 sidebar 空间：列表+详情占满画面，环图仍可主动打开（Tab）。
@@ -222,9 +231,9 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
   for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
-  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '主', 'accent');
+  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '议会', 'accent');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const marker = empty ? '□' : selectedNode ? '▣' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
+  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '·' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   sidebar(grid, snapshot, selectedNode, safeWidth, safeHeight, now, council);
   if (detail) bubble(grid, selectedNode || { id: 'main', label: '议会', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
@@ -232,6 +241,6 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const info = selected === -1 ? '主 Agent · 议会 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · □ 空席  ■ 代表  ⚒ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · · 空席  ■ 代表  ⚒ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }

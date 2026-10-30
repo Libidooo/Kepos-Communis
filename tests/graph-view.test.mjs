@@ -12,7 +12,8 @@ test('unassigned seats have no connection; assigned seats connect to the main Ag
   const empty = renderGraph({ agents, tasks: [] }, 100, 32, -1, 1, theme);
   assert.equal(empty.hits.length, 49);
   assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
-  assert.ok(empty.lines.slice(0, 32).join('').includes('□'));
+  assert.ok(empty.lines.slice(0, 32).join('').includes('·'), 'empty seats fade to a dot');
+  assert.ok(!empty.lines.slice(0, 32).join('').includes('□'));
   assert.equal(/[─│╱╲┼]/.test(empty.lines.slice(0, 32).join('')), false);
   const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
   assert.equal(/[─│╱╲┼]/.test(active.lines.slice(0, 32).join('')), true);
@@ -284,4 +285,11 @@ test('streaming assistant text stays visible while the message mutates in place'
  live.content[0].text+=' · second delta';
  assert.match(desk.render(80).join('\n'),/second delta/,'later deltas keep rendering');
  assert.doesNotMatch(desk.render(80).join('\n'),/hi.*First streaming delta.*hi/s,'no duplicated transcript');
+});
+
+test('running seats pulse between glyphs while queued stays static', () => {
+  const run = now => renderGraph({ agents, tasks: [{ id: 'w', agent: 'A', state: 'RUNNING' }] }, 100, 24, -1, 1, theme, false, {}, now);
+  assert.notDeepEqual(run(0).lines, run(600).lines, 'running seat alternates ■/▪');
+  const queued = now => renderGraph({ agents, tasks: [{ id: 'q', agent: 'A', state: 'QUEUED' }] }, 100, 24, -1, 1, theme, false, {}, now);
+  assert.deepEqual(queued(0).lines, queued(600).lines, 'queued seat is static');
 });
