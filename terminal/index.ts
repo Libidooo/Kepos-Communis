@@ -75,7 +75,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
      if(allowed){desk&&(desk.notice='已人工允许终止空转任务：'+clean(target.agent));scheduleRepaint();return undefined;}
      return{block:true,reason:'人类未同意终止该任务。请继续复核流程并把情况呈报人类。'};
     }
-    return{block:true,reason:'该任务疑似空转，是否终止由人类决定。请把复核情况和表决结果呈报人类，由人类在工作台终止或明确同意后重试。'};
+    return{block:true,reason:'该任务疑似空转，是否终止由人类决定。请把复核情况和表决结果呈报人类，由人类在议案终止或明确同意后重试。'};
    }
   }
   const risk=gateRiskOf(event);
@@ -263,7 +263,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const sessionDir=(ctx:any)=>ctx.sessionManager.getSessionDir();
  async function reopen(fresh:any){setTimeout(()=>{fresh.sendUserMessage('/kepos',{expandPromptTemplates:true}).catch((e:any)=>fresh.ui.notify(clean(e),'error'));},80);}
  async function workspaceAction(action:any,ctx:ExtensionCommandContext){const ui=ownedUI(ctx,text=>{if(desk){desk.notice=text;scheduleRepaint();}});const local={...ctx,ui} as ExtensionCommandContext;
- if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加子 Agent','编辑子 Agent','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','管理长程计划','审批模式','命令面板','返回工作台']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加子 Agent':'crew','编辑子 Agent':'editcrew','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加子 Agent','编辑子 Agent','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','管理长程计划','审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加子 Agent':'crew','编辑子 Agent':'editcrew','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  if(action.kind==='project-remove'){
   if(!config.projects.length){ui.notify('还没有收录任何项目');return;}
   const pick=await ui.select('移除哪个项目？（只移出列表，不删除文件和会话）',config.projects);if(!pick)return;
@@ -291,7 +291,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
   config.approvalPolicy=next;save();applyApprovalPolicy();
   ui.notify('审批模式已切换：'+policyLabel[next]);return;
  }
- if(action.kind==='dispatch-command'){const command=action.text.split(/\s/,1)[0];const routes:any={'/orbital-agent':'crew','/orbital-new':'new','/orbital-project':'project','/model':'model'};if(routes[command])return workspaceAction({kind:routes[command]},ctx);if(['/kepos','/orbital'].includes(command)){ui.notify('已在 Kepos 工作台中');return;}if(command==='/orbital-warm'){const crew=config.agents[0];if(!crew)throw Error('先配置成员');await pool.prewarm(crew,ctx.cwd);ui.notify('预热执行器已就绪，未请求模型');return;}action={kind:'native-command',text:action.text};}
+ if(action.kind==='dispatch-command'){const command=action.text.split(/\s/,1)[0];const routes:any={'/orbital-agent':'crew','/orbital-new':'new','/orbital-project':'project','/model':'model'};if(routes[command])return workspaceAction({kind:routes[command]},ctx);if(['/kepos','/orbital'].includes(command)){ui.notify('已在议案中');return;}if(command==='/orbital-warm'){const crew=config.agents[0];if(!crew)throw Error('先配置成员');await pool.prewarm(crew,ctx.cwd);ui.notify('预热执行器已就绪，未请求模型');return;}action={kind:'native-command',text:action.text};}
  if(action.kind==='native-command'){const command=action.text.split(/\s/,1)[0];if(command==='/login'&&host.login){await host.login(local,action.text.trim().split(/\s+/)[1]);return;}if(command==='/logout'&&host.logout){await host.logout(local,action.text.trim().split(/\s+/)[1]);return;}if(command==='/settings'){return workspaceAction({kind:'menu'},ctx);}if(command==='/compact'){ctx.compact({onComplete:()=>ui.notify('上下文压缩已完成'),onError:error=>ui.notify('压缩失败：'+clean(error))});ui.notify('已请求 Pi 引擎压缩；Kepos 保持当前会话');return;}if(await ui.confirm('高级引擎功能',`${action.text} 暂无 Kepos 原生页面。是否明确离开 Kepos，进入 Pi 原生界面处理？取消则留在这里。`))desk?.finish({kind:'native-exit',text:action.text});return;}
  if(action.kind==='missions'){
   const plans=scheduler.list();if(!plans.length){ui.notify('暂无长程计划；主 Agent 可使用 orbital_plan 创建');return;}
@@ -341,14 +341,14 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(action.kind==='project'){const input=await ui.input('新项目 / 本地绝对目录','文件夹必须已存在');if(!input?.trim())return;const path=projectPath(input);if(!config.projects.includes(path))config.projects.push(path);save();if(!await ui.confirm('项目已收录','是否进入此项目并新建对话？'))return;action={kind:'new',path};}
  if(action.kind==='new'){if(blocked(ctx))throw Error('请等待任务结束再新建会话');const title=await ui.input('新对话名称','输入会话名称');if(!title?.trim())return;desk?.finish({kind:'switch',path:createLinkedSession(ctx,action.path||ctx.cwd,title.trim())});return;}
  }
- async function runDesk(ctx:ExtensionCommandContext){if(ctx.mode!=='tui'){ctx.ui.notify('此命令需要交互终端。','warning');return;}if(desk){ctx.ui.notify('工作台已经打开。','info');return;}
+ async function runDesk(ctx:ExtensionCommandContext){if(ctx.mode!=='tui'){ctx.ui.notify('此命令需要交互终端。','warning');return;}if(desk){ctx.ui.notify('议案已经打开。','info');return;}
  while(true){let sessions:any[];try{const all=await SessionManager.listAll();const local=await SessionManager.listAll(ctx.sessionManager.getSessionDir());sessions=[...new Map([...all,...local].map(s=>[s.path,s])).values()];}catch(e){ctx.ui.notify(clean(e),'error');return;}
  let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,text=>pi.sendUserMessage(text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db())};
   desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;
  try{
  if(action.kind==='reload'){if(blocked(ctx)){ctx.ui.notify('任务进行中，未重载；请等待或中止后重试','warning');continue;}const active=pool.tasks.filter(t=>!terminalStates.has(t.status)).length;if(active&&!await ctx.ui.confirm('重载 Kepos 扩展？',`重载会取消 ${active} 个运行中的子任务（包括其他会话的）；会话记录和输入草稿保留。`))continue;db().set('ui_reload',{pid:process.pid,sessionId:ctx.sessionManager.getSessionId(),at:Date.now()});await ctx.reload();return;}
-  if(action.kind==='pi'){ctx.ui.notify('已进入 Pi 命令行；输入 /kepos 重新打开 Kepos 工作台。','info');return;}
+  if(action.kind==='pi'){ctx.ui.notify('已进入 Pi 命令行；输入 /kepos 重新打开议案。','info');return;}
   if(action.kind==='native-exit'){ctx.ui.setEditorText(action.text);ctx.ui.notify(`已返回原生 Pi；按 Enter 执行 ${action.text}。尚未执行，也未发送给模型。`,'info');return;}
  if(action.kind==='abort'){ctx.abort();pool.cancelAll();await ctx.waitForIdle();continue;}
  }catch(e){ctx.ui.notify(clean(e),'error');}
@@ -357,8 +357,8 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  pi.registerCommand('orbital-warm',{description:'预热子 Agent 执行器（不调用模型；空闲60秒退出）',handler:async(args,ctx)=>{const crew=config.agents.find(a=>a.name===args.trim())||config.agents[0];if(!crew){ctx.ui.notify('先配置至少一个子 Agent','warning');return;}try{const result=await pool.prewarm(crew,ctx.cwd);ctx.ui.notify(`${crew.name} 执行器已就绪 · PID ${result.pid} · 未请求模型`,'info');}catch(error){ctx.ui.notify(clean(error),'error');}}});
   pi.registerCommand('simon',{description:'开始 Kepos 监督式工作（兼容旧命令）',handler:async(args,ctx)=>{const prompt=args?.trim()||`请先说明当前项目目标、风险和下一步计划；如需并行工作，使用 orbital_delegate 分派最多 ${MAX_CONCURRENT_CHILDREN} 个只读任务，默认每项 ${DEFAULT_TASK_SECONDS/60} 分钟，并每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟用 orbital_events/orbital_tasks 复核；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的工作改用 orbital_plan 并等待人类批准。`;await pi.sendUserMessage(prompt);}});
  pi.registerCommand('simon-status',{description:'查看 Kepos、项目和子 Agent 状态（兼容旧命令）',handler:async(_args,ctx)=>{const tasks=pool.tasks.filter(t=>t.cwd===ctx.cwd&&t.parentSessionId===ctx.sessionManager.getSessionId());ctx.ui.notify(`Kepos Communis · ${ctx.model?.provider}/${ctx.model?.id}\n项目：${ctx.cwd}\n子 Agent：${tasks.filter(t=>!terminalStates.has(t.status)).length} 运行中 / ${tasks.length} 总计`,'info');}});
- pi.registerCommand('kepos',{description:'Kepos Communis · 打开工作台',handler:async(_args,ctx)=>runDesk(ctx)});
- pi.registerCommand('orbital',{description:'三栏终端工作台：直接聊天、项目会话、真实子 Agent',handler:async(_args,ctx)=>runDesk(ctx)});
+ pi.registerCommand('kepos',{description:'Kepos Communis · 打开议案',handler:async(_args,ctx)=>runDesk(ctx)});
+  pi.registerCommand('orbital',{description:'打开议案（三栏终端视图）：直接聊天、项目会话、真实子 Agent',handler:async(_args,ctx)=>runDesk(ctx)});
  pi.registerCommand('orbital-new',{description:'在当前项目创建对话',handler:async(_args,ctx)=>{if(blocked(ctx)){ctx.ui.notify('请先等待任务结束。','warning');return;}const name=await ctx.ui.input('新对话名称','');if(!name?.trim())return;const path=createLinkedSession(ctx,ctx.cwd,name.trim());await ctx.switchSession(path,{withSession:async fresh=>reopen(fresh)});}});
  pi.registerCommand('orbital-project',{description:'收录本地项目',handler:async(_args,ctx)=>{const input=await ctx.ui.input('项目绝对目录','');if(!input?.trim())return;try{const path=projectPath(input);if(!config.projects.includes(path))config.projects.push(path);save();}catch(e){ctx.ui.notify(clean(e),'error');}}});
  pi.registerCommand('orbital-agent',{description:'配置真实子 Agent',handler:async(_args,ctx)=>{try{await crewForm(ctx);}catch(e){ctx.ui.notify(clean(e),'error');}}});
