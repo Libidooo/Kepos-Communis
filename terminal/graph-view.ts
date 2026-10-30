@@ -119,7 +119,7 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   return nodes.slice(0, 48);
 }
 
-function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, phase: number, offsets: GraphOffsets) {
+function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets) {
   const active = nodes.filter(node => node.task).length;
   const ringCount = active > 12 ? Math.max(2, Math.ceil(nodes.length / 12)) : 1;
   const groups: VisualNode[][] = [];
@@ -135,7 +135,7 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
     const ringCenter = ringCount === 1 ? center : { x: Math.round(center.x + Math.cos((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * Math.min(canvasWidth * .23, 18 * zoom)), y: Math.round(center.y + Math.sin((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * Math.min(height * .25, 6 * zoom)) };
     const radiusX = ringCount === 1 ? Math.max(10, Math.min(canvasWidth / 2 - 5, 40 * zoom)) : Math.max(4, Math.min(10, 3 + group.length * .55));
     const radiusY = ringCount === 1 ? Math.max(3, Math.min(height / 2 - 3, 12 * zoom)) : Math.max(2, Math.min(5, 1.5 + group.length * .3));
-    group.forEach((node, index) => { const angle = (index / Math.max(1, group.length)) * Math.PI * 2 - Math.PI / 2 + phase * (ringIndex % 2 ? -1 : 1); const offset = offsets[node.id] || { x: 0, y: 0 }; node.x = Math.round(ringCenter.x + Math.cos(angle) * radiusX + offset.x); node.y = Math.round(ringCenter.y + Math.sin(angle) * radiusY + offset.y); });
+    group.forEach((node, index) => { const angle = (index / Math.max(1, group.length)) * Math.PI * 2 - Math.PI / 2; const offset = offsets[node.id] || { x: 0, y: 0 }; node.x = Math.round(ringCenter.x + Math.cos(angle) * radiusX + offset.x); node.y = Math.round(ringCenter.y + Math.sin(angle) * radiusY + offset.y); });
   });
   return { center, nodes, ringCount };
 }
@@ -143,7 +143,7 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
 export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}, now = Date.now()): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
   const safeWidth = Math.max(24, width), safeHeight = Math.max(8, height);
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
-  const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, 0, offsets);
+  const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
   for (const node of layout.nodes) { if (!node.task || (!activeStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
