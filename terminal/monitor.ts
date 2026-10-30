@@ -25,3 +25,30 @@ export function planSummaries(database:OrbitalDatabase) {
  (SELECT COUNT(*) FROM mission_jobs j WHERE j.mission_id=m.id AND j.state='NEEDS_HUMAN') AS attention
  FROM missions m ORDER BY CASE WHEN m.state='NEEDS_HUMAN' THEN 0 ELSE 1 END,m.updated DESC LIMIT 100`).all() as any[];
 }
+
+const PLAN_GLYPHS: Record<string, string> = { QUEUED: '○', RUNNING: '▶', NEEDS_HUMAN: '⚠', SUCCEEDED: '✓', FAILED: '✕', CANCELLED: '⨉' };
+/** Depth-first plan tree with dependency indentation; orphans and cycles fall back to roots. */
+export function planTree(jobs: { id: string; task: string; state: string; dependsOn?: string[] }[]): string[] {
+ const byId = new Map(jobs.map(job => [job.id, job]));
+ const children = new Map<string, string[]>();
+ const roots: string[] = [];
+ for (const job of jobs) {
+  const deps = (job.dependsOn || []).filter(dep => byId.has(dep));
+  if (!deps.length) { roots.push(job.id); continue; }
+  const parent = deps[deps.length - 1];
+  const list = children.get(parent) || []; list.push(job.id); children.set(parent, list);
+ }
+ const lines: string[] = [];
+ const seen = new Set<string>();
+ const walk = (id: string, depth: number) => {
+  if (seen.has(id)) return;
+  seen.add(id);
+  const job = byId.get(id)!;
+  const glyph = PLAN_GLYPHS[job.state] || '·';
+  lines.push(`${'  '.repeat(depth)}${glyph} ${id} · ${job.task.slice(0, 60)}${job.state === 'NEEDS_HUMAN' ? ' · 等待人类审批' : ''}`);
+  for (const child of children.get(id) || []) walk(child, depth + 1);
+ };
+ for (const root of roots) walk(root, 0);
+ for (const job of jobs) if (!seen.has(job.id)) walk(job.id, 0);
+ return lines;
+}

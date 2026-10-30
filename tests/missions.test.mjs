@@ -76,3 +76,39 @@ test('dispatch persists a hashed capability, not the live one',async t=>{
  assert.equal(f.dispatch[0].a.readScope,'machine');
  assert.deepEqual(f.dispatch[0].a.readAllow,['C:/refs']);
 });
+
+test('reschedule adjusts queued step limits but never clears an existing gate',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'quick',agent,task:'quick',seconds:100},{id:'long',agent,task:'long',seconds:2400,requiresHuman:true}]);
+ const plan=f.scheduler.get(m.id);
+ const updated=f.scheduler.reschedule(m.id,'parent','quick',1800);
+ assert.equal(updated.jobs.find(j=>j.id==='quick').seconds,1800);
+ assert.equal(updated.jobs.find(j=>j.id==='quick').requiresHuman,true,'1800s is above the 20 minute gate');
+ const lowered=f.scheduler.reschedule(m.id,'parent','quick',60);
+ assert.equal(lowered.jobs.find(j=>j.id==='quick').seconds,60);
+ assert.equal(lowered.jobs.find(j=>j.id==='quick').requiresHuman,true,'original explicit gate stays');
+ assert.throws(()=>f.scheduler.reschedule(m.id,'parent','quick',0),/1-3600/);
+ assert.throws(()=>f.scheduler.reschedule(m.id,'parent','missing',60),/未知步骤/);
+});
+
+test('planTree renders depth-first dependency order with state glyphs',async()=>{
+ const {planTree}=await import('../dist/terminal/monitor.js');
+ const jobs=[
+  {id:'review',task:'review findings',state:'QUEUED',dependsOn:['scan']},
+  {id:'scan',task:'scan sources',state:'SUCCEEDED',dependsOn:[]},
+  {id:'gate',task:'await human',state:'NEEDS_HUMAN',dependsOn:['review']},
+ ];
+ const lines=planTree(jobs);
+ assert.deepEqual(lines,[
+  '✓ scan · scan sources',
+  '  ○ review · review findings',
+  '    ⚠ gate · await human · 等待人类审批',
+ ]);
+ // Orphans (unknown deps) and cycles degrade to roots instead of vanishing.
+ const messy=planTree([
+  {id:'a',task:'loop a',state:'RUNNING',dependsOn:['b']},
+  {id:'b',task:'loop b',state:'RUNNING',dependsOn:['a']},
+  {id:'c',task:'orphan',state:'FAILED',dependsOn:['ghost']},
+ ]);
+ assert.equal(messy.length,3);
+ assert.match(messy.join('|'),/✕ c · orphan/);
+});

@@ -12,7 +12,7 @@ import { outputPage, receiptView } from './result-view.ts';
 import { agentRevision } from './profiles.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
 import { MissionScheduler } from './scheduler.ts';
-import { taskSummaries, taskEvidence, planSummaries } from './monitor.ts';
+import { taskSummaries, taskEvidence, planSummaries, planTree } from './monitor.ts';
 import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, type WorkerHandle } from './workers.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -24,7 +24,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const config=loadConfig();const poolKey=Symbol.for('orbital.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let tool='';let pulse=0;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
  const scheduler:MissionScheduler=globalStore[missionKey]||(globalStore[missionKey]=new MissionScheduler(db(),pool));
- const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,checkpoint:j.checkpoint?.slice(0,500),error:j.error}))});
+ const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,dependsOn:j.dependsOn||[],checkpoint:j.checkpoint?.slice(0,500),error:j.error}))});
  const save=()=>{saveConfig(config);refreshSupervisionPrompt?.();desk?.invalidate();};
  const currentPolicy=()=>normalizePolicy(config.approvalPolicy);
  let baselineTools:string[]=[];
@@ -209,7 +209,19 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(old){const presets=[{label:'全部只读工具',tools:Array.from(READ_ONLY_TOOLS)},{label:'仅读取文件',tools:['read']},{label:'不使用工具',tools:[]}];
  const existing=JSON.stringify([...(tools??READ_ONLY_TOOLS)].sort());presets.sort((a,b)=>Number(JSON.stringify([...b.tools].sort())===existing)-Number(JSON.stringify([...a.tools].sort())===existing));
  const pick=await ctx.ui.select('专家只读工具范围',presets.map(p=>p.label));if(!pick)return;tools=presets.find(p=>p.label===pick)!.tools;}
- const value:Crew={id:old?.id||randomUUID(),name:clean(name.trim()),provider:model.provider,model:model.id,roleKey,role:role.trim(),...(tools?{tools}:{}),...(old?.skills?.length?{skills:old.skills}:{} )};if(old)Object.assign(old,value);else config.agents.push(value);save();}
+ let skills=old?.skills;
+ if(old){
+  const {names}=skillIndex();
+  const input=await ctx.ui.input('已装 Skill（逗号分隔；留空保留现有）',(old.skills??[]).join(','));
+  if(input===undefined)return;
+  const requested=input.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+  if(requested.length){
+   const unknown=requested.filter(s=>!names.has(s)&&!names.has('skill:'+s));
+   if(unknown.length)throw Error('这些 Skill 尚未安装或未被信任：'+unknown.join(', '));
+   skills=requested;
+  }
+ }
+ const value:Crew={id:old?.id||randomUUID(),name:clean(name.trim()),provider:model.provider,model:model.id,roleKey,role:role.trim(),...(tools?{tools}:{}),...(skills?.length?{skills}:{})};if(old)Object.assign(old,value);else config.agents.push(value);save();}
   async function delegateForm(ctx:any){if(!config.agents.length){await crewForm(ctx);return;}const pick=await ctx.ui.select(`分派只读任务 · 默认 ${DEFAULT_TASK_SECONDS/60} 分钟 · 最多 ${MAX_CONCURRENT_CHILDREN} 项`,config.agents.map(a=>a.name));const crew=config.agents.find(a=>a.name===pick);if(!crew)return;const text=await ctx.ui.editor('具体任务与完成标准','');if(!text?.trim())return;
   if(!await ctx.ui.confirm('启动代表？',`模型：${crew.provider}/${crew.model}\n目录：${ctx.cwd}\n只读工具；会产生模型费用；默认 ${DEFAULT_TASK_SECONDS/60} 分钟，每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核。`))return;
  const sourceGeneration=generation;const sourceSession=ctx.sessionManager.getSessionFile()||ctx.sessionManager.getSessionId();
@@ -218,7 +230,26 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const sessionDir=(ctx:any)=>ctx.sessionManager.getSessionDir();
  async function reopen(fresh:any){setTimeout(()=>{fresh.sendUserMessage('/kepos',{expandPromptTemplates:true}).catch((e:any)=>fresh.ui.notify(clean(e),'error'));},80);}
  async function workspaceAction(action:any,ctx:ExtensionCommandContext){const ui=ownedUI(ctx,text=>{if(desk){desk.notice=text;scheduleRepaint();}});const local={...ctx,ui} as ExtensionCommandContext;
- if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','添加子 Agent','编辑子 Agent','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','管理长程计划','审批模式','返回工作台']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','添加子 Agent':'crew','编辑子 Agent':'editcrew','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','管理长程计划':'missions','审批模式':'approval'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加子 Agent','编辑子 Agent','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','管理长程计划','审批模式','命令面板','返回工作台']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加子 Agent':'crew','编辑子 Agent':'editcrew','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='project-remove'){
+  if(!config.projects.length){ui.notify('还没有收录任何项目');return;}
+  const pick=await ui.select('移除哪个项目？（只移出列表，不删除文件和会话）',config.projects);if(!pick)return;
+  if(!await ui.confirm('移除项目？',pick+'\n仅从 Kepos 列表移除；磁盘文件与历史会话保留。'))return;
+  config.projects=config.projects.filter(path=>path!==pick);config.folded=config.folded.filter(path=>path!==pick);save();desk?.invalidate();
+  ui.notify('已移除：'+pick);return;
+ }
+ if(action.kind==='palette'){
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加子 Agent','crew'],['编辑子 Agent','editcrew'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['管理长程计划','missions'],['审批模式','approval']];
+  const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','orbital'].includes(String(command.name)));
+  const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
+  const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
+  if(pick.startsWith('操作 · ')){const label=pick.slice(4);return workspaceAction({kind:menuEntries.find(([labelKey])=>labelKey===label)?.[1]||'menu'},ctx);}
+  const name=pick.startsWith('命令 · ')?pick.slice(4).split(/\s/)[0].replace(/^\//,''):pick.startsWith('会话 · /')?pick.slice(7).split(/\s/)[0]:undefined;
+  if(name==='reload'){desk?.finish({kind:'reload'});return;}
+  if(name==='pi'){desk?.finish({kind:'pi'});return;}
+  if(name)return workspaceAction({kind:'dispatch-command',text:'/'+name},ctx);
+  return;
+ }
  if(action.kind==='approval'){
   const current=currentPolicy();
   const pick=await ui.select('审批模式 · 当前：'+policyLabel[current],APPROVAL_POLICIES.map(p=>policyLabel[p]));if(!pick)return;
@@ -233,14 +264,29 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
   const plans=scheduler.list();if(!plans.length){ui.notify('暂无长程计划；主 Agent 可使用 orbital_plan 创建');return;}
   const labels=plans.map(m=>m.id+' / '+m.state+' / '+m.goal.slice(0,50));
   const selected=await ui.select('长程计划 · 跨项目',labels);const plan=plans[labels.indexOf(selected)];if(!plan)return;
-  const choice=await ui.select(plan.goal,['查看步骤','暂停后续派发','继续执行','批准人工门禁','取消计划','返回']);
-  if(choice==='查看步骤'){await ui.select('步骤与状态',plan.jobs.map(j=>j.id+' / '+j.state+' / '+j.task.slice(0,100)));return;}
+  const choice=await ui.select(plan.goal,['查看步骤树','调整步骤时限','暂停后续派发','继续执行','批准人工门禁','否决门禁（取消计划）','返回']);
+  if(choice==='查看步骤树'){await ui.select('步骤依赖树 · '+plan.state,planTree(plan.jobs));return;}
+  if(choice==='调整步骤时限'){
+   const editable=plan.jobs.filter(j=>['QUEUED','NEEDS_HUMAN'].includes(j.state));if(!editable.length){ui.notify('没有可调整的步骤：已派发或已完成的步骤不能改');return;}
+   const rows=editable.map(j=>j.id+' / '+j.seconds+'s / '+j.task.slice(0,50));const pick=await ui.select('选择步骤',rows);const job=editable[rows.indexOf(pick)];if(!job)return;
+   const input=await ui.input('新的时限（秒，1-'+MAX_TASK_SECONDS+'）',String(job.seconds));if(!input?.trim())return;
+   const seconds=Number(input);if(!Number.isInteger(seconds)||seconds<1||seconds>MAX_TASK_SECONDS){ui.notify('时限必须是整数秒（1-'+MAX_TASK_SECONDS+'）');return;}
+   const message=job.requiresHuman?`${job.id}：${job.seconds}s → ${seconds}s。超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的步骤仍需人工门禁；原有门禁不会被解除，批准后方可执行。`:`${job.id}：${job.seconds}s → ${seconds}s`+(seconds>HUMAN_APPROVAL_THRESHOLD_SECONDS?`（超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟将进入人工门禁）`:'');
+   if(!await ui.confirm('确认调整？',message))return;
+   scheduler.reschedule(plan.id,plan.parentSessionId,job.id,seconds);ui.notify('步骤已调整；F9 查看');return;
+  }
   if(choice==='暂停后续派发'){scheduler.pause(plan.id,plan.parentSessionId);ui.notify('计划已暂停后续派发；F9 查看');return;}
   if(choice==='继续执行'&&await ui.confirm('继续计划？',plan.goal+'\n将使用计划创建时的专家快照，模型调用可能计费。')){scheduler.resume(plan.id,plan.parentSessionId);scheduler.start();ui.notify('计划已继续；F9 查看');return;}
   if(choice==='批准人工门禁'){
    const gates=plan.jobs.filter(j=>j.state==='NEEDS_HUMAN'&&j.requiresHuman);if(!gates.length){ui.notify('没有可批准的门禁；失败步骤需要修订计划');return;}
    const rows=gates.map(j=>j.id+' / '+j.task.slice(0,80));const pick=await ui.select('选择人工门禁',rows);const job=gates[rows.indexOf(pick)];
    if(job&&await ui.confirm('批准并继续这个步骤？',plan.goal+'\n'+job.task+'\n专家：'+job.agent.name+' / '+job.agent.model)){scheduler.approve(plan.id,plan.parentSessionId,job.id);scheduler.start();ui.notify('门禁已批准，步骤继续；F9 查看');}
+   return;
+  }
+  if(choice==='否决门禁（取消计划）'){
+   const gates=plan.jobs.filter(j=>j.state==='NEEDS_HUMAN');
+   if(!gates.length){ui.notify('当前没有等待审批的门禁；取消整个计划请用主菜单');return;}
+   if(await ui.confirm('否决门禁并取消整个计划？',plan.goal+'\n所有未完成步骤将中止，已完成的产出保留。')){scheduler.cancel(plan.id,plan.parentSessionId);ui.notify('计划已否决取消；F9 查看');}
    return;
   }
   if(choice==='取消计划'&&await ui.confirm('取消后续执行并中止活动步骤？',plan.goal)){scheduler.cancel(plan.id,plan.parentSessionId);ui.notify('计划已取消；F9 查看');}

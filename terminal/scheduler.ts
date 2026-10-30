@@ -259,6 +259,25 @@ export class MissionScheduler {
         });
         this.scheduleTick();
     }
+    /** Adjust the time limit of a not-yet-dispatched step. Existing human gates are never cleared here. */
+    reschedule(id: string, parent: string, jobId: string, seconds: number) {
+        const m = this.authorize(id, parent);
+        if (terminal.has(m.state))
+            throw Error('计划已结束，不能再修改');
+        const job = m.jobs.find(item => item.id === jobId);
+        if (!job)
+            throw Error('未知步骤');
+        if (!['QUEUED', 'NEEDS_HUMAN'].includes(job.state))
+            throw Error('只能调整尚未派发的步骤');
+        if (!Number.isInteger(seconds) || seconds < 1 || seconds > MAX_TASK_SECONDS)
+            throw Error(`时限必须为 1-${MAX_TASK_SECONDS} 秒`);
+        const requiresHuman = job.requiresHuman || seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS;
+        this.database.transaction(() => {
+            this.database.prepare("UPDATE mission_jobs SET seconds=?,requires_human=? WHERE id=? AND state IN ('QUEUED','NEEDS_HUMAN')").run(seconds, requiresHuman ? 1 : 0, job.key);
+            this.event(id, job.key, 'job_rescheduled', { seconds, requiresHuman });
+        });
+        return this.get(id, parent)!;
+    }
     cancel(id: string, parent: string) {
         const m = this.authorize(id, parent);
         if (terminal.has(m.state))
