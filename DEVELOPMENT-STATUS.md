@@ -13,7 +13,7 @@
 - D3（已决策并实施，2026-10-30）Windows 自启动：`kepos service` 从 sc.exe 系统服务改为当前用户登录触发的计划任务（PowerShell Register-ScheduledTask，免管理员权限；本机实测注册/查询/删除通过）。实测发现 schtasks /SC ONLOGON 命令行需要提权，与报告判断不同。语义限制：仅登录后运行，文档已注明。
 - D4 TUI、CLI、daemon 各自维护 WorkerPool；需先写统一调度设计再实施。
 - D5 四种模式、Tab 排队、Ctrl+K、计划步骤树等交互设想需先出界面草图再实现。
-- D6 成本/token 预算规则未定。
+- D6（已决策并实施，2026-10-30）预算与表决：config.budget 支持 perTaskTokens/perTaskCost（到顶立即停止消耗、证据保留、通知等人）与 dailyTokens/dailyCost（当日累计到顶拒绝新派发）；orbital_delegate 支持按任务 budgetTokens（主 Agent 负责估计）；空转检测只标记 stalled+要求复核，不自动终止——严格审批模式下模型终止空转任务需人类逐次确认，代理模式留痕放行；新增 orbital_vote 表决工具（代表票来自产出末尾 VOTE 约定行，主 Agent 票标注"分派方"，结果由主 Agent 转述人类）；orbital_profiles 附带成员风险（连续失败/成功率）；TUI 任务详情显示空转标记与预算上限。强制点为进程级，D4 第 4 阶段上收 daemon 做全局强制。
 - D7 品牌红色 #BD343A 与 #B52F3B 需定一个。
 - D8 发版方式：建议发 0.3.0-beta.5；是否发 npm 由人类决定。
 - 技术残留：RemoteWorkerPool.eventsSince 仍是返回空结果的桩（随 D4 统一调度处理）；跨进程执行器管理、真实模型长跑、干净环境安装与跨平台实机验收未做。

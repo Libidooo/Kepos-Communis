@@ -9,7 +9,7 @@ import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from 
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
+export type Task = { id: string; agent: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
 const labels: Record<WorkerState, string> = { QUEUED: '排队中', STARTING: '启动中', RUNNING: '运行中', SUCCEEDED: '完成', FAILED: '失败', INTERRUPTED: '已中断', CANCEL_REQUESTED: '正在终止', CANCELLED: '已取消', TIMED_OUT: '超时' };
@@ -30,6 +30,13 @@ export function mergeUsage(a: any, b: any) {
  return result;
 }
 function alive(pid: number) { try { process.kill(pid, 0); return true; } catch (error: any) { return error.code === 'EPERM'; } }
+
+export type BudgetConfig = { perTaskTokens?: number; perTaskCost?: number; dailyTokens?: number; dailyCost?: number; stallMinutes?: number };
+// The host (index.ts) wires this to the workspace config so the pool stays testable
+// without touching the operator's real configuration.
+let budgetProvider: () => BudgetConfig = () => ({});
+export function configureWorkerBudget(provider: () => BudgetConfig) { budgetProvider = provider; }
+export const spentTokens = (usage: any) => usage?.totalTokens || (usage?.input || 0) + (usage?.output || 0) + (usage?.cacheRead || 0);
 
 export class WorkerPool {
  tasks: Task[] = [];
@@ -265,6 +272,20 @@ export class WorkerPool {
   {
 
    let finished = false, stopping = false, usage: any, final: any;let checkpointAt=0;
+   let lastProgress = Date.now();
+   const stallMs = () => Math.max(200, (budgetProvider().stallMinutes ?? 10) * 60000);
+   // A stall is a flag, never an auto-kill: the human decides whether to terminate.
+   let stallTimer: ReturnType<typeof setInterval> | undefined;
+   stallTimer = setInterval(() => {
+    if (finished || stopping || task.state !== 'RUNNING') return;
+    if (Date.now() - lastProgress > stallMs() && !task.stalled) {
+     task.stalled = true;
+     task.reviewDue = true;
+     this.persist(task, 'task_stalled');
+     this.emit({ type: 'task_stalled', task: { ...task } });
+    }
+   }, Math.max(200, Math.min(5000, stallMs() / 4)));
+   stallTimer.unref?.();
    let timer: ReturnType<typeof setTimeout>, reviewTimer: ReturnType<typeof setTimeout> | undefined, cleanupTimer: ReturnType<typeof setTimeout> | undefined;
    const scheduleReview = () => {
     if (finished) return;
@@ -286,6 +307,7 @@ export class WorkerPool {
     clearTimeout(timer);
     clearTimeout(reviewTimer);
     clearTimeout(cleanupTimer);
+    clearInterval(stallTimer);
     signal?.removeEventListener('abort', cancel);
     this.cancelCallbacks.delete(id);
     this.children.delete(id);
@@ -330,12 +352,27 @@ export class WorkerPool {
     if (event.type === 'message_update' && event.assistantMessageEvent?.type === 'text_delta') {
      task.firstTextMs ??= Date.now() - task.dispatchedAt!;
      setOutput(event.assistantMessageEvent.delta, true);
+     lastProgress = Date.now();
+     if (task.stalled) { task.stalled = false; this.persist(task, 'progress_resumed'); }
      if(Date.now()-checkpointAt>=2000){checkpointAt=Date.now();task.checkpoint=bounded(task.output,1200);task.checkpointAt=checkpointAt;this.persist(task,'checkpoint');}
     }
     if (event.type === 'message_end' && event.message?.role === 'assistant') {
      final = event.message;
      usage = mergeUsage(usage, final.usage);
+     lastProgress = Date.now();
+     if (task.stalled) { task.stalled = false; this.persist(task, 'progress_resumed'); }
+     task.usage = usage;
      setOutput(typeof final.content === 'string' ? final.content : (final.content || []).filter((block: any) => block.type === 'text').map((block: any) => block.text).join('\n'));
+     if (usage) {
+      const limits = budgetProvider();
+      const tokenCap = task.budgetTokens ?? limits.perTaskTokens;
+      const spent = spentTokens(usage);
+      if ((tokenCap && spent > tokenCap) || (limits.perTaskCost && Number(usage.cost?.total) > limits.perTaskCost)) {
+       this.emit({ type: 'task_budget_stop', task: { ...task }, spentTokens: spent });
+       terminate('CANCELLED', '到达预算上限，已停止消耗；证据保留，请人工审核后调整预算重新分派');
+       return;
+      }
+     }
     }
     if (event.type === 'tool_execution_start') { task.tool = event.toolName; this.persist(task, 'tool_start'); }
     if (event.type === 'tool_execution_end') { task.tool = ''; this.persist(task, 'tool_end'); }
@@ -364,12 +401,29 @@ export class WorkerPool {
    this.emit({ type: 'task_started', task: { ...task } });
  }
  }
- launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string): WorkerHandle {
+ private dailyUsage() {
+  const midnight = new Date(); midnight.setHours(0, 0, 0, 0);
+  let tokens = 0, cost = 0;
+  for (const task of this.tasks) {
+   if ((task.started || 0) < midnight.getTime()) continue;
+   const usage = task.usage; if (!usage) continue;
+   tokens += spentTokens(usage);
+   cost += Number(usage.cost?.total) || 0;
+  }
+  return { tokens, cost };
+ }
+ launch(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number): WorkerHandle {
   if (this.closed) throw Error('Pool closed');
   if (!parentSessionId) throw Error('A bound parent session is required');
   if (signal?.aborted) throw Error('Task cancelled');
   if (!Number.isFinite(seconds) || seconds <= 0 || seconds > MAX_TASK_SECONDS) throw Error(`Task deadline must be 1-${MAX_TASK_SECONDS} seconds`);
   if (!Number.isInteger(delegationDepth) || delegationDepth < 0 || delegationDepth > 1) throw Error('Nested delegation depth is limited to one level');
+  const budget = budgetProvider();
+  if (budget.dailyTokens || budget.dailyCost) {
+   const used = this.dailyUsage();
+   if ((budget.dailyTokens && used.tokens >= budget.dailyTokens) || (budget.dailyCost && used.cost >= budget.dailyCost))
+    throw Error(`今日预算已用尽（已用 ${Math.round(used.tokens)} tokens / ~$${used.cost.toFixed(4)}）；新派发被拒绝。可调整预算后重试。`);
+  }
   const parentTask = parentWorkerId && this.tasks.find(item => item.id === parentWorkerId);
   if (parentWorkerId && (!parentTask || parentTask.parentSessionId !== parentSessionId)) throw Error('Parent worker is unknown or belongs to another session');
   if (parentTask && seconds > Math.max(1, Math.floor(parentTask.limit / 2))) throw Error(`Copied task deadline cannot exceed half of parent task (${Math.floor(parentTask.limit / 2)} seconds)`);
@@ -381,7 +435,7 @@ export class WorkerPool {
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
-  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId };
+  const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}) };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));
    this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'queued', task.started, JSON.stringify({state:task.state,profileRevision:task.profileRevision}));
@@ -437,8 +491,8 @@ export class WorkerPool {
    }
   } finally { this.pumping = false; }
  }
- async run(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string): Promise<Task> {
-  const handle = this.launch(crew, instruction, cwd, session, seconds, signal, parentSessionId || session, tools, skills, mcp, delegationDepth, parentWorkerId);
+ async run(crew: Crew, instruction: string, cwd: string, session: string, seconds = DEFAULT_TASK_SECONDS, signal?: AbortSignal, parentSessionId = '', tools: string[] = crew.tools ?? Array.from(READ_ONLY_TOOLS), skills: string[] = crew.skills ?? [], mcp = false, delegationDepth = 0, parentWorkerId?: string, budgetTokens?: number): Promise<Task> {
+  const handle = this.launch(crew, instruction, cwd, session, seconds, signal, parentSessionId || session, tools, skills, mcp, delegationDepth, parentWorkerId, budgetTokens);
   return this.completions.get(handle.workerId) || structuredClone(this.tasks.find(task => task.id === handle.workerId)!);
  }
 }

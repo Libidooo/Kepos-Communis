@@ -4,7 +4,7 @@ import {EventEmitter} from 'node:events';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {WorkerPool,MAX_CONCURRENT_CHILDREN,DEFAULT_TASK_SECONDS} from '../dist/terminal/workers.js';
+import {WorkerPool,MAX_CONCURRENT_CHILDREN,DEFAULT_TASK_SECONDS,configureWorkerBudget} from '../dist/terminal/workers.js';
 import {OrbitalDatabase} from '../dist/terminal/database.js';
 
 const crew={id:'expert',name:'Expert',role:'investigate',model:'fixture',provider:'fixture'};
@@ -13,6 +13,7 @@ test('default worker policy exposes 48 slots and a five-minute review baseline',
 test('main-agent review acknowledgement is scoped to the worker handle',async t=>{const f=fixture(t);const handle=f.launch('review');await turn();const review=f.pool.review(handle,'a');assert.equal(review.state,'STARTING');assert.equal(review.reviewDue,false);assert.equal(f.pool.review(handle,'wrong').state,'UNKNOWN_HANDLE');});
 test('copy delegation is one level and halves the parent budget',async t=>{const f=fixture(t);const parent=f.launch('parent','a',{seconds:5});assert.throws(()=>f.pool.launch(crew,'too long',t.name,'source',3,undefined,'a',[],[],false,1,parent.workerId),/half/);const child=f.pool.launch(crew,'copy',t.name,'source',2,undefined,'a',[],[],false,1,parent.workerId);assert.equal(f.pool.tasks.at(-1).delegationDepth,1);assert.equal(f.pool.tasks.at(-1).parentWorkerId,parent.workerId);f.pool.cancelHandle(child,'a');f.pool.cancelHandle(parent,'a');});
 function fixture(t,concurrency=1){
+ configureWorkerBudget(()=>({}));
  const dir=mkdtempSync(join(tmpdir(),'kepos-queue-'));
  const database=new OrbitalDatabase(join(dir,'state.sqlite'));
  const executors=[];let alive=0,peak=0;
@@ -23,7 +24,7 @@ function fixture(t,concurrency=1){
    reserve(){this.busy=true;},release(){this.busy=false;this.onEvent=undefined;this.onExit=undefined;},
    async ready(){},async reset(){this.uses++;},async request(type,args){if(type==='prompt')this.messages.push(args.message);return{disposition:'started'};},
    kill(){if(this.dead||this.stopping)return;this.stopping=true;queueMicrotask(()=>{this.dead=true;alive--;child.emit('close',0);this.onExit?.(Error('closed'));});},
-   succeed(text='OK'){this.onEvent?.({type:'agent_start'});this.onEvent?.({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop'}});this.onEvent?.({type:'agent_settled'});},
+   succeed(text='OK',usage){this.onEvent?.({type:'agent_start'});this.onEvent?.({type:'message_end',message:{role:'assistant',content:[{type:'text',text}],stopReason:'stop',usage}});this.onEvent?.({type:'agent_settled'});},
   };
   executors.push(e);alive++;peak=Math.max(peak,alive);return e;
  };
@@ -107,4 +108,49 @@ test('mixed queued workload drains without loss, over-capacity or receipt replac
  assert.equal(results.length,90);assert.ok(results.every(r=>['SUCCEEDED','CANCELLED'].includes(r.state)));assert.equal(f.pool.children.size,0);assert.ok(f.peak()<=3);
  for(const h of handles){const before=f.pool.result(h,h.parentSessionId);f.pool.cancelHandle(h,h.parentSessionId);assert.deepEqual(f.pool.result(h,h.parentSessionId),before);}
  assert.equal(f.database.prepare('SELECT COUNT(*) AS n FROM workers WHERE receipt IS NULL').get().n,0);
+});
+
+test('per-task budget cap stops the spend and keeps the evidence queryable',async t=>{
+ const f=fixture(t);configureWorkerBudget(()=>({perTaskTokens:150}));
+ t.after(()=>configureWorkerBudget(()=>({})));
+ const capped=f.launch('capped','a',{crew:{...crew,name:'Capped'}});
+ await turn();f.executors[0].succeed('partial output',{input:100,output:90,cacheRead:20,cost:{total:0.4}});
+ await turn();await turn();
+ const receipt=f.pool.result(capped,'a');
+ assert.equal(receipt.state,'CANCELLED');
+ assert.match(String(receipt.error),/预算上限/);
+ assert.ok(receipt.output.includes('partial output'),'evidence stays readable');
+ // An explicit higher per-task cap lets the same usage run to completion.
+ const wider=f.launch('wider','a',{crew:{...crew,name:'Wider'}}); f.pool.tasks.find(task=>task.id===wider.workerId).budgetTokens=500;
+ await turn();f.executors.at(-1).succeed('done',{input:100,output:90,cacheRead:20,cost:{total:0.4}});
+ await turn();await turn();
+ assert.equal(f.pool.result(wider,'a').state,'SUCCEEDED');
+});
+
+test('daily budget refuses new dispatch after the limit is consumed',async t=>{
+ const f=fixture(t);configureWorkerBudget(()=>({dailyTokens:100}));
+ t.after(()=>configureWorkerBudget(()=>({})));
+ const first=f.launch('first','a');
+ await turn();f.executors[0].succeed('done',{input:80,output:60,cost:{total:0.1}});
+ await turn();await turn();
+ assert.equal(f.pool.result(first,'a').state,'SUCCEEDED');
+ assert.throws(()=>f.launch('second','a'),/今日预算已用尽/);
+});
+
+test('a stalled task is flagged for review but never auto-killed',async t=>{
+ const f=fixture(t);configureWorkerBudget(()=>({stallMinutes:0.01}));
+ t.after(()=>configureWorkerBudget(()=>({})));
+ const handle=f.launch('long-runner','a');
+ await turn();
+ f.executors[0].onEvent?.({type:'agent_start'});
+ await turn();
+ await new Promise(resolve=>setTimeout(resolve,1200));
+ const task=f.pool.tasks.find(item=>item.id===handle.workerId);
+ assert.equal(task.stalled,true,'system flags the stall');
+ assert.equal(task.state,'RUNNING','the system does not kill it');
+ assert.equal(task.reviewDue,true);
+ f.executors[0].succeed('finally done');
+ await turn();await turn();
+ assert.equal(f.pool.result(handle,'a').state,'SUCCEEDED');
+ assert.equal(f.pool.tasks.find(item=>item.id===handle.workerId).stalled,false,'progress clears the flag');
 });

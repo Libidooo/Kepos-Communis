@@ -52,3 +52,15 @@ export function planTree(jobs: { id: string; task: string; state: string; depend
  for (const job of jobs) if (!seen.has(job.id)) walk(job.id, 0);
  return lines;
 }
+
+/** Risk note for a configured member based on recent task outcomes; undefined when healthy. */
+export function agentRisk(tasks:{agent:string;state:string}[],name:string):string|undefined{
+ const recent=tasks.filter(task=>task.agent===name).slice(-10);
+ if(!recent.length)return undefined;
+ const failed=recent.filter(task=>['FAILED','TIMED_OUT'].includes(task.state));
+ let consecutive=0;
+ for(const task of [...recent].reverse()){if(['FAILED','TIMED_OUT'].includes(task.state))consecutive++;else break;}
+ if(consecutive>=3)return `⚠ 最近连续失败 ${consecutive} 次，建议先修改该成员配置再分派`;
+ if(recent.length>=5&&failed.length/recent.length>=0.5)return `⚠ 近 ${recent.length} 次任务失败 ${failed.length} 次，成功率偏低；建议检查职责、模型或工具范围`;
+ return undefined;
+}

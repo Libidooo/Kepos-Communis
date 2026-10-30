@@ -18,6 +18,8 @@ export interface Config {
   approvalPolicy?: import('./approval.ts').ApprovalPolicy;
   /** Default read scope for delegated workers; tasks and members may override. */
   workerReadScope?: import('./worker-sandbox.ts').ReadScope;
+  /** Token/cost limits; unset fields mean unlimited. */
+  budget?: import('./workers.ts').BudgetConfig;
 }
 
 const snapshots = new WeakMap<Config, Config>();
