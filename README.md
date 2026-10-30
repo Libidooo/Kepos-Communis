@@ -1,11 +1,11 @@
 <p align="center">
-  <img src="docs/assets/kepos-logo-v14.svg" alt="Kepos Communis — 让协作自然生长" width="620">
+  <img src="docs/assets/kepos-logo-v14.svg" alt="Kepos Communis — 让效率回到人的目的" width="620">
 </p>
 
-<p align="center"><strong>让协作自然生长。</strong></p>
+<p align="center"><strong>让效率回到人的目的。</strong></p>
 
 <p align="center">
-一个终端优先的多 Agent 花园：人类和 Agent 共同播种目标，协作代表照料并行工作，Kepos 让证据、计划和人类决策自然汇聚。
+Kepos Communis 是人与 Agent 共同工作的终端空间。它组织任务分派、并行协作与证据汇集，让你看清工作的进展，并在需要时介入、暂停或重新确定方向。工作可以交由工具推进，目的与判断由你决定。
 </p>
 
 <p align="center">
@@ -23,13 +23,15 @@
 
 ## 为什么是 Kepos
 
-大多数 Agent 工具只展示一段聊天。Kepos 更像一座共同照料的花园：每个代表都有自己的工作台，成果可以被看见、复用和继续培育。
+工作推进得越快，越需要知道它为何被推进。Kepos 将任务、证据与决策放在同一个协作空间里：不同的 Agent 带回各自的发现，你可以检查结果、比较分歧，并决定接下来值得做什么。
+
+Kepos 意为花园。对我们而言，共同工作的空间需要持续照料：成果有来处，分歧能被看见，方向可以重新讨论。
 
 - **主 Agent + 协作代表**：主 Agent 负责任务拆解、派发和汇总；代表默认只读。
 - **证据先于结论**：任务先返回短预览，完整产出通过任务句柄和游标读取。
 - **任务配置冻结**：模型、工具、角色和 Skill 在任务开始时形成不可变 profile revision。
 - **长程工作可恢复**：Mission 是持久 DAG，支持依赖、暂停、取消、人工门禁和恢复。
-- **协作进入界面**：代表席、项目/会话、工具活动、任务证据和人类决策入口在同一 TUI 中自然汇聚。
+- **过程可以被理解**：代表席、项目/会话、工具活动、任务证据和人类决策入口在同一 TUI 中呈现。
 
 Kepos 使用 [Pi SDK](https://github.com/badlogic/pi-mono) 负责模型、会话和认证；Kepos 负责协作基础设施。用户不需要额外安装全局 Pi。
 
@@ -93,7 +95,7 @@ kepos
 
 ## TUI 工作台
 
-Kepos 的三栏工作台分别承载代表席、主会话和项目/对话。底部输入区负责目标、命令和任务控制；视觉主题使用花园纸、叶绿、薄荷、珊瑚、向日葵黄和天空蓝。
+Kepos 的三栏工作台分别承载代表席、主会话和项目/对话。底部输入区负责目标、命令和任务控制。终端沿用 `orbital-76` 语义色；新的品牌展示图采用朱红与暖纸白双色。
 
 ```text
 Kepos · project-b (main) · gpt-6.1-sol · ctx 14% · 01:42              PLAN · 2 agents
@@ -114,7 +116,7 @@ Kepos · project-b (main) · gpt-6.1-sol · ctx 14% · 01:42              PLAN �
 F1 帮助   F2 操作   F3 任务   F4 模型   F5 工具   F7 复制   F8 全局   F9 计划
 ```
 
-默认主题是 `orbital-76`。主题文件位于 `themes/orbital-76.json`；品牌标语是“让协作自然生长”。
+默认主题是 `orbital-76`。主题文件位于 `themes/orbital-76.json`；品牌主张是“让效率回到人的目的”。
 
 ## 核心能力
 
