@@ -101,7 +101,7 @@ test('three-column body is framed with embedded titles, welcome card and usage b
  const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
  const rows=desk.render(120);
  assert.ok(rows.some(l=>l.includes('╭')&&l.includes('代表席')),'crew panel frame');
- assert.ok(rows.some(l=>l.includes('╭')&&l.includes('主案')),'transcript panel frame');
+ assert.ok(rows.some(l=>l.includes('╔')&&l.includes('主案')),'focused transcript panel uses a double frame');
  assert.ok(rows.some(l=>l.includes('╭')&&l.includes('项目 / 对话')),'projects panel frame');
  assert.ok(rows.some(l=>l.includes('╭')&&l.includes('Kepos 议案')),'welcome card');
  assert.ok(rows.at(-2)?.includes('▓')&&rows.at(-2)?.includes('░'),'usage meter bar');
@@ -129,5 +129,18 @@ test('mode chip, panel subtitles and stamped activity stream render',()=>{
  desk.event({type:'agent_start'});
  desk.event({type:'tool_execution_start',toolName:'read'});
  assert.ok(desk.render(120).join('\n').includes('▸ +0.0s read'),'stamped activity line');
+ desk.dispose();
+});
+
+test('scrollbar thumb tracks reading position in the framed transcript',()=>{
+ const entries=Array.from({length:80},(_,i)=>({id:'e'+i,type:'message',message:{role:'user',content:[{type:'text',text:'消息 '+i}]}}));
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>entries,getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ const following=desk.render(120);
+ assert.ok(following.some(l=>l.includes('▓')&&l.includes('│')),'thumb visible inside the transcript frame');
+ desk.handleInput('\x1b[5~');
+ const scrolled=desk.render(120).join('\n');
+ assert.ok(scrolled.includes('已暂停跟随'));
+ assert.ok(scrolled.includes('·'),'track dots visible while scrolled');
  desk.dispose();
 });
