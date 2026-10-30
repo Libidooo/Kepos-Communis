@@ -14,4 +14,4 @@
 
 Node state and edge animation are presentation hints. The database graph tables remain the source for graph queries. `canvas/graph.html` loads this JSON locally without a network dependency; a React Flow or Svelte Flow adapter can consume the same objects.
 
-The live terminal graph is opened with `F10`. `GraphStore.events(runId, cursor, limit)` remains the incremental graph event API used by the terminal view. The old standalone graph export command is retired.
+The live terminal graph is opened with `F10`. It does **not** read `GraphStore.events`: the terminal view (`terminal/index.ts`, `Desk.graph.snapshot`) reads `pool.tasks` plus `scheduler.list()` (including `NEEDS_HUMAN` gate jobs) and renders them through `terminal/graph-view.ts`. `GraphStore.events(runId, cursor, limit)` remains the incremental event API for stored graph runs. The old standalone graph export command is retired.

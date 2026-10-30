@@ -1,4 +1,26 @@
-# 当前开发状态 — 0.3.0-beta.4
+# 当前开发状态 — 0.3.0-beta.5 准备中（2026-10-30）
+
+分支 `codex/beta5-hardening` 已完成第一批加固：F10 图谱在真实 orbital-76 主题下不再崩溃（渲染异常退回工作台）、profile 修订哈希纳入 roleKey 并在恢复旧修订时清理多余字段、daemon 防重复启动且丢失租约时报错退出、远程 Worker 协议增加 1 MiB 缓冲上限/按会话过滤事件/1200 秒门禁/非回环强制 TLS、父会话间严格轮转（3 个以上会话有测试）、十席代表只初始化一次（删除后不再自动补回）、`orbital_worker` 支持按当前会话 taskId 复核、`/reload` 取消任务前先确认且关停清理必然执行、确认框中文化并默认"否"，README/CHANGELOG/画布/daemon/graph-contract 文档已与代码对齐。
+
+- 验证：`npm run typecheck` 通过；`npm test` 74 项全部通过；无模型调用。本轮改动均带针对性测试（daemon 租约、远程协议四种失败、三父会话轮转、修订恢复、真实主题渲染）。
+- 发布状态：GitHub 公开，Release 已发布（0.3.0-beta.4）；npm 尚未发布。
+- F10 议会图谱已可用：静态分环布局、父子任务连线、鼠标拖动、详情气泡与席位状态配色；数据来自 `pool.tasks` 与 `scheduler.list()`（见 docs/graph-contract.md），不是 GraphStore。
+
+## 已知问题与待决事项（需人类拍板）
+
+- D1 主 Agent 理论上可用 bash 或直接改 SQLite 绕过人工门禁（Pi 默认开放 read/bash/edit/write）；建议批准动作必须人工确认，触碰 Kepos 数据的工具需确认。
+- D2 子 Agent 继承全部环境变量且可读项目外文件；建议环境变量白名单、默认仅项目目录、永不读 Kepos home 与凭据。
+- D3 Windows 服务经 sc.exe 注册很可能无法启动（未验证）；建议改为登录时计划任务。
+- D4 TUI、CLI、daemon 各自维护 WorkerPool；需先写统一调度设计再实施。
+- D5 四种模式、Tab 排队、Ctrl+K、计划步骤树等交互设想需先出界面草图再实现。
+- D6 成本/token 预算规则未定。
+- D7 品牌红色 #BD343A 与 #B52F3B 需定一个。
+- D8 发版方式：建议发 0.3.0-beta.5；是否发 npm 由人类决定。
+- 技术残留：RemoteWorkerPool.eventsSince 仍是返回空结果的桩（随 D4 统一调度处理）；跨进程执行器管理、真实模型长跑、干净环境安装与跨平台实机验收未做。
+
+---
+
+# 上一阶段状态 — 0.3.0-beta.4
 
 本轮使用 code-simplifier 技能整理了 CLI、运行时认证、配置保存和调度代码，并加入自动构建、专家修订恢复、GraphStore、SQLite scheduler lease 和更简单的启动入口。重构保留既有命令、退出码和人工门禁行为；新增启动体验与配置修订管理另有针对性测试。
 
@@ -14,7 +36,7 @@
 
 本轮验证：`npm run typecheck`、45项 `npm test`、旧回归、真实ConPTY修订恢复及打包产物启动均通过。打包白名单已包含最新 GraphStore/daemon 文件，产物约122KB，使用项目已有依赖验证，不是干净机器安装验收。全局启动入口已备份至 `recovery/launcher-d59531e1-5040-4278-99a8-96e5d580d8b4/`。本轮无模型调用。全局 PATH 入口已通过 `install-launcher.cjs --check` 核对，`kepos doctor --json` 从用户目录启动通过。
 
-下面保留上一阶段的运行时验证记录。Run/Node/Edge/Event/Artifact 数据投影、SQLite scheduler lease、`kepos daemon`、远程 Worker 协议和事件归档已完成第一版；React Flow 适配的离线画布已提供，完整画布交互和跨机器路由策略仍待完成；尚未公开发布。
+下面保留上一阶段的运行时验证记录。Run/Node/Edge/Event/Artifact 数据投影、SQLite scheduler lease、`kepos daemon`、远程 Worker 协议和事件归档已完成第一版；React Flow 适配的离线画布已提供，完整画布交互和跨机器路由策略仍待完成；GitHub 公开发布（Release 已发），npm 尚未发布。
 
 ---
 

@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.3.0-beta.5 — 2026-10-30（未发布）
+
+- Fix the F10 graph crash: orbital-76 `vars` colors (teal/blue/mauve) are emitted directly instead of going through theme lookups that throw; a failing frame now falls back to the desk with a notice instead of ending the process.
+- Include `roleKey` in profile revision hashes (v2); restoring an old revision clears fields absent from the stored snapshot; draft/config save failures surface a notice.
+- Harden the scheduler daemon: duplicate `start()` throws, a lost lease rejects `run()` with an error, and the CLI reports the failure reason with a non-zero exit; shutdown errors log to stderr.
+- Harden the remote worker wire protocol on both ends: 1 MiB buffer caps, `events` requires and filters by `parentSessionId`, remote submits past the 1200 s human gate are rejected, and the client fails fast on unparsable/mismatched responses and enforces TLS beyond loopback.
+- Dispatch now rotates strictly across three or more parent sessions; council seats seed exactly once so deleted members stay deleted.
+- `orbital_worker` accepts the current session's `taskId` (foreground dispatches have no handle); `/reload` confirms before cancelling tasks and shutdown cleanup always runs; background dispatch rolls back launched workers on failure; mission dispatch cancels a worker left running by failed bookkeeping.
+- Desk fixes: F3 resets to session scope, right column reserves its 4 header rows so the bottom row stays visible, confirm dialogs use Chinese options defaulting to No, and the mission menu only reports real changes.
+- Terminal work from 10-29: static F10 graph with rings, parent-child edges, mouse dragging and a detail bubble; council seat state palette and right-aligned status.
+- Documented: graph contract now reflects the F10 data source, canvas README notes the retired export command, daemon doc marks the Windows service as unverified, README aligns copyOf / gate-reject / remote-TLS wording with the code.
+
 ## 0.3.0-beta.4 — 2026-10-28
 
 - Add first Run/Node/Edge/Event/Artifact graph projection and graph cursor APIs.
@@ -10,31 +22,12 @@
 - Add preset Policy, Publication, and Code delegates plus the `orbital_roles` catalog tool for fast role selection; custom main-agent role definitions remain supported.
 - Split the Council role catalog into six domain files with a shared type/index layer; make terminal extension installation recursive so nested role modules ship correctly.
 
-
 ## 0.3.0-beta.3 — 2026-10-28
 
 - Simplify CLI parsing, workspace auth hosting, config merging, scheduler boundaries and startup diagnostics.
 - Build source checkouts automatically by content fingerprint; keep the existing compiled entry only for published packages, not failed source builds.
 - Add global `start.cmd`, repair PATH launcher and add `kepos` from any project directory.
 - Add immutable profile history, readonly tool presets, F2 restore flow and SDK-owned authentication controls.
-
-
-- Separate CLI parsing, authentication and diagnostics; extract workspace auth controls and model/session selection.
-- Expand compact scheduler code and simplify mission dispatch and config merging while retaining command behavior.
-- Add content-fingerprinted automatic builds for source startup; precompiled npm installs do not require a compiler.
-- Add an ASCII Windows `start.cmd`; repair the global launcher to use the SDK application from any project directory.
-- Save immutable expert configuration revisions; restore them in F2 without altering existing task snapshots.
-- Support saved readonly tool presets and reject unsafe tools.
-
-
-## 0.3.0-beta.3 — 2026-10-28
-
-- Simplify CLI parsing, workspace auth hosting, config merging, scheduler boundaries and startup diagnostics.
-- Build source checkouts automatically by content fingerprint; keep the existing compiled entry only for published packages, not failed source builds.
-- Add global `start.cmd`, repair PATH launcher and add `kepos` from any project directory.
-- Add immutable profile history, readonly tool presets, F2 restore flow and SDK-owned authentication controls.
-
-
 - Fix queued task dispatch after normal completion and after idle executor retirement; retain slots until process exit.
 - Use per-parent FIFO with round robin between parents; handle queued cancellation, AbortSignal, deadlines and pool shutdown.
 - Preserve frozen task profiles and stable revisions; split queue wait from dispatch-to-first-text measurements.

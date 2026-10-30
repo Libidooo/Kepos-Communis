@@ -6,12 +6,12 @@ kepos daemon --home C:\work\kepos-home
 
 The daemon owns a SQLite lease named `default`. The lease has an owner UUID, PID, heartbeat and expiry. A second process cannot dispatch the same plans while the lease is live. If the owner disappears, the lease expires and a new daemon may claim it.
 
-The daemon is a foreground process by design. This makes shutdown, logs and human supervision explicit. Windows service installation is a later packaging layer; the daemon itself already has signal cleanup and worker shutdown.
+The daemon is a foreground process by design. This makes shutdown, logs and human supervision explicit. Since 0.3.0-beta.5 a lost lease ends `run()` with an error and a non-zero exit instead of stopping silently, and a second daemon cannot start against the same data directory.
 
 Use one data directory per daemon. `kepos supervise mission.json` remains a foreground single-plan runner and does not silently start unrelated plans.
 
 ## Windows service
 
-Run `kepos service install --home <directory>` from an elevated terminal. The service name is `KeposScheduler`; use `start`, `stop`, `status`, and `delete` to control it. The registration points at the current npm package entry and passes `daemon --home` explicitly.
+`kepos service install --home <directory>` registers a `KeposScheduler` service via `sc.exe` from an elevated terminal; `start`, `stop`, `status`, and `delete` control it. The registration points at the current npm package entry and passes `daemon --home` explicitly. If PowerShell reports `OpenSCManager error 5`, the shell is not elevated; no service was installed.
 
-On Windows, use an elevated terminal and prefer a service-owned home such as `C:\ProgramData\Kepos` rather than a protected user folder. The service install command creates the directory and settings before calling `sc.exe`. If PowerShell reports `OpenSCManager error 5`, the shell is not elevated; no service was installed.
+**This path is unverified and likely broken**: a raw `sc.exe` registration does not set up the working directory and account environment the Node CLI needs, so the service may register but fail to start. Until packaging is fixed (for example a logon scheduled task), prefer running `kepos daemon` in a foreground terminal with explicit logs.
