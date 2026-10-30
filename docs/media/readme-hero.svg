@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="528" viewBox="0 0 1280 528" role="img" aria-labelledby="title desc">
+  <title id="title">Kepos Communis — 让效率回到人的目的</title>
+  <desc id="desc">朱红与暖纸白的产品横幅。左侧为 Kepos Communis 字标、产品主张和人至 Worker 的分工，右侧以四十八个独立讲台轮廓围合人的判断位置。这是品牌展示，不是运行截图或全局并发承诺。</desc>
+  <defs>
+    <pattern id="grid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M32 0H0V32" fill="none" stroke="#DDD5C8" stroke-width="0.7"/>
+    </pattern>
+    <g id="seat"><path d="M935 77h10l3 12h-16z"/></g>
+    <g id="quarter">
+      <use href="#seat"/><use href="#seat" transform="rotate(7.5 940 257)"/>
+      <use href="#seat" transform="rotate(15 940 257)"/><use href="#seat" transform="rotate(22.5 940 257)"/>
+      <use href="#seat" transform="rotate(30 940 257)"/><use href="#seat" transform="rotate(37.5 940 257)"/>
+      <use href="#seat" transform="rotate(45 940 257)"/><use href="#seat" transform="rotate(52.5 940 257)"/>
+      <use href="#seat" transform="rotate(60 940 257)"/><use href="#seat" transform="rotate(67.5 940 257)"/>
+      <use href="#seat" transform="rotate(75 940 257)"/><use href="#seat" transform="rotate(82.5 940 257)"/>
+    </g>
+    <marker id="arrow" viewBox="0 0 6 6" refX="5" refY="3" markerWidth="6" markerHeight="6" orient="auto"><path d="m1 1 4 2-4 2" fill="none" stroke="#B52F3B" stroke-width="1"/></marker>
+  </defs>
+  <rect width="1280" height="528" fill="#F5F0E7"/>
+  <rect x="672" y="56" width="576" height="392" fill="url(#grid)"/>
+  <path d="M32 32h1216M32 464h1216" stroke="#C7BDAD"/>
+  <path d="M32 32h112M32 464h112" stroke="#B52F3B" stroke-width="3"/>
+  <g font-family="Consolas, 'Liberation Mono', monospace" font-size="12" letter-spacing="1.4" fill="#6A5E52">
+    <text x="56" y="60">KEPOS / COMMUNIS</text>
+    <text x="1224" y="60" text-anchor="end">HUMAN-DIRECTED · TERMINAL WORKSPACE</text>
+  </g>
+  <g fill="#22201F">
+    <text x="53" y="168" font-family="Georgia, 'Times New Roman', serif" font-size="100" letter-spacing="-4">Kepos</text>
+    <text x="57" y="217" font-family="Consolas, 'Liberation Mono', monospace" font-size="32" letter-spacing="8">COMMUNIS</text>
+  </g>
+  <rect x="58" y="244" width="78" height="5" fill="#B52F3B"/>
+  <g font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif">
+    <text x="56" y="305" fill="#B52F3B" font-weight="700" font-size="35" letter-spacing="1">让效率回到人的目的。</text>
+    <text x="58" y="347" fill="#655A4F" font-size="21">一位总理 Agent，48 个代表席。</text>
+  </g>
+  <path d="M58 383h522" stroke="#C7BDAD"/>
+  <g font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="16" fill="#22201F">
+    <text x="58" y="414" font-weight="700">人</text>
+    <text x="142" y="414">总理 Agent</text>
+    <text x="296" y="414">代表 Agent</text>
+    <text x="458" y="414">Worker</text>
+  </g>
+  <g stroke="#B52F3B" fill="none" marker-end="url(#arrow)"><path d="M91 408h31"/><path d="M258 408h20"/><path d="M412 408h28"/></g>
+  <g stroke="#B52F3B" fill="none">
+    <circle cx="940" cy="257" r="202" stroke-opacity="0.2"/>
+    <circle cx="940" cy="257" r="154" stroke-opacity="0.28"/>
+    <path d="M738 257h37m330 0h37M940 55v37m0 330v42" stroke-opacity="0.45"/>
+    <path d="M811 154 910 233M1069 154 970 233M811 360 910 281M1069 360 970 281" stroke-opacity="0.35" stroke-dasharray="3 6"/>
+    <path d="M899 119a144 144 0 0 1 140 258" stroke-width="1.5" marker-end="url(#arrow)"/>
+  </g>
+  <g fill="#B52F3B">
+    <use href="#quarter"/><use href="#quarter" transform="rotate(90 940 257)"/>
+    <use href="#quarter" transform="rotate(180 940 257)"/><use href="#quarter" transform="rotate(270 940 257)"/>
+  </g>
+  <circle cx="940" cy="257" r="51" fill="#F5F0E7" stroke="#B52F3B" stroke-width="1.5"/>
+  <circle cx="940" cy="237" r="5" fill="#B52F3B"/>
+  <text x="940" y="269" text-anchor="middle" fill="#B52F3B" font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="23" font-weight="700">判断</text>
+  <text x="940" y="293" text-anchor="middle" fill="#6A5E52" font-family="Consolas, 'Liberation Mono', monospace" font-size="9" letter-spacing="1">STAYS WITH YOU</text>
+  <g font-family="Consolas, 'Liberation Mono', monospace" font-size="11" letter-spacing="1" fill="#6A5E52">
+    <text x="940" y="137" text-anchor="middle" fill="#B52F3B" font-size="22" letter-spacing="0" font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif">48 个代表席</text>
+    <text x="940" y="396" text-anchor="middle">COUNCIL / 48 SEATS</text>
+    <text x="56" y="498">01 / PURPOSE</text>
+    <text x="412" y="498">02 / DIVISION OF WORK</text>
+    <text x="815" y="498">03 / EVIDENCE &amp; REPORTS</text>
+    <text x="1224" y="498" text-anchor="end" fill="#B52F3B">K / C</text>
+  </g>
+</svg>

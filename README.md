@@ -1,212 +1,215 @@
 <p align="center">
-  <img src="docs/assets/kepos-logo-v14.svg" alt="Kepos Communis — 让效率回到人的目的" width="620">
+  <img src="docs/media/readme-hero.svg" width="100%" alt="Kepos Communis — 一位总理 Agent，48 个代表席。让效率回到人的目的。">
 </p>
 
-<p align="center"><strong>让效率回到人的目的。</strong></p>
+<p align="center"><strong>一位总理 Agent，48 个代表席。</strong></p>
 
 <p align="center">
-Kepos Communis 是人与 Agent 共同工作的终端空间。它组织任务分派、并行协作与证据汇集，让你看清工作的进展，并在需要时介入、暂停或重新确定方向。工作可以交由工具推进，目的与判断由你决定。
-</p>
-
-<p align="center">
-  <a href="#快速开始">快速开始</a> ·
-  <a href="#工作方式">工作方式</a> ·
-  <a href="#tui-工作台">TUI 工作台</a> ·
-  <a href="#开发与验证">开发与验证</a>
+  <a href="#product">48 个代表席</a> ·
+  <a href="#install">安装</a> ·
+  <a href="#workspace">工作台</a> ·
+  <a href="#architecture">工程架构</a> ·
+  <a href="#mechanisms">实现方法</a> ·
+  <a href="docs/README.md">文档</a>
 </p>
 
 <p align="center">
-  <img alt="status beta" src="https://img.shields.io/badge/status-beta-B52F3B?style=flat-square&labelColor=171717">
-  <img alt="node 24+" src="https://img.shields.io/badge/node-%3E%3D24-0B2744?style=flat-square&labelColor=F2E9D8">
-  <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-171717?style=flat-square&labelColor=F2E9D8">
+  <img src="https://img.shields.io/badge/stage-beta-B52F3B?style=flat-square&labelColor=22201F" alt="Beta 阶段">
+  <img src="https://img.shields.io/badge/council-48_seats-B52F3B?style=flat-square&labelColor=22201F" alt="48 个代表席">
+  <img src="https://img.shields.io/badge/Node.js-24%2B-22201F?style=flat-square&labelColor=B52F3B" alt="需要 Node.js 24 或更高版本">
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-22201F?style=flat-square&labelColor=B52F3B" alt="Windows、macOS 和 Linux">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22201F?style=flat-square&labelColor=B52F3B" alt="MIT 许可"></a>
 </p>
 
-## 为什么是 Kepos
+Kepos Communis 是人调度 Agent 进行分工工作的终端空间。你提出目标，总理 Agent 安排工作，代表 Agent 按领域分工，Worker 完成具体任务。报告、任务结果和运行记录都能在工作台中查阅。
 
-工作推进得越快，越需要知道它为何被推进。Kepos 将任务、证据与决策放在同一个协作空间里：不同的 Agent 带回各自的发现，你可以检查结果、比较分歧，并决定接下来值得做什么。
+**48 个代表席**是 Kepos 的协作界面。你可以为不同代表配置职责、模型和 Skill，让调研、工程、核验等工作并行进行。总理负责汇总，遇到分歧或需要决定的步骤再交给你。
 
-Kepos 意为花园。对我们而言，共同工作的空间需要持续照料：成果有来处，分歧能被看见，方向可以重新讨论。
+我们希望把更多执行工作交给工具，同时保留人对工作的判断：为什么做、做到什么程度、是否还值得继续。效率服务于这些问题，而不替人回答它们。
 
-- **主 Agent + 协作代表**：主 Agent 负责任务拆解、派发和汇总；代表默认只读。
-- **证据先于结论**：任务先返回短预览，完整产出通过任务句柄和游标读取。
-- **任务配置冻结**：模型、工具、角色和 Skill 在任务开始时形成不可变 profile revision。
-- **长程工作可恢复**：Mission 是持久 DAG，支持依赖、暂停、取消、人工门禁和恢复。
-- **过程可以被理解**：代表席、项目/会话、工具活动、任务证据和人类决策入口在同一 TUI 中呈现。
+<a id="product"></a>
+## 48 个代表席
 
-Kepos 使用 [Pi SDK](https://github.com/badlogic/pi-mono) 负责模型、会话和认证；Kepos 负责协作基础设施。用户不需要额外安装全局 Pi。
+按 `F10` 打开议会，可以查看各代表的任务、状态、关系和结果；也可以切换到任务列表，直接找到失败或等待处理的任务。
 
-## 快速开始
+| 角色 | 分工 |
+| --- | --- |
+| **人** | 提出目标和约束，检查结果，决定下一步 |
+| **总理 Agent** | 拆解任务、安排代表、汇总报告、核对依据 |
+| **代表 Agent** | 承担调研、规划、工程、风险、核验等领域的工作 |
+| **Worker** | 执行具体委派，返回产出、错误和运行记录 |
 
-需要 Node.js **24 或更高版本**。
+默认预置十个常用代表，职责和模型都可以调整，也能为某项任务创建临时代表。48 席不要求全部启用：需要多少分工，就安排多少。单个执行池最多同时处理 **48 项任务**，其余任务排队。
 
-### 直接安装
-
-```powershell
-npm install -g github:Libidooo/kepos-communis
-kepos doctor --json
-kepos
+```mermaid
+flowchart LR
+    H["人<br/>提出目标"] --> P["总理 Agent<br/>组织工作"]
+    P --> C["48 个代表席<br/>按领域分工"]
+    C --> W["Worker<br/>执行任务"]
+    W --> E["报告与运行记录"]
+    E --> P
+    P -->|汇报和待决事项| H
+    classDef human fill:#B52F3B,color:#FFFFFF,stroke:#B52F3B
+    classDef work fill:#F5F0E7,color:#22201F,stroke:#B52F3B
+    class H human
+    class P,C,W,E work
 ```
 
-### 从源码运行
+代表是工作职责，Worker 是执行单元。当前由总理发起委派，复制委派最多一层，不会由子任务无限派生。更多见[产品说明](docs/product.md)。
 
-```powershell
-git clone https://github.com/Libidooo/kepos-communis.git
+<a id="install"></a>
+## 安装
+
+需要 **Node.js 24+** 和 npm。从源码克隆还需要 Git，不用另外安装全局 Pi。
+
+| 获取方式 | 版本与内容 |
+| --- | --- |
+| [公开 Release](https://github.com/Libidooo/kepos-communis/releases/latest) | 截至 2026-10-31，最新为 **v0.3.0-beta.4**，提供源码归档，尚无安装附件 |
+| 当前开发分支 | `codex/tui-refresh`，版本 **0.3.0-beta.5** |
+| 本地 `.tgz` 包 | 从源码构建，包含编译产物、主题和文档；仍需 Node.js 和 npm 依赖 |
+
+### 从当前分支运行
+
+```bash
+git clone --branch codex/tui-refresh https://github.com/Libidooo/kepos-communis.git
 cd kepos-communis
 npm ci --ignore-scripts
 npm start
 ```
 
-首次进入工作台后：
+启动器会在源码变化时重新构建。上述命令适用于 Windows、macOS 和 Linux，源码目录需保留开发依赖。
 
-1. 输入 `/login`，选择模型服务商并完成认证。
-2. 在输入区描述目标，交给主 Agent。
-3. 让主 Agent 使用 `orbital_delegate` 分派只读代表。
-4. 用 `F3` 查看当前任务、`F8` 查看跨项目任务、`F9` 查看长程计划。
-5. 遇到人工门禁时，在 TUI 中明确允许或暂停；否决一个步骤当前通过取消整个计划表达。
+### 构建并安装 `.tgz`
 
-认证和数据默认保存在 `~/.kepos`。需要隔离环境时使用 `kepos --home <directory>` 或 `KEPOS_HOME`。
+在已安装依赖的源码目录中执行：
 
-### macOS 与 Linux
-
-macOS 和 Linux 使用同一个 Node.js CLI，不需要 Windows launcher 或 Windows Service：
-
-~~~bash
-curl -fsSL https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-nvm install 24
-npm install -g github:Libidooo/kepos-communis
+```bash
+npm pack
+npm install -g ./kepos-communis-0.3.0-beta.5.tgz
 kepos doctor --json
 kepos
-~~~
-
-认证 URL 会调用 macOS 的 `open` 或 Linux 的 `xdg-open`；如果桌面环境没有浏览器启动器，Kepos 仍会把 URL 打印到终端，可手动打开。长程任务可运行 `kepos daemon --home ~/.kepos`；Windows 专用的 `kepos service` 命令在这两个系统上会明确返回平台错误。
-
-## 工作方式
-
-```text
-目标
-  │
-  ▼
-主 Agent ── 拆解 ──> 代表席 ── 并行只读执行 ──> 证据
-  │                                              │
-  └────────────── 汇总、校验、请求人类决策 <──────┘
 ```
 
-任务执行受到明确边界约束：子 Agent 的产出必须经过主 Agent 验证；只读代表不能替人类修改文件；人工门禁不能被模型或 Worker 自动批准；远程 Worker 必须使用 token，绑定到本机回环地址之外时强制 TLS。
+如果已经拿到 `.tgz`，从 `npm install -g` 开始即可。首次安装通常需要联网下载依赖。校验值、配置和排错见[安装指南](docs/installation.md)。
 
-## TUI 工作台
+### 第一次使用
 
-Kepos 的三栏工作台分别承载代表席、主会话和项目/对话。底部输入区负责目标、命令和任务控制。终端沿用 `orbital-76` 语义色；新的品牌展示图采用朱红与暖纸白双色。
+1. 输入 `/login`，配置模型服务商或自定义中转端点。
+2. 用 `F4` 选模型，然后描述目标。例如：*“调研这个项目，分成架构、风险和文档三部分，不要修改文件。”*
+3. 用 `F10` 查看代表分工，`F3` 阅读任务结果，`F9` 查看长程计划。
+4. 遇到需要批准的步骤，查看依据后再决定。
 
-```text
-Kepos · project-b (main) · gpt-6.1-sol · ctx 14% · 01:42              执行中 · 2 代表
-────────────────────────────────────────────────────────────────────────────────────
-代表席                  当前会话                                      项目 / 对话
+数据默认放在 `~/.kepos`。试用或多套配置可用 `kepos --home <directory>` 隔离。模型调用使用你的账户，可能产生费用。
 
-● 主 Agent              › 设计一个可验证的多 Agent 工作流。           ▾ project-b
-  执行中                 ┊ 研究阶段 · 2 workers · 1 running             › 当前会话
-○ 调研 Kiro             ┊ Read 官方文档 · ✓ 3 条证据                     ○ 旧会话
-  ✓ 完成 · 32s
-○ 调研 Gemini           ┊ └ 阶段摘要                                     ▾ kepos
-  · 运行中 · 01:08                                                       ○ ConPTY smoke
+<a id="workspace"></a>
+## 工作台
 
-────────────────────────────────────────────────────────────────────────────────────
-                        › 输入目标…
-                        Enter 发送 · Ctrl+X 中止 · / 命令
-────────────────────────────────────────────────────────────────────────────────────
-F1 帮助   F2 操作   F3 任务   F4 模型   F5 工具   F7 复制   F8 全局   F9 计划
-```
+<p align="center">
+  <img src="docs/media/workbench-map.svg" width="100%" alt="工作台结构示意：左侧代表席，中间当前议案，右侧项目与对话。议会视图提供48个代表席。">
+</p>
 
-默认主题是 `orbital-76`。主题文件位于 `themes/orbital-76.json`；品牌主张是“让效率回到人的目的”。
+*布局示意，非运行截图。*
 
-## 核心能力
+- **左侧代表席**：查看代表的职责和任务状态。
+- **中间议案区**：与总理交谈，阅读报告、工具活动和待决事项。
+- **右侧项目与对话**：切换项目和历史会话。
+- **F10 议会**：查看 48 席协作图，选中代表阅读详情，或切换到列表筛选任务。
 
-| 能力 | 作用 |
+| 按键 | 操作 |
 | --- | --- |
-| Council / 代表席 | 配置稳定角色或临时 roleKey，按任务分派只读代表 |
-| WorkerPool | 默认 48 个并发槽位、队列、每 5 分钟复核、跨项目轮转和 warm executor |
-| Evidence | 结果摘要、完整产出、游标分页、哈希和不可变 receipt |
-| Mission | 持久 DAG、依赖、暂停、取消、人工门禁和恢复 |
-| Agent Graph | 终端内 48 席径向图谱、状态颜色、父子连接、复核提示和 Worker 详情 |
-| Remote Worker | token + TLS 的 health、submit、status、result、cancel、events 协议 |
-| SQLite | 任务、事件、结果、计划和归档的协作索引；Pi JSONL 仍是会话权威来源 |
+| `F2` | 管理项目、代表、任务和审批模式 |
+| `F3` / `F8` | 查看当前会话任务 / 跨项目任务 |
+| `F9` / `F10` | 查看长程计划 / 打开议会 |
+| `F11` | 收起侧栏，专注阅读 |
+| `Ctrl+X` | 议案中止总理与本进程子任务；议会中取消选中任务 |
 
-## 架构
+<details>
+<summary>其他快捷键</summary>
 
-```text
-人类目标
-   │
-   ▼
-Kepos TUI / CLI ─── Pi SDK Runtime ─── 模型服务商
-   │                       │
-   ├─ Council Profiles      └─ Auth / Session / Theme
-   ├─ WorkerPool → queue → warm executor / RPC child
-   ├─ MissionScheduler → DAG / gate / lease / recovery
-   ├─ GraphStore → Run / Node / Edge / Event / Artifact
-   └─ SQLite → receipts / checkpoints / retention archive
-```
-
-## 常用命令与快捷键
-
-```powershell
-kepos login
-kepos logout
-kepos doctor --json
-kepos missions
-F10              打开议会（48 席协作图）
-kepos daemon --home <dir>
-```
-
-| 按键 | 作用 |
+| 按键 | 操作 |
 | --- | --- |
-| `Enter` | 发送目标；议会席位/列表焦点下打开详情，输入焦点才发送 |
-| `F1` | 帮助（议案与议会内都可见） |
-| `F2` | 项目、会话、代表、分派和审批菜单 |
-| `F3` | 当前父会话任务 |
-| `F4` | 切换主 Agent 模型 |
-| `F5` | 展开/折叠工具输出 |
-| `F6` | 输入、项目、代表席之间切换；议会内按 席位 → 列表 → 输入 循环 |
+| `Enter` | 输入区发送；议会席位或列表焦点下打开详情 |
+| `F1` | 帮助 |
+| `F4` | 切换总理 Agent 模型 |
+| `F5` | 展开 / 折叠工具输出 |
+| `F6` | 切换面板焦点 |
 | `F7` / `/copy` | 复制最新完整回答 |
-| `F8` | 当前会话/跨项目监控；议会内循环任务筛选（活跃/待处理/全部） |
-| `F9` | 长程计划监控 |
-| `F10` | 议会（48 席协作图）：↑↓ 选席 · Enter 详情 · Ctrl+X 取消选中任务 |
-| `F11` | 专注阅读：中栏最大化，Esc 或再按恢复 |
-| `Tab` | 议会内切换 席位图 / 任务列表（窄屏默认列表） |
-| `/` | 议会列表内过滤关键词，Esc 结束 |
-| `v` | 议会列表内查看任务完整产出 |
+| `Tab` | 议会内切换席位图 / 任务列表 |
+| `/` / `v` | 议会列表内过滤 / 阅读完整产出 |
 | `Ctrl+K` | 命令面板 |
-| `Ctrl+X` | 议案中止主 Agent 和本进程子任务；议会取消选中任务 |
-| `Esc` | 逐层返回：详情 → 列表 → 席位 → 议案 |
+| `Ctrl+End` | 回到最新消息，恢复跟随 |
+| `Esc` | 逐层返回 |
 
-上滚历史即暂停跟随，`Ctrl+End` 回到最新并恢复跟随；中止执行请用 `Ctrl+X`（两者语义不同）。审批锤等轻微动效可在配置中设 `motion: false` 关闭。
+上滚历史只暂停跟随，不会中止任务。关闭当前窗口也不代表独立 daemon 或远程任务已停止，请查看对应任务状态。
 
-子 Agent 默认运行 5 分钟，主 Agent 每 5 分钟复核状态。主 Agent 可以通过 `orbital_delegate` 的 `copyOf` 为一个运行中的任务创建一层复制委派（由主 Agent 发起，子 Agent 不能自行复制），子任务时限最多是父任务的一半，不能递归扩散。超过 20 分钟的步骤必须进入 Mission 并等待人类批准；单步安全上限为 60 分钟。默认启动十个稳定 Council 角色，任务可以继续扩充临时角色或复用既有配置。
+</details>
 
-## 开发与验证
+<a id="architecture"></a>
+## 工程架构
 
-```powershell
+Kepos 基于 Pi SDK。Pi 负责模型、认证和会话运行；Kepos 负责代表配置、任务调度、运行记录和协作界面。
+
+```text
+TUI 工作台 ── Pi SDK ── 模型服务商
+    └─ 代表配置 / WorkerPool / MissionScheduler
+
+CLI ───────── 认证、诊断、计划操作 / 本地运行
+daemon ────── 本地 RPC / 租约 / 自有执行池
+
+各执行池 ──── Worker 进程 ── 任务结果
+    │
+    ├─ Pi JSONL：原始会话
+    └─ SQLite：任务、计划、事件、回执、图投影
+                       │
+                  监控与证据读取
+```
+
+TUI、CLI 和 daemon 目前并未全部共用一个执行池。**48 项并发是单池上限**。跨入口的统一调度已有 RPC 基础，其余工作见[统一调度设计](docs/unified-scheduling.md)。
+
+组件关系、数据归属和源码入口见[工程架构](docs/architecture.md)。
+
+<a id="mechanisms"></a>
+## 实现方法
+
+| 机制 | 做法 |
+| --- | --- |
+| **代表配置** | 接受委派时保存角色、模型、工具与 Skill 快照，关联配置修订 |
+| **48 槽执行池** | 同一会话内按顺序排队，会话间轮转；复用热进程前清空上下文 |
+| **长程计划** | Mission 用 DAG 保存步骤和依赖；默认任务时限 5 分钟，超过 20 分钟的步骤进入审批，单步最长 60 分钟 |
+| **运行证据** | 提供短预览和分页读取，保存结果哈希、终态回执与任务事件 |
+| **权限控制** | 提供三态审批、读取范围、环境变量白名单和按任务授予的 MCP 权限 |
+| **取消与清理** | 记录取消请求和退出状态，失败时保留错误及已有产出 |
+
+<a id="boundaries"></a>
+## 当前限制
+
+- 默认严格审批会对涉及门禁或 Kepos 数据的操作请求确认；代理审批允许模型批准门禁。只读监督移除常见修改工具，已配置 MCP 的权限需要另行检查。
+- 计划可以保存和重新查看；无法确认的派发不会自动重放。进程重启后，部分任务需要人工核对。
+- 回执和哈希记录运行结果，报告内容仍需核验。超龄终态任务会按[保留策略](docs/retention.md)清理，重要产出请单独备份。
+- 当前仍在 Beta 阶段。统一执行池、全局预算和跨机器路由尚需完善；取消请求也不能代替远端退出确认。
+
+详细约束见 [SECURITY.md](SECURITY.md)。
+
+<a id="development"></a>
+## 开发与文档
+
+```bash
 npm ci --ignore-scripts
 npm run typecheck
 npm test
-npm run test:legacy
-npm run test:terminal:sdk
 npm run test:package
 npm run audit:public
 ```
 
-测试不需要模型调用。GitHub CI 在 Ubuntu、Windows 和 macOS 上运行 typecheck、核心测试、打包和公开仓库审计；`test:terminal:sdk` 使用真实 Windows ConPTY 验证启动、帮助、菜单、任务监控、中止和热重载；`test:live` 会调用真实模型，可能产生费用，应单独执行。
+CI 配置覆盖 Ubuntu、Windows、macOS / Node 24 的类型检查、核心测试、打包预览和公开仓库审计。`test:package` 检查包内文件及文档链接，并用隔离数据目录运行包内 `doctor`；它复用项目依赖，干净机器安装需另行验证。
 
-公开安全边界见 [SECURITY.md](SECURITY.md)。
+Windows 终端交互另跑 `npm run test:terminal:sdk`，旧回归见 `npm run test:legacy`。`npm run test:live` 会调用真实模型并可能产生费用，不在默认测试范围内。
 
-更多资料：
+- [产品说明](docs/product.md) · [安装指南](docs/installation.md) · [工程架构](docs/architecture.md)
+- [daemon](docs/daemon.md) · [远程 Worker](docs/remote-worker.md) · [归档与保留](docs/retention.md)
+- [图谱契约](docs/graph-contract.md) · [画布](canvas/README.md) · [发布检查](docs/release.md)
+- [全部文档](docs/README.md) · [品牌语言](docs/brand-voice.md)
 
-- [架构说明](docs/architecture.md)
-- [远程 Worker](docs/remote-worker.md)
-- [任务归档](docs/retention.md)
-- [画布接口](canvas/README.md)
-- [开发状态](DEVELOPMENT-STATUS.md)
-- [变更记录](CHANGELOG.md)
+---
 
-## 许可
-
-Kepos Communis 使用 MIT License。Pi SDK 及其传递依赖按各自上游许可证发布，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
-
+Kepos，意为花园。项目采用 [MIT License](LICENSE)，第三方许可见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。

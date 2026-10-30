@@ -1,9 +1,32 @@
-# Event retention
+# 归档与保留
 
-```cmd
+运行证据需要可查询，也需要明确的保留边界。Kepos 的 retention 命令既归档事件，也清理超龄的终态 Worker 记录；**不是只做无损搬移**。
+
+## 运行命令
+
+```sh
 kepos retention --days 30 --max-events 100000
 ```
 
-Worker, Mission and Graph events older than the age limit are moved to SQLite `event_archive`. The per-source row cap is applied afterward. Archive reads are cursor-based and retain source/entity/sequence/type/payload metadata.
+在要维护的环境上执行；若使用自定义 home，补上相同的 `--home <directory>`。这是会修改数据的维护操作，执行前应确认保留期限并备份重要结果。
 
-Pi session JSONL is not deleted by retention. It remains the authoritative conversation history. Retention only handles derived task and orchestration events.
+## 保留与清理的对象
+
+| 对象 | 当前行为 |
+| --- | --- |
+| Worker / Mission / Graph 事件 | 先按年龄归档，再按每种来源的最大行数归档最旧事件 |
+| `event_archive` | 在同一个 SQLite 库中保留来源、实体、序号、类型、时间及 payload，可按游标查询 |
+| 超龄终态 Worker | 按回执结束时间筛选；删除 Worker 行、该行携带的结果回执及仍关联的 Worker 事件 |
+| 仍在运行、尚无回执的 Worker | 不进入终态 Worker 清理范围 |
+| Pi 会话 JSONL | 此命令不删除；仍是原始会话记录 |
+
+回执的“不可变”指保留期间不能被后来的状态写入覆盖，**不表示 retention 永远不能删除它**。已归档的事件也不等于完整结果回执的备份。当前归档表没有单独的自动过期清理。
+
+## 维护建议
+
+1. 核对 home、保留天数和事件行数上限，避免操作错误环境。
+2. 需要长期引用的报告与任务产出，先单独保存。备份整个 home 前，停止使用它的工作台和 daemon。
+3. 执行后查看返回的 `archived`、`remaining`、`workersPruned`，分别对应事件归档、剩余事件和终态任务清理数量。
+4. 不要把 SQLite 当作随时可重建的缓存直接删除；它还保存计划、任务状态和其他协作数据。
+
+[数据位置与隔离](installation.md#数据与隔离) · [工程架构](architecture.md) · [文档索引](README.md)
