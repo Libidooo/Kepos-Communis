@@ -15,8 +15,14 @@
 - D5 四种模式、Tab 排队、Ctrl+K、计划步骤树等交互设想需先出界面草图再实现。
 - D6（已决策并实施，2026-10-30）预算与表决：config.budget 支持 perTaskTokens/perTaskCost（到顶立即停止消耗、证据保留、通知等人）与 dailyTokens/dailyCost（当日累计到顶拒绝新派发）；orbital_delegate 支持按任务 budgetTokens（主 Agent 负责估计）；空转检测只标记 stalled+要求复核，不自动终止——严格审批模式下模型终止空转任务需人类逐次确认，代理模式留痕放行；新增 orbital_vote 表决工具（代表票来自产出末尾 VOTE 约定行，主 Agent 票标注"分派方"，结果由主 Agent 转述人类）；orbital_profiles 附带成员风险（连续失败/成功率）；TUI 任务详情显示空转标记与预算上限。强制点为进程级，D4 第 4 阶段上收 daemon 做全局强制。
 - D7（已按推荐执行，2026-10-30，可一键回退）品牌红色统一为 `#B52F3B`：跟随最新展示图（v21–v23，含专门调色的 v23-red）；brand-voice.md 文字、正式 logo v14（17 处 #B3242A）与 README 徽章已同步替换；历史版本 SVG（v17/v18 等）作为档案保留原色。
-- D8 发版方式：建议发 0.3.0-beta.5；是否发 npm 由人类决定。
+- D8（已决策，2026-10-30）发版：本地版本号升至 0.3.0-beta.5、CHANGELOG 转正、打 tag `v0.3.0-beta.5`；不推送 GitHub、不发 npm——等真实模型验收通过后再发布，npm 届时由人类决定。
 - 技术残留：RemoteWorkerPool.eventsSince 仍是返回空结果的桩（随 D4 统一调度处理）；跨进程执行器管理、真实模型长跑、干净环境安装与跨平台实机验收未做。
+
+## 第三批：只有人类能做
+
+- 真实模型验收（会产生费用）：覆盖 48 槽并发、十个角色、F10 图谱、Mission 人工门禁、预算闸门与表决流程。按测试产物时间推断，最后一次真实模型端到端测试在 10-28。
+- 推送 GitHub、发 Release、是否发 npm。
+- `recovery/` 清理（约 65MB：旧版本备份、自签 TLS 私钥、npm 缓存），删除需人类点头。
 
 ---
 
