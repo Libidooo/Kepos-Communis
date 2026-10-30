@@ -47,6 +47,7 @@ export class WorkerPool {
  private pumpScheduled = false;
  private cancelling = false;
  private lastParent = '';
+ private parentRotation: string[] = [];
  readonly concurrency: number;
 
  constructor(readonly database: OrbitalDatabase = db(), private readonly createExecutor: (profile: WorkerProfile) => WorkerExecutor = profile => new WarmExecutor(profile), options: { concurrency?: number } = {}) {
@@ -395,6 +396,16 @@ export class WorkerPool {
    this.schedulePump();
   }, task.limit * 1000);
   this.queued.set(id, { task, handle, profile, instruction, signal, timer, abort });
+  // Strict round robin: a parent re-joins behind everyone already waiting, and tasks
+  // for the just-served parent wait one full cycle instead of jumping the queue.
+  const pid = task.parentSessionId;
+  if (!this.parentRotation.includes(pid)) {
+   if (pid === this.lastParent) this.parentRotation.push(pid);
+   else {
+    const served = this.lastParent ? this.parentRotation.indexOf(this.lastParent) : -1;
+    if (served >= 0) this.parentRotation.splice(served, 0, pid); else this.parentRotation.push(pid);
+   }
+  }
   signal?.addEventListener('abort', abort, {once:true});
   this.emit({ type: 'task_queued', task: { ...task } });
   if (signal?.aborted) abort(); else this.pump();
@@ -406,8 +417,10 @@ export class WorkerPool {
   try {
    while (this.queued.size && this.children.size < this.concurrency) {
     const candidates = [...this.queued.values()];
-    // FIFO within a parent; round robin between parents so one project cannot starve another.
-    const entry = candidates.find(item => item.task.parentSessionId !== this.lastParent) || candidates[0];
+    // FIFO within a parent; strict round robin between parents so one project cannot starve another.
+    this.parentRotation = this.parentRotation.filter(pid => candidates.some(item => item.task.parentSessionId === pid));
+    const parent = this.parentRotation[0];
+    const entry = (parent && candidates.find(item => item.task.parentSessionId === parent)) || candidates[0];
     let executor: WorkerExecutor | undefined;
     try { executor = this.executor(entry.profile); }
     catch (error) {
@@ -418,6 +431,8 @@ export class WorkerPool {
     if (!executor) break;
     this.removeQueued(entry.task.id);
     this.lastParent = entry.task.parentSessionId;
+    const served = this.parentRotation.indexOf(entry.task.parentSessionId);
+    if (served >= 0) { this.parentRotation.splice(served, 1); this.parentRotation.push(entry.task.parentSessionId); }
     this.startTask(entry.task, entry.handle, executor, entry.instruction, entry.signal);
    }
   } finally { this.pumping = false; }

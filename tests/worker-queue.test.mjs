@@ -52,6 +52,18 @@ test('queue is FIFO per parent and round robin between projects',async t=>{
  f.executors[0].succeed();await turn();assert.equal(f.pool.result(a,'a').state,'SUCCEEDED');
 });
 
+test('dispatch rotates strictly across three parents instead of alternating two',async t=>{
+ const f=fixture(t);f.launch('active','a');const a=f.launch('a-next','a');const b=f.launch('b-next','b');const c=f.launch('c-next','c');
+ const stateOf=(handle,parent)=>f.pool.status(handle,parent).state;
+ await turn();
+ f.executors[0].succeed();await turn();
+ assert.equal(stateOf(b,'b'),'STARTING','b follows a');assert.equal(stateOf(a,'a'),'QUEUED');assert.equal(stateOf(c,'c'),'QUEUED');
+ f.executors[0].succeed();await turn();
+ assert.equal(stateOf(c,'c'),'STARTING','c follows b');assert.equal(stateOf(a,'a'),'QUEUED');
+ f.executors[0].succeed();await turn();
+ assert.equal(stateOf(a,'a'),'STARTING','a wraps back after c');
+});
+
 test('queued AbortSignal and deadline finish without spawning another executor',async t=>{
  const f=fixture(t);f.launch('active');const controller=new AbortController();const cancelled=f.launch('cancel','b',{signal:controller.signal});
  controller.abort();assert.equal(f.pool.result(cancelled,'b').state,'CANCELLED');
