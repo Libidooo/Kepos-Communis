@@ -42,18 +42,20 @@ daemon on demand (`kepos daemon --home …` is idempotent thanks to the lease).
 Each phase ships independently, keeps every existing test green, and adds its
 own tests. No phase changes tool semantics visible to the model.
 
-### Phase 1 — daemon RPC surface (foundation)
+### Phase 1 — daemon RPC surface (foundation) — implemented 2026-10-30
 
-Extend the daemon with the client-facing actions the TUI needs: `launch`,
-`status`, `result`, `wait`, `review`, `cancel`, `cancelAll`, `events`,
-`tasks`, `plans` (summaries), plus `health` (already exists). These wrap the
-same WorkerPool calls the TUI uses in-process today.
+The daemon now runs `SchedulerHost` (terminal/scheduler-host.ts) on 127.0.0.1:7789
+(KEPOS_RPC_PORT / --port): line-delimited JSON with the hardened wire rules (1 MiB
+caps, token auth via timing-safe compare, request timeouts on the client). The
+endpoint persists in the data directory (`scheduler.token` / `scheduler.port`) so
+clients discover it without env sharing; the port file is removed on shutdown.
+Actions: health, launch, status, result, wait, review, cancel, cancelAll, tasks,
+events, plans, plan (pause/resume/cancel/approve). `SchedulerClient` mirrors the
+surface and can bind itself from the data directory (`SchedulerClient.fromDataDir`).
 
-- Keep `RemoteWorkerServer` untouched; build a `SchedulerHost` on the same
-  line-delimited transport but with token from the data directory (no env
-  sharing needed — same machine, same user).
-- Acceptance: a scripted client can dispatch, poll, review and cancel a fake
-  worker through the daemon; two clients share the 48 slots.
+- Acceptance met: a scripted client dispatches, polls, reviews and cancels a fake
+  worker through the daemon (tests/scheduler-host.test.mjs); two clients share one
+  host; wrong tokens are rejected and flooding sockets are dropped.
 
 ### Phase 2 — TUI switches to daemon dispatch
 

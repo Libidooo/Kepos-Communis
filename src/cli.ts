@@ -55,7 +55,7 @@ export async function main(argv: string[] = process.argv.slice(2)): Promise<void
     }
     case 'daemon': {
       if (options.args.length) throw Error('daemon does not accept positional arguments');
-      const { runDaemon } = await import('./daemon.ts'); await runDaemon(paths); return;
+      const { runDaemon } = await import('./daemon.ts'); await runDaemon(paths, options); return;
     }
     case 'missions': case 'supervise': {
       const { missionCommand } = await import('./missions.ts');

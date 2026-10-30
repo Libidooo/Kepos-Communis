@@ -9,6 +9,7 @@ Security and approval hardening (D1-D2, human-approved decisions):
 
 Scheduling and daemon:
 
+- **Unified scheduling Phase 1 landed**: `kepos daemon` now exposes the SchedulerHost RPC on 127.0.0.1 (endpoint + token persisted in the data directory) with launch/status/result/wait/review/cancel/cancelAll/tasks/events/plans actions, plus SchedulerClient with daemon discovery from the data directory — the foundation for TUI/CLI dispatch through one shared 48-slot pool.
 - The daemon fails loudly: duplicate start throws, a lost lease rejects run() with an error, failures exit non-zero with the reason.
 - Approved unified scheduling design (docs/unified-scheduling.md): daemon-owned dispatch in four phases; process-level budget enforcement moves to the daemon in phase 4.
 - Windows autostart replaced the broken sc.exe service with a per-user logon scheduled task (no admin required, verified end to end).
