@@ -70,12 +70,16 @@ export async function playSplash(ctx: any, config?: { motion?: boolean }): Promi
     const finish = () => { if (finished) return; finished = true; clearInterval(timer); done(); };
     timer = setInterval(() => { step++; tui.requestRender(); if (step >= SPLASH_STEPS) finish(); }, FRAME_MS);
     return {
+      focused: true,
       render(width: number) {
         const rows = Math.max(1, tui.terminal.rows || 30);
         if (width < 80 || rows < 20) fast = true;
         if (fast && step < SPLASH_STEPS - 8) step = SPLASH_STEPS - 8;
         return buildSplashFrame(step, width, rows, theme);
       },
+      // Pi 在失效/关闭 overlay 时会调用这些；补齐组件表面避免 uncaughtException。
+      invalidate() { },
+      dispose() { finish(); },
       handleInput() { finish(); },
       handleMouse() { finish(); },
     };
