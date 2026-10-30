@@ -11,7 +11,7 @@ function printProbe(result: Awaited<ReturnType<typeof probeRelay>>): void {
   }
 }
 
-const API_VALUES: RelayApi[] = ['openai-completions', 'anthropic-messages'];
+const API_VALUES: RelayApi[] = ['openai-completions', 'openai-responses', 'anthropic-messages'];
 
 function resolveRelayId(name: string): string { return name.startsWith(RELAY_ID_PREFIX) ? name : RELAY_ID_PREFIX + slugify(name); }
 function requireRelay(paths: AppPaths, name?: string) {
@@ -27,9 +27,9 @@ export async function relayCommand(options: any, paths: AppPaths): Promise<void>
   const [action, name, positioned] = options.args;
   switch (action) {
     case 'add': {
-      if (!name || !positioned) throw Error('Usage: kepos relay add <名称> <baseUrl> [--api openai-completions|anthropic-messages] [--key-env NAME] [--key <key 仅测试>]');
+      if (!name || !positioned) throw Error('Usage: kepos relay add <名称> <baseUrl> [--api openai-completions|openai-responses|anthropic-messages] [--key-env NAME] [--key <key 仅测试>]');
       const api = (options.api as RelayApi) || 'openai-completions';
-      if (!API_VALUES.includes(api)) throw Error('--api must be openai-completions or anthropic-messages');
+      if (!API_VALUES.includes(api)) throw Error('--api must be openai-completions, openai-responses or anthropic-messages');
       const keyEnv = options.keyEnv || relayEnvName(name);
       const id = RELAY_ID_PREFIX + slugify(name);
       // The key itself never lands on disk: models.json keeps a $ENV reference.

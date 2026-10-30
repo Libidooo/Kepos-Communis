@@ -3,9 +3,10 @@ import { dirname, join } from 'node:path';
 import { request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 
-export type RelayApi = 'openai-completions' | 'anthropic-messages';
+export type RelayApi = 'openai-completions' | 'openai-responses' | 'anthropic-messages';
 export const RELAY_API_LABELS: Record<RelayApi, string> = {
-  'openai-completions': 'openai-completions（OpenAI 兼容，多数中转）',
+  'openai-completions': 'openai-completions（OpenAI Chat Completions 兼容，多数中转）',
+  'openai-responses': 'openai-responses（Responses 新格式，GPT-5/o 系列最新模型）',
   'anthropic-messages': 'anthropic-messages（Claude 中转）',
 };
 
