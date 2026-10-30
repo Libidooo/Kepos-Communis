@@ -7,27 +7,27 @@ import { stripVTControlCharacters } from 'node:util';
 const theme = { fg: (color, value) => value };
 const bare = frame => stripVTControlCharacters(frame);
 
-test('splash frames stay inside the terminal and end on the brand lockup', () => {
-  for (const width of [80, 120, 160]) for (const step of [0, 5, 11, 20, 45, 50, SPLASH_STEPS - 1]) {
+test('splash frames stay inside the terminal and end on the brand roundel', () => {
+  for (const width of [80, 120, 160]) for (const step of [0, 5, 20, 40, SPLASH_STEPS - 1]) {
     const lines = buildSplashFrame(step, width, 35, theme);
     assert.ok(lines.length <= 35);
     for (const line of lines) assert.ok(visibleWidth(line) <= width, `step ${step} width ${width}`);
   }
-  const early = buildSplashFrame(5, 120, 35, theme).join('\n');
-  assert.ok(!early.includes('Kepos Communis'), 'brand appears only after the ring settles');
-  const final = buildSplashFrame(SPLASH_STEPS - 1, 120, 35, theme).join('\n');
-  assert.match(bare(final), /Kepos Communis/);
-  assert.match(bare(final), /议案 · 议会 · 48 席/);
-  assert.ok(bare(final).split('').filter(c => c === '●').length >= 40, 'ring of red round dots');
+  const early = bare(buildSplashFrame(5, 120, 35, theme).join('\n'));
+  assert.ok(early.includes('●'), 'the ring traces itself with red dots');
+  assert.ok(!early.includes('█'), 'no wordmark while tracing');
+  const final = bare(buildSplashFrame(SPLASH_STEPS - 1, 120, 35, theme).join('\n'));
+  assert.match(final, /KEPOS/);
+  assert.match(final, /COMMUNIS/);
+  assert.ok(final.split('').filter(c => c === '●').length >= 40, 'ring of red round dots');
+  assert.ok(!final.includes('·'), 'no stray track dots');
 });
 
-test('the 48 red dots follow left-right, then top-bottom, then the rest', () => {
+test('the ring traces clockwise and settles before the wordmark lands', () => {
   const count = step => buildSplashFrame(step, 120, 35, theme).join('').split('').filter(c => c === '●').length;
-  assert.ok(count(11) >= 2, 'first pair on the left-right axis');
-  assert.ok(count(13) >= 4, 'second pair completes the four');
-  assert.ok(count(13) < count(30), 'dots keep filling');
-  assert.ok(count(37) >= 44, 'all 48 red dots at full size');
-  assert.ok(count(44) >= 40, 'contraction keeps most dots unique');
-  const early = buildSplashFrame(5, 120, 35, theme).join('');
-  assert.ok(!early.includes('●'), 'no dots during expansion');
+  assert.ok(count(5) < count(15), 'dots keep appearing while tracing');
+  assert.ok(count(33) >= 48, 'all 48 dots by the end of the trace');
+  const contracted = count(44);
+  assert.ok(contracted >= 40, 'contraction keeps most dots unique');
+  assert.equal(count(70), contracted, 'the lockup holds still for one second');
 });
