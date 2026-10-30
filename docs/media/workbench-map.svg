@@ -1,50 +1,64 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="560" viewBox="0 0 1280 560" role="img" aria-labelledby="title desc">
-  <title id="title">Kepos 工作台结构示意</title>
-  <desc id="desc">非真实运行截图。深色终端示意展示三栏：代表席、当前议案、项目与对话。示例委派为调研、工程和核验，底部是目标输入、取消与监督入口。</desc>
-  <rect width="1280" height="560" rx="8" fill="#201F1D"/>
-  <path d="M0 50h1280M24 104h1232M268 104v310m750-310v310M24 430h1232M24 520h1232" fill="none" stroke="#48413A"/>
-  <g font-family="Consolas, 'Liberation Mono', monospace" font-size="13" letter-spacing="1">
-    <text x="30" y="32" fill="#F5F0E7">KEPOS / COMMUNIS</text>
-    <text x="1250" y="32" fill="#B3A899" text-anchor="end">WORKBENCH MAP · NOT A SCREENSHOT</text>
-  </g>
-  <rect x="28" y="71" width="7" height="16" fill="#B52F3B"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="580" viewBox="0 0 1280 580" role="img" aria-labelledby="title desc">
+  <title id="title">Kepos 工作台 · 结构示意，非运行截图</title>
+  <desc id="desc">三栏工作台示意。左侧显示总理与代表，中间阅读目标、分工和报告，右侧切换项目和对话。F10可打开48席议会，底部输入区用于提出目标和补充要求。示例仅用于说明布局。</desc>
+  <rect width="1280" height="580" rx="6" fill="#22201F"/>
+  <path d="M24 64h1232" stroke="#554D43"/>
+  <rect x="32" y="29" width="7" height="13" fill="#B52F3B"/>
+  <text x="53" y="43" fill="#F5F0E7" font-family="Consolas, 'Liberation Mono', monospace" font-size="20" letter-spacing="1">KEPOS / WORKSPACE</text>
+  <text x="1248" y="43" text-anchor="end" fill="#C8BDB0" font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif" font-size="17">结构示意 · 非运行截图</text>
+
+  <rect x="24" y="84" width="234" height="356" rx="3" fill="#2D2A26"/>
+  <rect x="278" y="84" width="704" height="356" rx="3" fill="#191918"/>
+  <rect x="1002" y="84" width="254" height="356" rx="3" fill="#2D2A26"/>
   <g font-family="'Microsoft YaHei', 'PingFang SC', 'Noto Sans CJK SC', sans-serif">
-    <text x="48" y="86" fill="#F5F0E7" font-size="18" font-weight="700">代表席</text>
-    <text x="302" y="86" fill="#F5F0E7" font-size="18" font-weight="700">当前议案</text>
-    <text x="988" y="86" text-anchor="end" fill="#CB766D" font-size="14">F10 · 48 个代表席</text>
-    <text x="1054" y="86" fill="#F5F0E7" font-size="18" font-weight="700">项目 / 对话</text>
-    <g font-size="17" fill="#F5F0E7">
-      <circle cx="40" cy="149" r="4" fill="#CB766D"/><text x="58" y="155">总理 Agent</text>
-      <text x="58" y="182" fill="#BAAEA0" font-size="14">组织分工 · 汇总核验</text>
-      <circle cx="40" cy="222" r="4" fill="#9CAE9E"/><text x="58" y="228">调研代表</text>
-      <text x="58" y="255" fill="#BAAEA0" font-size="14">读取资料 · 交回依据</text>
-      <circle cx="40" cy="295" r="4" fill="#BCAC8D"/><text x="58" y="301">工程代表</text>
-      <text x="58" y="328" fill="#BAAEA0" font-size="14">分析实现 · 标明限制</text>
-      <circle cx="40" cy="368" r="4" fill="#A7A9BD"/><text x="58" y="374">核验代表</text>
-      <text x="58" y="401" fill="#BAAEA0" font-size="14">交叉检查 · 保留分歧</text>
+    <text x="46" y="119" fill="#F5F0E7" font-size="22" font-weight="600">代表席</text>
+    <text x="304" y="119" fill="#F5F0E7" font-size="22" font-weight="600">当前议案</text>
+    <text x="1026" y="119" fill="#F5F0E7" font-size="22" font-weight="600">项目 / 对话</text>
+    <path d="M46 136h190M304 136h652M1026 136h208" stroke="#494238"/>
+
+    <g fill="#F5F0E7" font-size="20">
+      <circle cx="49" cy="174" r="4" fill="#D29184"/><text x="66" y="182">总理 Agent</text>
+      <text x="66" y="208" fill="#C8BDB0" font-size="16">组织与汇总</text>
+      <circle cx="49" cy="244" r="4" fill="#A9B5A8"/><text x="66" y="252">调研代表</text>
+      <text x="66" y="278" fill="#C8BDB0" font-size="16">资料与来源</text>
+      <circle cx="49" cy="314" r="4" fill="#C9B48C"/><text x="66" y="322">工程代表</text>
+      <text x="66" y="348" fill="#C8BDB0" font-size="16">实现与限制</text>
+      <circle cx="49" cy="384" r="4" fill="#B6AABF"/><text x="66" y="392">核验代表</text>
+      <text x="66" y="418" fill="#C8BDB0" font-size="16">交叉检查</text>
     </g>
-    <rect x="298" y="126" width="690" height="70" rx="4" fill="#302C27"/>
-    <text x="316" y="151" fill="#CFB399" font-size="13">你 / 目标与约束</text>
-    <text x="316" y="177" fill="#F5F0E7" font-size="19">评估这个项目。分工调查，不要修改文件。</text>
-    <text x="316" y="232" fill="#F5F0E7" font-size="16">总理 · 将工作分成调研、工程与核验三部分。</text>
-    <path d="M317 253v69m0-46h23m-23 34h23" fill="none" stroke="#76665B"/>
-    <text x="353" y="282" fill="#C8BEB0" font-size="16">Worker · 承接具体任务，返回结果与运行记录</text>
-    <text x="353" y="316" fill="#C8BEB0" font-size="16">代表报告 · 分别说明发现、依据与不确定性</text>
-    <rect x="298" y="350" width="690" height="59" rx="4" fill="#3B2626"/>
-    <rect x="298" y="350" width="3" height="59" fill="#CB766D"/>
-    <text x="316" y="375" fill="#F5F0E7" font-size="16">结果回到你面前</text>
-    <text x="316" y="397" fill="#D7BEB5" font-size="14">检查证据，再决定继续、暂停或调整方向。</text>
-    <g font-size="16" fill="#D8CFC2">
-      <text x="1054" y="155">⌄ 当前项目</text>
-      <rect x="1042" y="173" width="210" height="32" rx="3" fill="#3B302C"/>
-      <text x="1073" y="196" fill="#F5F0E7">› 当前议案</text>
-      <text x="1073" y="234" fill="#BAAEA0">历史讨论</text>
-      <text x="1054" y="297">› 其他项目</text>
+
+    <rect x="304" y="156" width="652" height="79" rx="3" fill="#34302A"/>
+    <text x="322" y="184" fill="#D6BFA6" font-size="16">你</text>
+    <text x="322" y="213" fill="#F5F0E7" font-size="22">调研这个项目，不要修改文件。</text>
+    <text x="306" y="273" fill="#F5F0E7" font-size="20">总理安排调研、工程与核验代表分工。</text>
+    <path d="M314 292v27h16" fill="none" stroke="#8C7B69"/>
+    <text x="344" y="325" fill="#C8BDB0" font-size="20">Worker 执行细项，带回结果与记录。</text>
+    <rect x="304" y="350" width="652" height="68" rx="3" fill="#382926"/>
+    <rect x="304" y="350" width="3" height="68" fill="#D29184"/>
+    <text x="322" y="378" fill="#F5F0E7" font-size="20">报告与待决事项</text>
+    <text x="322" y="403" fill="#DDC6BB" font-size="17">阅读结果，检查依据，补充要求。</text>
+
+    <g font-size="19" fill="#F5F0E7">
+      <text x="1028" y="183">⌄ 当前项目</text>
+      <rect x="1018" y="199" width="222" height="40" rx="3" fill="#41312B"/>
+      <text x="1047" y="226">› 当前议案</text>
+      <text x="1047" y="269" fill="#C8BDB0">历史讨论</text>
+      <text x="1028" y="326">› 其他项目</text>
     </g>
-    <text x="40" y="467" fill="#CFB399" font-size="20">›</text>
-    <text x="64" y="467" fill="#C8BEB0" font-size="18">输入新的目标、约束或追问…</text>
-    <text x="40" y="498" fill="#AFA395" font-size="13">Enter 发送 · Ctrl+X 中止 · 上滚历史只暂停跟随，不会停止任务</text>
-    <text x="1250" y="546" text-anchor="end" fill="#AFA395" font-size="12">结构示意 · 非运行截图</text>
+    <rect x="1018" y="371" width="222" height="47" rx="3" fill="#F5F0E7"/>
+    <text x="1129" y="402" text-anchor="middle" fill="#B52F3B" font-size="19" font-weight="600">F10 / 48 席议会</text>
+
+    <path d="M24 460h1232" stroke="#554D43"/>
+    <text x="34" y="497" fill="#D29184" font-size="25">›</text>
+    <text x="64" y="497" fill="#F5F0E7" font-size="21">输入目标或补充要求…</text>
+    <text x="1245" y="497" text-anchor="end" fill="#C8BDB0" font-size="16">Enter 发送 · Ctrl+X 请求中止</text>
+    <path d="M24 519h1232" stroke="#554D43"/>
+    <g fill="#C8BDB0" font-size="17">
+      <text x="32" y="554"><tspan fill="#F5F0E7">F2</tspan> 管理</text>
+      <text x="212" y="554"><tspan fill="#F5F0E7">F3</tspan> 任务</text>
+      <text x="392" y="554"><tspan fill="#F5F0E7">F9</tspan> 计划</text>
+      <text x="572" y="554"><tspan fill="#F5F0E7">F10</tspan> 议会</text>
+      <text x="1245" y="554" text-anchor="end">上滚历史不会停止任务</text>
+    </g>
   </g>
-  <text x="30" y="546" font-family="Consolas, 'Liberation Mono', monospace" font-size="13" fill="#D8CFC2">F2 / MANAGE     F3 / TASKS     F9 / MISSIONS     F10 / COUNCIL</text>
 </svg>
