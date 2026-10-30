@@ -22,6 +22,15 @@ function requireRelay(paths: AppPaths, name?: string) {
   return { id, relay };
 }
 
+/** Resolve --all / --enable against the relay's model list; unknown ids are reported and dropped. */
+function selectEnabled(ids: string[], options: { all?: boolean; enable?: string }): string[] {
+  const wanted = options.all ? ids : String(options.enable || '').split(',').map(item => item.trim()).filter(Boolean);
+  const enabled = wanted.filter(id => ids.includes(id));
+  const unknown = wanted.filter(id => !ids.includes(id));
+  if (unknown.length) console.error('这些 id 不在中转商列表中，已跳过：' + unknown.join(', '));
+  return enabled;
+}
+
 export async function relayCommand(options: any, paths: AppPaths): Promise<void> {
   preparePaths(paths);
   const [action, name, positioned] = options.args;
@@ -58,10 +67,7 @@ export async function relayCommand(options: any, paths: AppPaths): Promise<void>
       if (!probe.ok) { process.exitCode = 1; return; }
       const ids = probe.models || [];
       if (options.enable || options.all) {
-        const wanted = options.all ? ids : String(options.enable).split(',').map((item: string) => item.trim()).filter(Boolean);
-        const enabled = wanted.filter(id => ids.includes(id));
-        const unknown = wanted.filter(id => !ids.includes(id));
-        if (unknown.length) console.error('这些 id 不在中转商列表中，已跳过：' + unknown.join(', '));
+        const enabled = selectEnabled(ids, options);
         upsertRelay(paths.agentDir, id, relay, enabled);
         console.log('已启用 ' + enabled.length + ' 个模型到 ' + modelsJsonPath(paths.agentDir) + '；重启或 /reload 后在 F4 模型列表可见。');
       } else if (!ids.length) {
