@@ -1,6 +1,7 @@
 export type CouncilLocale = 'zh-CN' | 'en';
 
 export type CouncilRoleKey =
+  | 'deputy_chair'
   | 'archivist' | 'surveyor' | 'auditor' | 'verifier' | 'cartographer'
   | 'sentinel' | 'engineer' | 'scribe' | 'mediator' | 'strategist'
   | 'research_architect' | 'literature_strategist' | 'source_verifier' | 'methodologist'

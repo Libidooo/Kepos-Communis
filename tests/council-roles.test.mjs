@@ -37,5 +37,16 @@ test('Council locale defaults to Chinese and role options remain compact labels'
  assert.equal(roleOptions('zh-CN', 'policy').length >= 6, true);
  assert.equal(roleOptions('zh-CN', 'publication').length >= 6, true);
  assert.equal(roleOptions('zh-CN', 'code').length >= 10, true);
- assert.equal(roleOptions('en')[0].label.includes('Archivist'), true);
+ assert.equal(roleOptions('en')[0].label.includes('Deputy Chair'), true);
+assert.equal(roleOptions('en')[1].label.includes('Archivist'), true);
+});
+
+test('deputy_chair is the first seeded council role with approval-governance duties',()=>{
+ assert.equal(COUNCIL_ROLES[0].key,'deputy_chair');
+ const role=councilRole('deputy_chair');
+ assert.equal(role.zhName,'代理主席');
+ assert.equal(role.enName,'Deputy Chair');
+ const prompt=rolePrompt(role,'zh-CN');
+ assert.match(prompt,/VOTE/);
+ assert.match(prompt,/mcp\.json|升级给人类/);
 });
