@@ -27,3 +27,57 @@ test('F8/F9 are human-only views and repeated renders reuse source history',()=>
  for(const width of [24,40,79,80,100,109,110,120,150])for(const line of desk.render(width))assert.ok(visibleWidth(line)<=width);
  desk.event({type:'agent_settled'});desk.render(150);assert.equal(reads,2);desk.dispose();
 });
+
+test('desk column widths follow the body-first breakpoint table and F11 maximizes',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ desk.render(120);assert.equal(desk.leftWidth,22);assert.equal(desk.rightWidth,24);assert.equal(desk.centerWidth,68);
+ desk.render(150);assert.equal(desk.leftWidth,24);assert.equal(desk.rightWidth,30);assert.equal(desk.centerWidth,90);
+ desk.render(160);assert.equal(desk.centerWidth,100);
+ desk.render(110);assert.equal(desk.leftWidth,0);assert.equal(desk.rightWidth,24);assert.equal(desk.centerWidth,83);
+ desk.render(109);assert.equal(desk.centerWidth,82);
+ desk.render(99);assert.equal(desk.rightWidth,0);assert.equal(desk.centerWidth,99);
+ desk.render(120);desk.handleInput('\x1b[23~');assert.equal(desk.maximize,true);
+ desk.render(120);assert.equal(desk.leftWidth,0);assert.equal(desk.rightWidth,0);assert.equal(desk.centerWidth,120);
+ desk.handleInput('\x1b');assert.equal(desk.maximize,false);
+ desk.render(120);assert.equal(desk.centerWidth,68);
+ desk.dispose();
+});
+
+test('crew list is two lines per member and Enter opens the member task first',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const agents=[{id:'a',name:'Alice',model:'gpt-x'},{id:'b',name:'Bob',model:'claude-x'}];
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',cwd:home,parentSessionId:'local'}],children:new Map()},()=>{},()=>{});
+ const frame=desk.render(120).join('\n');
+ assert.ok(frame.includes('Alice'));assert.ok(frame.includes('未分派'));assert.ok(!frame.includes('gpt-x'),'per-member model moved out of the list');
+ desk.setFocus('crew');desk.crewIndex=0;
+ desk.handleInput('\r');
+ assert.equal(desk.taskView,true);assert.equal(desk.taskIndex,0);
+ desk.taskView=false;
+ desk.crewIndex=1; // Bob has no task -> Enter falls back to the config editor action
+ let action;const desk2=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},a=>{action=a;});
+ desk2.setFocus('crew');desk2.crewIndex=1;desk2.handleInput('\r');
+ assert.deepEqual(action,{kind:'crew',id:'b'});
+ desk.dispose();desk2.dispose();
+});
+
+test('bottom bar is two rows: status with short usage, notice plus hints',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ const rows=desk.render(120);
+ assert.ok(rows[rows.length-2].includes('上下文'),'short usage merged into the status row');
+ assert.ok(rows[rows.length-1].includes('F10 议会'));
+ desk.notice='临时提示';
+ assert.ok(desk.render(120).at(-1).includes('临时提示'));
+ desk.dispose();
+});
+
+test('read-only preview labels the real send target inside the body',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[{cwd:home,path:'/other/session.jsonl',name:'old chat'}],{tasks:[],children:new Map()},()=>{},()=>{});
+ desk.setFocus('projects');desk.selected=1;
+ const frame=desk.render(120).join('\n');
+ assert.ok(frame.includes('[只读预览] old chat'));
+ assert.ok(frame.includes('发送目标仍是当前会话'));
+ desk.dispose();
+});
