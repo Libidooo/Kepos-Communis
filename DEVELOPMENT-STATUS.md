@@ -24,6 +24,19 @@
 - 推送 GitHub、发 Release、是否发 npm。
 - `recovery/` 清理（约 65MB：旧版本备份、自签 TLS 私钥、npm 缓存），删除需人类点头。
 
+## 待办（2026-10-30 新增）
+
+- **R1 中转商模型接入（人类标记：紧迫）**——当前只能官方渠道登录，需要接入自定义 OpenAI 兼容中转端点。
+  - 目标：① 连接中转商（baseUrl + API key）；② 测试中转 URL 连通性；③ 拉取可用模型列表并勾选启用。
+  - 现状：Pi SDK 已原生支持自定义 provider（`models.json` 的 `providers.<id>` 配 `baseUrl`/`apiKey`/`api: openai-completions`/`authHeader`/`headers`，模型条目可逐个声明；见 pi-coding-agent 的 `docs/models-configuration.md`）。Kepos 缺的只是入口与探测。
+  - 方案：
+    1. CLI：`kepos relay add <名称> <baseUrl>`、`kepos relay test <名称>`（GET `{baseUrl}/models` 带 Bearer，输出可达/鉴权失败/超时与延迟）、`kepos relay models <名称>`（列出 `data[].id`，`--enable` 写入 models.json）。
+    2. F2 工作台："自定义服务商"流程——填名称/URL/Key → 连通测试 → 模型列表多选启用 → 保存。
+    3. 凭据安全：API key 默认落 agent 目录 models.json（该文件含明文 key，需提示并纳入保护）；支持 `$ENV`/`!command` 引用形式避免明文落盘。
+    4. 保存后主 Agent 模型列表（F4）立即可见；子 Agent 经 D2 沙箱同样使用该端点。
+  - 验收：对一个 one-api/new-api 类中转完成 add → test → models → 主对话与子 Agent 分派全链路。
+  - 工作量估计：小到中等（Pi 能力现成，主要是 CLI/流程/探测与模型目录重载）。待人类确认后即可开工。
+
 ---
 
 # 上一阶段状态 — 0.3.0-beta.4
