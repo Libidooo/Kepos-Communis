@@ -39,20 +39,23 @@ export function readDenied(rawTarget: string, policy: SandboxPolicy): string | n
   return `只读范围限定在任务目录${policy.allow.length ? '与白名单目录' : ''}，不包含：${raw}。需要其他资料时请在分派时声明 readScope 或 readAllow。`;
 }
 
-/** Flags the parent passes to the worker so the sandbox extension can rebuild the policy. */
-export function sandboxArgs(policy: { mode: ReadScope; allow: string[]; deny: string[] }, sandboxPath: string): string[] {
-  return ['-e', sandboxPath, '--kepos-read-scope', policy.mode, '--kepos-read-allow', policy.allow.join(','), '--kepos-deny', policy.deny.join(',')];
+/** Sandbox config travels via environment variables: Pi's CLI rejects unknown options. */
+export function sandboxEnv(policy: { mode: ReadScope; allow: string[]; deny: string[] }): Record<string, string> {
+  return {
+    KEPOS_READ_SCOPE: policy.mode,
+    KEPOS_READ_ALLOW: policy.allow.join(','),
+    KEPOS_DENY: policy.deny.join(','),
+  };
 }
 
-export function argvPolicy(argv: string[], cwd: string): SandboxPolicy {
-  const flag = (name: string) => { const index = argv.indexOf('--' + name); return index >= 0 ? argv[index + 1] : undefined; };
+export function envPolicy(env: NodeJS.ProcessEnv, cwd: string): SandboxPolicy {
   const list = (value: string | undefined) => (value || '').split(',').map(item => item.trim()).filter(Boolean);
-  return { mode: flag('kepos-read-scope') === 'machine' ? 'machine' : 'project', cwd, home: homedir(), allow: list(flag('kepos-read-allow')), deny: list(flag('kepos-deny')) };
+  return { mode: env.KEPOS_READ_SCOPE === 'machine' ? 'machine' : 'project', cwd, home: homedir(), allow: list(env.KEPOS_READ_ALLOW), deny: list(env.KEPOS_DENY) };
 }
 
 /** Pi extension loaded inside worker processes: guard the read tools' targets. */
 export default function workerSandbox(pi: any) {
-  const policy = argvPolicy(process.argv, process.cwd());
+  const policy = envPolicy(process.env, process.cwd());
   pi.on('tool_call' as any, async (event: any) => {
     if (!['read', 'grep', 'find', 'ls'].includes(String(event?.toolName))) return undefined;
     const reason = readDenied(String(event.input?.path || '.'), policy);

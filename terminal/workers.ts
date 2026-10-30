@@ -51,6 +51,9 @@ export class WorkerPool {
  private closed = false;
  private queued = new Map<string, { task: Task; handle: WorkerHandle; profile: WorkerProfile; instruction: string; signal?: AbortSignal; timer: ReturnType<typeof setTimeout>; abort: () => void }>();
  private resolvers = new Map<string, (task: Task) => void>();
+ // Raw capabilities of tasks this instance launched; the database only stores hashes.
+ // Lets an in-process scheduler restart (MissionScheduler recreated, pool shared) recover handles.
+ private capabilities = new Map<string, string>();
  private pumping = false;
  private pumpScheduled = false;
  private cancelling = false;
@@ -120,6 +123,7 @@ export class WorkerPool {
    return null;
   });
   Object.assign(task, existing ? JSON.parse(existing.task) : complete);
+  this.capabilities.delete(task.id);
   if (!existing) this.emit({ type: 'task_finished', task: { ...task } });
   this.resolvers.get(task.id)?.(structuredClone(task));
   this.resolvers.delete(task.id);
@@ -139,6 +143,13 @@ export class WorkerPool {
   if (!row) return { state: 'UNKNOWN' };
   const task = this.tasks.find(task => task.id === handle.workerId && task.ownerEpoch === this.epoch) || JSON.parse(row.task);
   return { workerId: task.id, state: row.state, agent: task.agent, elapsedMs: (task.ended || Date.now()) - task.started, limitSeconds: task.limit, tool: task.tool || null, firstTextMs: task.firstTextMs ?? null, queueWaitMs: task.queueWaitMs ?? null, queued: task.state === 'QUEUED' };
+ }
+ /** Rebuild a live handle this instance issued (scheduler restart within the same process). Never crosses a process boundary. */
+ liveHandle(workerId: string, parent: string): WorkerHandle | undefined {
+  const capability = this.capabilities.get(workerId);
+  const task = this.tasks.find(item => item.id === workerId && item.parentSessionId === parent);
+  if (!capability || !task || terminalStates.has(task.status)) return undefined;
+  return { version: 1, workerId, parentSessionId: parent, capability, delegationDepth: task.delegationDepth, parentWorkerId: task.parentWorkerId };
  }
  result(handle: WorkerHandle, parent: string): Receipt | { state: string } {
   const row = this.authorize(handle, parent);
@@ -351,7 +362,7 @@ export class WorkerPool {
     this.transition(task, 'CANCEL_REQUESTED');
     executor.onExit = () => finish(state, error);
     executor.kill();
-    cleanupTimer = setTimeout(() => { executor.kill(); finish('FAILED', error + '; cleanup pending: process exit not confirmed within 3 seconds', false); }, 3000);
+    cleanupTimer = setTimeout(() => { executor.kill(); finish('FAILED', error + '; cleanup pending: process exit not confirmed within 10 seconds', false); }, 10000);
    };
    const cancel = () => terminate('CANCELLED', 'Cancelled by parent/operator');
    this.cancelCallbacks.set(id, cancel);
@@ -458,6 +469,7 @@ export class WorkerPool {
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
+  this.capabilities.set(id, capability);
   const task: Task = { id, agent: crew.name, role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));

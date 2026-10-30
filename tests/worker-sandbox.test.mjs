@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
-import {readDenied, argvPolicy, sandboxArgs} from '../dist/terminal/worker-sandbox.js';
+import {readDenied, envPolicy, sandboxEnv} from '../dist/terminal/worker-sandbox.js';
 import {workerEnv} from '../dist/terminal/warm-executor.js';
 
 const project=join(mkdtempSync(join(tmpdir(),'kepos-sandbox-')),'project');
@@ -41,13 +41,12 @@ test('the deny list wins even when a directory was explicitly allowed',()=>{
  assert.equal(readDenied(join(project,'fixtures','orbital.sqlite'),tricky),null);
 });
 
-test('sandbox flags round-trip through argv into the worker policy',()=>{
- const flags=sandboxArgs({mode:'machine',allow:['C:/refs'],deny:['C:/kepos-data']},'sandbox.js');
- assert.deepEqual(flags.slice(0,2),['-e','sandbox.js']);
- assert.deepEqual(flags.slice(2),['--kepos-read-scope','machine','--kepos-read-allow','C:/refs','--kepos-deny','C:/kepos-data']);
- const policy=argvPolicy(['node','cli',...flags],'C:/task');
+test('sandbox scope round-trips through environment variables',()=>{
+ const env=sandboxEnv({mode:'machine',allow:['C:/refs'],deny:['C:/kepos-data']});
+ assert.deepEqual(env,{KEPOS_READ_SCOPE:'machine',KEPOS_READ_ALLOW:'C:/refs',KEPOS_DENY:'C:/kepos-data'});
+ const policy=envPolicy(env,'C:/task');
  assert.equal(policy.mode,'machine');assert.deepEqual(policy.allow,['C:/refs']);assert.deepEqual(policy.deny,['C:/kepos-data']);
- assert.equal(argvPolicy(['node','cli'],'C:/task').mode,'project');
+ assert.equal(envPolicy({},'C:/task').mode,'project');
 });
 
 test('worker env whitelist drops shell secrets and honors explicit passthrough',()=>{

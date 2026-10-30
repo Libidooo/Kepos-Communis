@@ -6,6 +6,7 @@ const { spawn } = require('node:child_process');
 const { once } = require('node:events');
 const isolated = fs.mkdtempSync(path.join(os.tmpdir(), 'kepos-lifecycle-'));
 process.env.ORBITAL_HOME = path.join(isolated, 'orbital');
+process.env.KEPOS_NO_SPLASH = '1'; // 开机动画会消费 ui.custom；测试直接进工作台
 const { jiti, ext, root } = require('./test-loader.cjs');
 const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixture', provider: 'fixture' };
 
@@ -133,7 +134,7 @@ const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixtu
    const extra = launch(full, 'EXTRA'); assert.equal(full.status(extra, 'parent').state, 'QUEUED'); full.cancelHandle(extra, 'parent'); assert.equal((await full.wait(extra, 'parent', 2)).state, 'CANCELLED');
    full.cancelAll();
    const receipts = await Promise.all(handles.map(handle => full.wait(handle, 'parent', 5)));
-   assert.ok(receipts.every(receipt => receipt.state === 'CANCELLED'));
+   assert.ok(receipts.every(receipt => receipt.state === 'CANCELLED'), 'states: ' + JSON.stringify(receipts.map(r=>[r.state,(r.error||'').slice(0,60)])));
    assert.equal(full.children.size, 0);
   });
   await check('Session switch retains subscriptions; Ctrl+X cancels without closing the pool', async () => {

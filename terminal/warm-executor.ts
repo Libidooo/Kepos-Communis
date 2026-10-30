@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { getPackageDir } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
 import { dataRoot } from './paths.ts';
-import { sandboxArgs, type ReadScope } from './worker-sandbox.ts';
+import { sandboxEnv, type ReadScope } from './worker-sandbox.ts';
 
 export function killTree(child: ChildProcess) {
  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
@@ -56,10 +56,13 @@ export class WarmExecutor {
    ...(toolAllow.length ? ['--tools', toolAllow.join(',')] : ['--no-tools']),
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
-   ...sandboxArgs({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }, join(dirname(fileURLToPath(import.meta.url)), 'worker-sandbox.js')),
    '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources.${mcpServers.length ? ` Approved MCP servers for this task only: ${mcpServers.join(', ')}.` : ''} Assigned role: ${profile.role}.`];
+  // Sandbox scope travels via environment variables: Pi's CLI rejects unknown options,
+  // so the read-guard configuration must never ride on argv.
+  const env = workerEnv(process.env, process.pid);
+  Object.assign(env, sandboxEnv({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }));
   this.child = spawnWorker(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'worker-host.cjs'), ...args], {
-   cwd: profile.cwd, env: workerEnv(process.env, process.pid), windowsHide: true,
+   cwd: profile.cwd, env, windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
   });
   this.child.stdout!.setEncoding('utf8');
