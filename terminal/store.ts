@@ -20,6 +20,8 @@ export interface Config {
   workerReadScope?: import('./worker-sandbox.ts').ReadScope;
   /** Token/cost limits; unset fields mean unlimited. */
   budget?: import('./workers.ts').BudgetConfig;
+  /** 轻微动效开关（如审批锤抖动）；false 时静态显示，符号语义不变。 */
+  motion?: boolean;
 }
 
 const snapshots = new WeakMap<Config, Config>();

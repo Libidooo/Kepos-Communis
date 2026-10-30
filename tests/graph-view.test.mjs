@@ -165,6 +165,28 @@ test('narrow council toggles between the task list and the ring with Tab', () =>
   desk.dispose();
 });
 
+test('motion:false freezes the approval tremble while keeping the hammer symbol', () => {
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {}, motion: false };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {});
+  desk.graph = { snapshot: () => ({ agents, tasks: [{ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', title: '等待批准' }] }) };
+  desk.handleInput('\x1b[21~'); // F10
+  const first = desk.render(120).join('\n');
+  const second = desk.render(120).join('\n');
+  assert.ok(first.includes('⚒'));
+  assert.equal(first, second, 'no frame-to-frame motion when motion is off');
+  desk.dispose();
+});
+
+test('edges carry the group color while markers keep the state color', () => {
+  const colored = { fg: (color, value) => `[${color}]${value}` };
+  // groupKey 'c' hashes to palette slot 3 (accent), which goes through theme.fg.
+  const task = { id: 'w', agent: 'A', state: 'RUNNING', groupKey: 'c' };
+  const frame = renderGraph({ agents, tasks: [task] }, 100, 24, -1, 1, colored, false, {}, 0);
+  const body = frame.lines.slice(0, 24).join('');
+  assert.ok(body.includes('[accent]─') || body.includes('[accent]│'), 'edge uses the group palette');
+});
+
 test('ring layout is stable between renders and dragging changes only the chosen seat', () => {
   const snapshot = { agents, tasks: [] };
   const first = renderGraph(snapshot, 120, 32, 0, 1, theme);

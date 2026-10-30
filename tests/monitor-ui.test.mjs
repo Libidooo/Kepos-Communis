@@ -81,3 +81,16 @@ test('read-only preview labels the real send target inside the body',()=>{
  assert.ok(frame.includes('发送目标仍是当前会话'));
  desk.dispose();
 });
+
+test('scrolling back pauses follow and says so until Ctrl+End resumes',()=>{
+ const entries=Array.from({length:60},(_,i)=>({id:'e'+i,type:'message',message:{role:'user',content:[{type:'text',text:'消息 '+i}]}}));
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>entries,getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ desk.render(120); // initial paint settles the preview key before scrolling
+ desk.handleInput('\x1b[5~'); // PageUp into history
+ assert.equal(desk.readStart!==null,true);
+ assert.ok(desk.render(120).at(-2).includes('已暂停跟随'));
+ desk.readStart=null;
+ assert.ok(!desk.render(120).at(-2).includes('已暂停跟随'));
+ desk.dispose();
+});

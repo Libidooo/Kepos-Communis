@@ -39,6 +39,12 @@ export const stateColor = (task: GraphViewTask | undefined, index: number) => {
   if (task.state === 'SUCCEEDED' || task.status === '完成') return 'success';
   if (['CANCELLED', 'INTERRUPTED', 'TIMED_OUT'].includes(task.state || '')) return 'dim';
   if (task.state === 'QUEUED' || task.state === 'STARTING') return 'queue';
+  // 运行中没有专用状态色：用分组色表达“属于哪一组”，状态由符号与中文表达。
+  return groupColor(task, index);
+};
+// 分组色：连线与运行中坐席用它表达关系；避免与状态语义色混用。
+export const groupColor = (task: GraphViewTask | undefined, _index = 0) => {
+  if (!task) return 'muted';
   const group = task.groupKey || task.parentWorkerId || task.agent;
   const hash = [...group].reduce((value, char) => value + char.charCodeAt(0), 0);
   return palette[hash % palette.length];
@@ -215,7 +221,7 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
-  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, stateColor(node.task, node.index)); }
+  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
   put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '主', 'accent');
   const hits: GraphHit[] = [main];
   for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const marker = empty ? '□' : selectedNode ? '▣' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
