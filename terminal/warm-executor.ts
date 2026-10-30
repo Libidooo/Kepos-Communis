@@ -54,7 +54,7 @@ export class WarmExecutor {
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
    ...sandboxArgs({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }, join(dirname(fileURLToPath(import.meta.url)), 'worker-sandbox.js')),
-   '--append-system-prompt', `Delegated role: ${profile.role}. Read-only scope. Do not access credentials. Work only on the assigned task; return verifiable findings.`];
+   '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources. Assigned role: ${profile.role}.`];
   this.child = spawnWorker(process.execPath, [join(dirname(fileURLToPath(import.meta.url)), 'worker-host.cjs'), ...args], {
    cwd: profile.cwd, env: workerEnv(process.env, process.pid), windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
