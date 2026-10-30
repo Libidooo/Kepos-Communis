@@ -28,6 +28,8 @@ export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter,
   });
 }
 const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
+// htop 式对齐列：状态/代表名定宽补齐，标题吃剩余宽度。
+const padCell = (value: string, width: number) => { const text = truncateToWidth(plain(value), width); return text + ' '.repeat(Math.max(0, width - visibleWidth(text))); };
 
 // teal/blue/mauve exist only as orbital-76 vars; Pi's theme.fg rejects them, so emit them directly.
 const directColors: Record<string, string> = { approval: '1;38;2;255;223;84', queue: '38;2;157;126;76', idle: '38;2;116;139;129', teal: '38;2;142;181;173', blue: '38;2;153;172;187', mauve: '38;2;181;160;173' };
@@ -135,7 +137,7 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     const start = Math.max(0, Math.min(council.index - Math.floor(visible / 2), Math.max(0, filtered.length - visible)));
     for (let i = start; i < Math.min(filtered.length, start + visible); i++) {
       const task = filtered[i];
-      rows.push([`${i === council.index ? '›' : ' '}${stateMark(task)} ${task.status || task.state || '—'} · ${truncateToWidth(plain(task.agent + ' · ' + (task.title || '')), labelWidth - 9)}`, i === council.index ? 'accent' : stateColor(task, i)]);
+      rows.push([`${i === council.index ? '›' : ' '}${stateMark(task)} ${padCell(task.status || task.state || '—', 8)} ${padCell(task.agent, 8)} ${truncateToWidth(plain(task.title || ''), labelWidth - 20)}`, i === council.index ? 'accent' : stateColor(task, i)]);
     }
     if (filtered.length > visible) rows.push([`  ${Math.min(filtered.length, start + visible)}/${filtered.length} · ↑↓ 选择`, 'muted']);
     rows.push(['', 'muted']);
@@ -165,7 +167,7 @@ export function renderCouncilList(tasks: GraphViewTask[], width: number, height:
   const rows = [theme.fg('accent', truncateToWidth(`任务列表 · ${tasks.length} 项 · ↑↓ 选择 · Enter 详情 · v 完整输出 · Tab 回环图`, safeWidth))];
   for (let i = start; i < Math.min(tasks.length, start + visible); i++) {
     const task = tasks[i];
-    rows.push(theme.fg(i === index ? 'accent' : stateColor(task, i), truncateToWidth(`${i === index ? '›' : ' '}${stateMark(task)} ${task.status || task.state || '—'} · ${task.agent} · ${plain(task.title || '—')}`, safeWidth)));
+    rows.push(theme.fg(i === index ? 'accent' : stateColor(task, i), truncateToWidth(`${i === index ? '›' : ' '}${stateMark(task)} ${padCell(task.status || task.state || '—', 8)} ${padCell(task.agent, 8)} ${plain(task.title || '—')}`, safeWidth)));
   }
   if (tasks.length > visible) rows.push(theme.fg('muted', truncateToWidth(`  ${Math.min(tasks.length, start + visible)}/${tasks.length}`, safeWidth)));
   return { rows, taskId: tasks[Math.min(index, tasks.length - 1)]?.id ?? null };

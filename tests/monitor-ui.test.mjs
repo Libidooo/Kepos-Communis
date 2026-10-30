@@ -119,3 +119,15 @@ test('side panels carry the card background while the transcript stays untinted'
  assert.equal((content.match(/\[toolSuccessBg\]/g)||[]).length,2,'content rows tint the side panels only');
  desk.dispose();
 });
+
+test('mode chip, panel subtitles and stamped activity stream render',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[{id:'a',name:'Alice',model:'m'}],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ const rows=desk.render(120);
+ assert.ok(rows.at(-2)?.includes('-- 输入 --'),'vim-style mode chip');
+ assert.ok(rows.some(l=>l.includes('代表席 // 1')),'crew panel subtitle');
+ desk.event({type:'agent_start'});
+ desk.event({type:'tool_execution_start',toolName:'read'});
+ assert.ok(desk.render(120).join('\n').includes('▸ +0.0s read'),'stamped activity line');
+ desk.dispose();
+});

@@ -66,11 +66,13 @@ export class Desk {
  clearTimeout(this.completionTimer);this.completionTimer=setTimeout(()=>{if(this.alive&&this.ctx.isIdle()){this.sending=false;if(!this.sawStart){if(!this.editor.getExpandedText())this.editor.setText(text);this.live=undefined;this.notice='请求未启动，原稿已保留。输入 /pi 查看 Pi 命令行，或重试。';}this.refresh();}},1500);this.refresh();
  }
  event(e:any){if(!this.alive)return;if(['message_end','agent_settled'].includes(e.type))this.entriesDirty=true;
+ // 内核日志风秒戳：活动流每行带相对本回合起点的 +s 时间。
+ const stamp=()=>`+${((Date.now()-(this.requestStartedAt||Date.now()))/1000).toFixed(1)}s`;
  if(e.type==='agent_start'){clearInterval(this.spinnerTimer);this.spinnerTimer=setInterval(()=>this.refresh(),150);if(!this.requestStartedAt)this.requestStartedAt=Date.now();this.firstTokenAt=0;this.sawStart=true;this.sending=true;this.activity=[];this.notice='Kepos 正在执行 · 输入并 Enter 即排队 · Ctrl+X 中止';}
- if(e.type==='tool_execution_start'){this.activity.push(`┊ ${clean(e.toolName)} ${e.args?clean(JSON.stringify(e.args)).slice(0,180):''}`);this.activity=this.activity.slice(-8);this.thinking=false;this.notice='正在调用 '+clean(e.toolName);}
+ if(e.type==='tool_execution_start'){this.activity.push(`▸ ${stamp()} ${clean(e.toolName)}${e.args?' '+clean(JSON.stringify(e.args)).slice(0,120):''}`);this.activity=this.activity.slice(-8);this.thinking=false;this.notice='正在调用 '+clean(e.toolName);}
  if(e.type==='tool_execution_update'){this.activity.push(`┊ … ${clean(e.toolName)} 返回中`);this.activity=this.activity.slice(-8);}
- if(e.type==='tool_execution_end'){this.activity.push(`${e.isError?'!':'✓'} ${clean(e.toolName)} · ${e.durationMs?Math.round(e.durationMs/100)/10+'s':'完成'}`);this.activity=this.activity.slice(-8);}
- if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta'&&!this.firstTokenAt){this.firstTokenAt=Date.now();this.activity.push(`· 首文本 · ${this.firstTokenAt-this.requestStartedAt}ms`);}
+ if(e.type==='tool_execution_end'){this.activity.push(`${e.isError?'✕':'✓'} ${stamp()} ${clean(e.toolName)}${e.durationMs?' · '+Math.round(e.durationMs/100)/10+'s':''}`);this.activity=this.activity.slice(-8);}
+ if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta'&&!this.firstTokenAt){this.firstTokenAt=Date.now();this.activity.push(`· ${stamp()} 首文本`);}
  if(e.type==='message_start'||e.type==='message_update'||e.type==='message_end'){ if(e.type==='message_update'&&e.assistantMessageEvent?.type?.startsWith('thinking')){this.thinking=true;this.notice='Kepos 正在整理思路…';}if(e.type==='message_end'&&e.message?.role==='assistant')this.thinking=false;if(e.message)this.live=e.message;if(e.type==='message_end'&&e.message?.role==='assistant'&&(e.message.stopReason==='error'||e.message.errorMessage)){if(!this.editor.getExpandedText())this.editor.setText(this.lastSubmitted);this.notice='模型请求失败，原稿已保留：'+clean(e.message.errorMessage||'未知错误');}}
  if(e.type==='message_end')this.metricsDirty=true;
  if(e.type==='agent_settled'){clearInterval(this.spinnerTimer);this.metricsDirty=true;if(this.requestStartedAt){this.lastTurnMetrics={ttftMs:this.firstTokenAt?this.firstTokenAt-this.requestStartedAt:0,totalMs:Date.now()-this.requestStartedAt};this.activity.push(`· 回合完成 · ${this.lastTurnMetrics.totalMs}ms`);}this.sending=false;this.live=undefined;this.notice=e.aborted?'任务已中止。':this.editor.getExpandedText()===this.lastSubmitted?'本次请求未成功，原稿已保留；可重试或调整后发送。':'Kepos 已完成。可继续对话。';}
@@ -117,7 +119,8 @@ export class Desk {
   const active=countActive(snapshot.tasks);const attention=countPending(snapshot.tasks);
   if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
   this.pendingSeen=attention;
-  const header=this.theme.fg('accent',fit(`Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  const councilMode=this.graphFocus==='ring'?'席位':this.graphFocus==='list'?'列表':'输入';
+  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
   if(this.help){this.graphHits=[];const help=this.helpLines();const avail=Math.max(1,rows-input.length-3);this.inputY=1+avail;
    return [header,...help.slice(0,avail),...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
   const graphHeight=Math.max(8,rows-input.length-4);
@@ -145,7 +148,7 @@ export class Desk {
  const roomy=width>=150;const wide=width>=120;const medium=width>=100;
  this.leftWidth=this.maximize?0:roomy?24:wide?22:0;this.rightWidth=this.maximize?0:roomy?30:wide?24:medium?24:0;this.centerWidth=Math.max(12,width-this.leftWidth-this.rightWidth-(this.leftWidth&&this.rightWidth?6:this.rightWidth?3:0));this.inputWidth=this.centerWidth;
  this.editor.focused=this.focused&&this.focus==='input';const editorLines=this.editor.render(Math.max(8,this.centerWidth-4));this.editorHeight=editorLines.length;const inputLines=editorLines;
- if(rows<18||width<24){const compact=this.editor.render(width);const prefix=[this.theme.fg('accent',fit(`${PRODUCT_NAME} · Enter发送 · Esc返回`,width))];return [...prefix,...compact,this.theme.fg('muted',fit('扩大窗口可显示三栏 / F1帮助',width))].slice(0,rows);}
+ if(rows<18||width<24){const compact=this.editor.render(width);const block=[this.theme.fg('accent',fit(`${PRODUCT_NAME} · Enter发送 · Esc返回`,width)),...compact,this.theme.fg('muted',fit('扩大窗口可显示三栏 / F1帮助',width))];const padLines=Math.max(0,Math.floor((rows-block.length)/2));return [...Array(padLines).fill(' '.repeat(Math.max(1,width))),...block].slice(0,rows);}
  const headerHeight=2;this.bodyHeight=Math.max(1,rows-headerHeight-this.editorHeight-2);this.inputY=headerHeight+this.bodyHeight;this.narrow=!medium;
  const row:any=this.selectedRow();const preview=this.help||this.taskView||this.missionView?null:this.preview();const previewKey=preview?.path||this.sessionKey();if(previewKey!==this.lastPreview){this.readStart=null;this.lastPreview=previewKey;}
  const context=`${clean(basename(this.ctx.cwd))} / ${clean(this.ctx.sessionManager.getSessionName()||'未命名对话')}`;const modelLabel=(this.ctx.model?.provider&&this.ctx.model.id!=='unknown'?clean(this.ctx.model.provider)+'/':'')+clean(this.ctx.model?.id&&this.ctx.model.id!=='unknown'?this.ctx.model.id:'请先 /login');const model=`${modelLabel} · ${this.sending?'执行中':this.ctx.model?.id&&this.ctx.model.id!=='unknown'?'已配置 · 空闲':'待连接'}`;
@@ -173,7 +176,7 @@ export class Desk {
  const sideBg=(s:string)=>this.theme.bg?this.theme.bg('toolSuccessBg',s):s;
  const frameLine=(w:number,title:string,top:boolean,focused:boolean)=>{const label=top?`─ ${title} `:'';const fill=Math.max(1,w-visibleWidth(label)-2);return this.theme.fg(frameColor(focused),top?'╭':'╰')+(label?this.theme.fg('accent',label):'')+this.theme.fg(frameColor(focused),'─'.repeat(fill)+(top?'╮':'╯'));};
  const panel=(w:number,content:string,focused:boolean)=>this.theme.fg(frameColor(focused),'│ ')+fit(content,Math.max(1,w-4))+this.theme.fg(frameColor(focused),' │');
- const tops=()=>this.leftWidth?sideBg(frameLine(this.leftWidth,'代表席',true,this.focus==='crew'))+'   '+frameLine(this.centerWidth,'主案',true,this.focus==='input')+'   '+sideBg(frameLine(this.rightWidth,'项目 / 对话',true,this.focus==='projects')):this.rightWidth?frameLine(this.centerWidth,this.focus==='crew'?'代表席':'主案',true,this.focus!=='projects')+'   '+sideBg(frameLine(this.rightWidth,'项目 / 对话',true,this.focus==='projects')):frameLine(width,this.focus==='projects'?'项目 / 对话':this.focus==='crew'?'代表席':'主案',true,true);
+ const tops=()=>this.leftWidth?sideBg(frameLine(this.leftWidth,`代表席 // ${this.config.agents.length}`,true,this.focus==='crew'))+'   '+frameLine(this.centerWidth,'主案',true,this.focus==='input')+'   '+sideBg(frameLine(this.rightWidth,`项目 / 对话 // ${this.rows().length}`,true,this.focus==='projects')):this.rightWidth?frameLine(this.centerWidth,this.focus==='crew'?`代表席 // ${this.config.agents.length}`:'主案',true,this.focus!=='projects')+'   '+sideBg(frameLine(this.rightWidth,`项目 / 对话 // ${this.rows().length}`,true,this.focus==='projects')):frameLine(width,this.focus==='projects'?'项目 / 对话':this.focus==='crew'?'代表席':'主案',true,true);
  const bottoms=()=>this.leftWidth?sideBg(frameLine(this.leftWidth,'',false,this.focus==='crew'))+'   '+frameLine(this.centerWidth,'',false,this.focus==='input')+'   '+sideBg(frameLine(this.rightWidth,'',false,this.focus==='projects')):this.rightWidth?frameLine(this.centerWidth,'',false,this.focus!=='projects')+'   '+sideBg(frameLine(this.rightWidth,'',false,this.focus==='projects')):frameLine(width,'',false,true);
  for(let i=0;i<this.bodyHeight;i++){
   if(i===0){body.push(tops());continue;}
@@ -202,7 +205,10 @@ export class Desk {
  const usageShort=`上下文 ${pctKnown?usageBar+' '+pct+'%':'—'}${this.metrics.estimatedCost>0?' · ~$'+this.metrics.estimatedCost.toFixed(2):''}`;
  const statusLine=truncateToWidth(status,Math.max(1,width-visibleWidth(usageShort)-2))+'  '+usageShort;
  const noticePart=this._notice?truncateToWidth(this._notice,Math.max(8,Math.floor(width/2)))+' · ':'';
- const row1=this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,width));
+ // 模式芯片（vim 风）：一眼看清当前面板/视图，CineTTY 同款状态栏语汇。
+ const modeText='-- '+(this.missionView?'计划':this.help?'帮助':this.taskView?'书案':preview?'预览':this.maximize?'专注':this.readStart!==null?'阅读':this.focus==='input'?'输入':this.focus==='projects'?'项目':'代表')+' --';
+ const modeChip=this.theme.style?this.theme.style(modeText,{fg:'accent',bold:true}):this.theme.fg('accent',modeText);
+ const row1=modeChip+' '+this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,Math.max(1,width-visibleWidth(modeText)-1)));
  const row2=(noticePart?this.theme.fg('muted',noticePart):'')+this.theme.fg('dim',fit(footerText,Math.max(1,width-visibleWidth(noticePart))));
  return [...header,...body,...input,row1,row2];
  }
