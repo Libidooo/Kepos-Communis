@@ -12,10 +12,11 @@ export class SchedulerLease {
  get token(){return this.owner;}
 }
 export class SchedulerDaemon {
- private timer?:ReturnType<typeof setInterval>;private heartbeat?:ReturnType<typeof setInterval>;private stopping=false;
+ private started=false;private heartbeat?:ReturnType<typeof setInterval>;private stopping=false;private readonly heartbeatMs:number;
+ private onLeaseLost?:(error:Error)=>void;
  readonly lease:SchedulerLease;readonly scheduler:MissionScheduler;
- constructor(readonly database:OrbitalDatabase,readonly pool:WorkerPool,options:{tickMs?:number;leaseName?:string;leaseTtlMs?:number}={}){this.lease=new SchedulerLease(database,options.leaseName||'default',options.leaseTtlMs||10000);this.scheduler=new MissionScheduler(database,pool,{tickMs:options.tickMs||500});}
- start():void{if(this.timer)throw Error('Scheduler daemon is already running');if(!this.lease.acquire())throw Error('Another Kepos scheduler daemon owns this data directory');this.stopping=false;this.scheduler.start();this.heartbeat=setInterval(()=>{if(!this.lease.renew()){this.stop();}},Math.max(1000,Math.floor((this.lease as any).ttlMs/3)));this.heartbeat.unref?.();}
- stop():void{if(this.stopping)return;this.stopping=true;clearInterval(this.timer);clearInterval(this.heartbeat);this.timer=undefined;this.heartbeat=undefined;this.scheduler.stop();this.lease.release();}
- async run(signal?:AbortSignal):Promise<void>{this.start();try{await new Promise<void>((resolve,reject)=>{const done=()=>{cleanup();resolve();};const fail=(error:any)=>{cleanup();reject(error);};const cleanup=()=>{signal?.removeEventListener('abort',done);};signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done();});}finally{this.stop();}}
+ constructor(readonly database:OrbitalDatabase,readonly pool:WorkerPool,options:{tickMs?:number;leaseName?:string;leaseTtlMs?:number;heartbeatMs?:number}={}){this.lease=new SchedulerLease(database,options.leaseName||'default',options.leaseTtlMs||10000);this.scheduler=new MissionScheduler(database,pool,{tickMs:options.tickMs||500});this.heartbeatMs=options.heartbeatMs??Math.max(1000,Math.floor((this.lease as any).ttlMs/3));}
+ start():void{if(this.started)throw Error('Scheduler daemon is already running');if(!this.lease.acquire())throw Error('Another Kepos scheduler daemon owns this data directory');this.started=true;this.stopping=false;this.scheduler.start();this.heartbeat=setInterval(()=>{if(!this.lease.renew()){const notify=this.onLeaseLost;this.stop();notify?.(Error('Scheduler lease lost: another daemon took over this data directory'));}},this.heartbeatMs);this.heartbeat.unref?.();}
+ stop():void{if(this.stopping)return;this.stopping=true;clearInterval(this.heartbeat);this.heartbeat=undefined;this.started=false;this.onLeaseLost=undefined;this.scheduler.stop();this.lease.release();}
+ async run(signal?:AbortSignal):Promise<void>{this.start();try{await new Promise<void>((resolve,reject)=>{const done=()=>{cleanup();resolve();};const fail=(error:Error)=>{cleanup();reject(error);};const cleanup=()=>{signal?.removeEventListener('abort',done);};this.onLeaseLost=fail;signal?.addEventListener('abort',done,{once:true});if(signal?.aborted)done();});}finally{this.stop();}}
 }

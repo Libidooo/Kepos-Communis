@@ -17,5 +17,13 @@ export async function runDaemon(paths: AppPaths): Promise<void> {
   const stop=()=>abort.abort();
   process.once('SIGINT',stop);process.once('SIGTERM',stop);
   try { await daemon.run(abort.signal); }
-  finally { process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);await (pool as any).shutdown?.().catch(()=>{});database.close(); }
+  catch (error) {
+    console.error('Kepos daemon failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  }
+  finally {
+    process.removeListener('SIGINT',stop);process.removeListener('SIGTERM',stop);
+    await (pool as any).shutdown?.().catch((shutdownError:unknown)=>{ console.error('Kepos daemon shutdown error:', shutdownError instanceof Error ? shutdownError.message : shutdownError); });
+    database.close();
+  }
 }
