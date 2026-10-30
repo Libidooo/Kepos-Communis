@@ -18,6 +18,7 @@ import { MissionScheduler } from './scheduler.ts';
 import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk } from './monitor.ts';
 import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
+import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
 import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, configureWorkerBudget, spentTokens, type WorkerHandle } from './workers.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -117,7 +118,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
    return !query||haystack.includes(query);
   }).map(role=>({key:role.key,domain:roleDomain(role),domainName:domainName(roleDomain(role),locale),name:roleName(role,locale),scope:roleScope(role,locale),skillHints:role.skillHints||[]}));
  }
- function resolveDelegateJob(task:any,ctx:any,skillPaths:Map<string,string>,names:Set<string>){
+ async function resolveDelegateJob(task:any,ctx:any,skillPaths:Map<string,string>,names:Set<string>){
   if(!task.task?.trim())throw Error('任务内容不能为空；本批任务未启动');
   if(task.seconds!==undefined&&(!Number.isInteger(task.seconds)||task.seconds<1||task.seconds>MAX_TASK_SECONDS))throw Error(`任务期限必须为 1–${MAX_TASK_SECONDS} 秒；本批任务未启动`);
   if(task.seconds!==undefined&&task.seconds>HUMAN_APPROVAL_THRESHOLD_SECONDS)throw Error(`超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的子 Agent 必须进入 orbital_plan 并等待人类批准；本批任务未启动`);
@@ -141,7 +142,20 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
   const requested=task.skills??base.skills??[];
   const resolved=requested.map((skill:string)=>skillPaths.get(skill)||skillPaths.get('skill:'+skill)||skill);
   const unknown=unknownSkills(resolved,names).filter(skill=>!skill.includes('/')&&!skill.includes(String.fromCharCode(92)));
-  if(unknown.length)throw Error('这些 Skill 尚未安装或未被信任：'+unknown.join(', '));
+  if(unknown.length){
+   // 与 F2 的 AI 生成同一管道：本地未命中时，从 skills.sh 检索、安装并绑定（只读监督模式不联网）。
+   if(currentPolicy()==='readonly')throw Error('只读监督模式不联网获取 Skill。缺失：'+unknown.join(', ')+'。请人工安装后重试；本批任务未启动');
+   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
+   const overrides=new Map<string,string>();const bound:string[]=[];const failed:string[]=[];
+   for(const raw of unknown){
+    const hit=await resolveSkillOnline(raw.replace(/^skill:/,''),agentDir).catch(()=>null);
+    if(hit){overrides.set(raw,hit.path);bound.push(raw.replace(/^skill:/,''));}
+    else failed.push(raw);
+   }
+   if(failed.length)throw Error('这些 Skill 未安装，且 skills.sh 无匹配：'+failed.join(', ')+'。可人工安装后重试；本批任务未启动');
+   if(bound.length){desk&&(desk.notice='已从 skills.sh 安装并绑定 Skill：'+bound.join('、'));scheduleRepaint();}
+   for(let index=0;index<resolved.length;index++){const override=overrides.get(resolved[index]);if(override)resolved[index]=override;}
+  }
   return {...task,crew,skills:resolved,mcp:false,mcpServers,tools};
  }
 
@@ -219,7 +233,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
   const unknown=requestedSkills.filter((skill:string)=>!names.has(skill)&&!names.has('skill:'+skill));
   if(unknown.length)return{content:[{type:'text',text:'这些 Skill 尚未安装或未被信任：'+unknown.join(', ')+'。请先向人类说明用途、来源和所需权限，由人类决定安装/信任后再重试；本批任务未启动任何子 Agent。'}],isError:true,details:{approval:'human_required',unknownSkills:unknown}};
   // MCP grants are validated per task in resolveDelegateJob against the human's mcp.json.
-  const jobs=params.tasks.map((task:any)=>resolveDelegateJob(task,ctx,paths,names));
+  const jobs=await Promise.all(params.tasks.map(async(task:any)=>resolveDelegateJob(task,ctx,paths,names)));
   const parent=ctx.sessionManager.getSessionId();
   for(const job of jobs){if(!job.copyOf)continue;const parentTask=pool.tasks.find(task=>task.id===job.copyOf&&task.parentSessionId===parent);if(!parentTask||terminalStates.has(parentTask.status))throw Error('copyOf 必须指向当前会话中正在运行的父任务');if((parentTask.delegationDepth||0)>=1)throw Error('复制委派最多一层，子 Agent 不能继续递归复制');const half=Math.max(1,Math.floor(parentTask.limit/2));if(job.seconds===undefined)job.seconds=half;if(job.seconds>half)throw Error(`复制任务时限不能超过父任务的一半（${half} 秒）`);job.delegationDepth=1;job.parentWorkerId=parentTask.id;}
   if(params.background){const handles:any[]=[];try{for(const job of jobs)handles.push(pool.launch(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,undefined,parent,job.tools,job.skills,false,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens));}catch(error){for(const handle of handles)pool.cancelHandle(handle,parent);throw Error('本批任务已回滚，已启动的子任务一并取消：'+clean(error));}return{content:[{type:'text',text:JSON.stringify({state:'accepted',handles})}],details:{handles}};}
@@ -254,53 +268,48 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
    // 三步：GitHub 找同类 Skill 学习 → 主 Agent 结合已装目录起草 → 人类定稿。
    const idea=await ctx.ui.input('描述这位代表的目标/想法','如：盯住项目风险，每天汇总成清单');
    if(!idea?.trim())return;
-   ctx.ui.notify('正在检索 skills.sh 同类 Skill 并起草职责…（一次模型调用，约 1-2 分钟）');
-   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
-   const found:{id:string;source:string;skillId:string;installs:number;md:string}[]=[];
-   try{
-    const search=await fetch('https://www.skills.sh/api/search?q='+encodeURIComponent(idea.trim().slice(0,60)),{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.json());
-    for(const entry of ((search?.skills||[]) as any[]).slice(0,3)){
-     let md='';
-     for(const path of [entry.skillId+'/SKILL.md','skills/'+entry.skillId+'/SKILL.md']){
-      const res=await fetch(`https://raw.githubusercontent.com/${entry.source}/HEAD/${path}`,{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)});
-      if(res.ok){md=await res.text();break;}
-     }
-     if(md)found.push({id:entry.id,source:entry.source,skillId:entry.skillId,installs:entry.installs||0,md});
+   // 本地优先：先匹配已安装 Skill；本地无命中才联网（skills.sh）查找下载并绑定。
+   const {catalog}=skillIndex();
+   const localHits=matchLocalSkills(idea.trim(),catalog);
+   let learn='';const installedNow:string[]=[];
+   if(localHits.length){
+    skills=localHits;aiSkills=true;
+    ctx.ui.notify('命中本地 Skill：'+localHits.join('、')+'（无需联网）');
+    learn=`本地已命中的 Skill（职责指令应安排这些 Skill 的使用时机与边界）：${localHits.join('、')}。`;
+   } else {
+    ctx.ui.notify('本地无匹配，正在检索 skills.sh 并起草职责…（一次模型调用，约 1-2 分钟）');
+    const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
+    const found=await skillsShSearch(idea.trim(),3).catch(()=>[]);
+    if(!found.length){
+     // skills.sh 无匹配时退回 GitHub 仓库检索，只取方法论作为起草参考。
+     try{
+      const search=await fetch('https://api.github.com/search/repositories?q='+encodeURIComponent(idea.trim().slice(0,60))+'+skill&sort=stars&per_page=3',{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.json());
+      for(const repo of ((search?.items||[]) as any[]).slice(0,3)){
+       const readme=await fetch('https://api.github.com/repos/'+repo.full_name+'/readme',{headers:{'user-agent':'kepos',accept:'application/vnd.github.raw'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.text()).catch(()=>'');
+       found.push({id:repo.full_name,source:repo.full_name,skillId:'',installs:repo.stargazers_count||0,md:String(readme||'').replace(/\s+/g,' ').slice(0,1100)});
+      }
+     }catch{}
     }
-   }catch{}
-   if(!found.length){
-    // skills.sh 无匹配时退回 GitHub 仓库检索，只取方法论作为起草参考。
-    try{
-     const search=await fetch('https://api.github.com/search/repositories?q='+encodeURIComponent(idea.trim().slice(0,60))+'+skill&sort=stars&per_page=3',{headers:{'user-agent':'kepos'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.json());
-     for(const repo of ((search?.items||[]) as any[]).slice(0,3)){
-      const readme=await fetch('https://api.github.com/repos/'+repo.full_name+'/readme',{headers:{'user-agent':'kepos',accept:'application/vnd.github.raw'},signal:AbortSignal.timeout(8000)}).then((r:any)=>r.text()).catch(()=>'');
-      found.push({id:repo.full_name,source:repo.full_name,skillId:'',installs:repo.stargazers_count||0,md:String(readme||'').replace(/\s+/g,' ').slice(0,1100)});
-     }
-    }catch{}
+    for(const item of found){
+     if(!item.md)continue;
+     learn+=`\nSkill ${item.id}（热度 ${item.installs}）：\n${item.md.replace(/\s+/g,' ').slice(0,1100)}\n`;
+    }
+    const top=found.find(item=>item.skillId&&item.md);
+    if(top&&await ctx.ui.confirm('发现匹配的 Skill',`\`${top.id}\`（热度 ${top.installs}）。\n安装到本地 skills 目录，供这位代表（以及所有代表）直接引用？`)){
+     try{
+      installSkill(top,agentDir);
+      installedNow.push(top.skillId);
+      ctx.ui.notify(`已安装 Skill ${top.skillId}（重启后对所有代表生效）`);
+     }catch(error){ctx.ui.notify('安装失败：'+clean(error),'warning');}
+    }
    }
-   let githubNote='';
-   const installedNow:string[]=[];
-   for(const item of found){
-    if(!item.md)continue;
-    githubNote+=`\nSkill ${item.id}（热度 ${item.installs}）：\n${item.md.replace(/\s+/g,' ').slice(0,1100)}\n`;
-   }
-   const top=found.find(item=>item.skillId&&item.md);
-   if(top&&await ctx.ui.confirm('发现匹配的 Skill',`\`${top.id}\`（热度 ${top.installs}）。\n安装到本地 skills 目录，供这位代表（以及所有代表）直接引用？`)){
-    try{
-     const {mkdirSync,writeFileSync}=await import('node:fs');
-     const dir=join(agentDir,'skills',top.skillId);
-     mkdirSync(dir,{recursive:true});writeFileSync(join(dir,'SKILL.md'),top.md);
-     installedNow.push(top.skillId);
-     ctx.ui.notify(`已安装 Skill ${top.skillId}（重启后对所有代表生效）`);
-    }catch(error){ctx.ui.notify('安装失败：'+clean(error),'warning');}
-   }
-   if(!githubNote)githubNote='（无检索结果，仅依据已安装 Skill 目录起草）';
+   if(!learn)learn='（无检索结果，仅依据已安装 Skill 目录起草）';
    try{
-    const {catalog}=skillIndex();
     const installedList=catalog.slice(0,40).map(skill=>`${skill.name}：${String(skill.description||'').slice(0,80)}`).join('\n')||'（无已安装 Skill）';
     const installedNowNote=installedNow.length?`\n本次已安装（skills 可直接引用）：${installedNow.join(', ')}`:'';
+    const localNote=localHits.length?`\n本地已命中的 Skill（skills 字段优先引用它们）：${localHits.join(', ')}`:'';
     const generator={id:'config-generator',name:'配置生成器',model:ctx.model?.id||'',provider:ctx.model?.provider||'',role:'Kepos 代表配置生成助手',tools:['read']};
-    const instruction=`根据人类目标，为一位 Kepos 只读代表生成配置（JSON）。\n\n人类目标：${idea.trim()}\n\n已安装 Skill 目录（skills 字段只能从这里选，0-3 个）：\n${installedList}${installedNowNote}\n${githubNote?`\n检索到的同类 Skill 原文（学习其方法论；对应 Skill 未安装时，把方法要点写进 role 正文，并在 role 末尾加一行"可参考：来源链接"）：${githubNote}\n`:''}\n输出要求：只输出一个 JSON 对象，格式：\n{"role":"职责指令正文，300 字内：只读边界、证据优先、复核节奏、交付物；若引用了 Skill，写明何时用哪个","skills":["已安装 Skill 名"]}`;
+    const instruction=`根据人类目标，为一位 Kepos 只读代表生成配置（JSON）。\n\n人类目标：${idea.trim()}\n${localNote}\n已安装 Skill 目录（skills 字段只能从这里选，0-3 个）：\n${installedList}${installedNowNote}\n${learn?`\n检索到的同类 Skill 原文（学习其方法论；对应 Skill 未安装时，把方法要点写进 role 正文，并在 role 末尾加一行"可参考：来源链接"）：${learn}\n`:''}\n输出要求：只输出一个 JSON 对象，格式：\n{"role":"职责指令正文，300 字内：只读边界、证据优先、复核节奏、交付物；若引用了 Skill，写明何时用哪个","skills":["已安装 Skill 名"]}`;
     const task=await pool.run(generator,instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',180,undefined,ctx.sessionManager.getSessionId(),['read']);
     const cleaned=String(task.output||'').replace(/```(?:json)?/g,'').trim();
     const parsed=JSON.parse(cleaned.slice(cleaned.indexOf('{'),cleaned.lastIndexOf('}')+1));
