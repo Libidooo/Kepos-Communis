@@ -173,3 +173,22 @@ test('cancelling a task whose process already exited settles immediately instead
  f.pool.cancel(f.pool.tasks[0].id);await turn();
  assert.equal(f.pool.tasks[0].state,'CANCELLED',`expected prompt CANCELLED, got ${f.pool.tasks[0].state} / ${f.pool.tasks[0].error||''}`);
 });
+
+test('startup sweeps tasks of silent owners even when their pid looks alive (PID reuse)',async t=>{
+ const f=fixture(t);
+ const h=f.launch('WAIT','a');await turn();
+ const task=f.pool.tasks.find(x=>x.id===h.workerId);
+ assert.equal(task.state,'STARTING');
+ // 所有者心跳沉默一小时（进程已崩，PID 随后被本测试进程复用——旧判定会误认为还活着）
+ if(f.pool.ownerHeartbeat)clearInterval(f.pool.ownerHeartbeat);
+ f.database.prepare('UPDATE worker_owners SET last_seen=? WHERE epoch=?').run(Date.now()-3600000,task.ownerEpoch);
+ const g=new WorkerPool(f.database,()=>{throw Error('must not spawn');},{concurrency:1});
+ const swept=g.tasks.find(x=>x.id===h.workerId);
+ assert.equal(swept.state,'INTERRUPTED','silent owner task is swept despite a reused pid');
+ // 活跃所有者的任务保留：伪造一个心跳新鲜的 epoch 及其任务
+ f.database.prepare('INSERT INTO worker_owners VALUES(?,?,?)').run('fresh-epoch',process.pid,Date.now());
+ f.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run('w-fake','a','corr-fake','h','fresh-epoch','STARTING',JSON.stringify({id:'w-fake',agent:'X',state:'STARTING',status:'运行中',title:'fake',cwd:'.',session:'s',parentSessionId:'a',correlationId:'c-fake',started:Date.now(),output:'',limit:60,model:'m',provider:'p',ownerPid:process.pid,ownerEpoch:'fresh-epoch',tools:['read'],skills:[],mcp:false}));
+ const kept=new WorkerPool(f.database,()=>{throw Error('must not spawn');},{concurrency:1});
+ const keptTask=kept.tasks.find(x=>x.id==='w-fake');
+ assert.equal(keptTask.state,'STARTING','fresh sibling owner task survives the sweep');
+});

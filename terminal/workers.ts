@@ -59,15 +59,32 @@ export class WorkerPool {
  private cancelling = false;
  private lastParent = '';
  private parentRotation: string[] = [];
+ private ownerHeartbeat?: ReturnType<typeof setInterval>;
  readonly concurrency: number;
 
  constructor(readonly database: OrbitalDatabase = db(), private readonly createExecutor: (profile: WorkerProfile) => WorkerExecutor = profile => new WarmExecutor(profile), options: { concurrency?: number } = {}) {
   this.concurrency = Math.min(MAX_CONCURRENT_CHILDREN, Math.max(1, Math.floor(options.concurrency || MAX_CONCURRENT_CHILDREN)));
   this.importLegacy();
   this.tasks = (database.prepare("SELECT task FROM workers ORDER BY json_extract(task,'$.started')").all() as any[]).map(row => JSON.parse(row.task));
+  // Owner heartbeat: PID reuse can make a dead owner look alive (process.kill(pid,0)
+  // succeeding against an unrelated process), so liveness is judged by a heartbeat the
+  // owner scheduler refreshes every few seconds — silent owners get swept at startup.
+  this.database.sql.exec('CREATE TABLE IF NOT EXISTS worker_owners(epoch TEXT PRIMARY KEY,pid INTEGER,last_seen INTEGER)');
+  const now = Date.now();
+  this.database.prepare('INSERT INTO worker_owners VALUES(?,?,?) ON CONFLICT(epoch) DO UPDATE SET pid=excluded.pid,last_seen=excluded.last_seen').run(this.epoch, process.pid, now);
+  this.ownerHeartbeat = setInterval(() => { try { this.database.prepare('UPDATE worker_owners SET last_seen=? WHERE epoch=?').run(Date.now(), this.epoch); } catch {} }, 5000);
+  this.ownerHeartbeat.unref?.();
   for (const task of this.tasks) {
-   if (!terminalStates.has(task.status) && (!task.ownerPid || !alive(task.ownerPid))) {
+   if (terminalStates.has(task.status)) continue;
+   if (!task.ownerPid || !alive(task.ownerPid)) {
     this.settle(task, 'INTERRUPTED', 'Owner process exited; task is not replayed');
+    continue;
+   }
+   if (task.ownerEpoch && task.ownerEpoch !== this.epoch) {
+    const row = this.database.prepare('SELECT last_seen FROM worker_owners WHERE epoch=?').get(task.ownerEpoch) as any;
+    if (!row || now - Number(row.last_seen) > 15000) {
+     this.settle(task, 'INTERRUPTED', 'Owner scheduler went silent (heartbeat stale); task is not replayed');
+    }
    }
   }
  }
@@ -223,6 +240,7 @@ export class WorkerPool {
  close() {
   if (this.closed) return;
   this.closed = true;
+  if (this.ownerHeartbeat) clearInterval(this.ownerHeartbeat);
   this.cancelAll();
   for (const executor of this.executors) executor.kill();
  }
