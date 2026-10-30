@@ -44,7 +44,8 @@ test('council header and sidebar counts share one definition of active and pendi
     { id: 't2', agent: 'B', state: 'NEEDS_HUMAN', status: '等待人类审批', title: 'gate' },
   ] };
   const body = renderGraph(snapshot, 140, 32, -1, 1, theme).lines.join('\n');
-  assert.match(body, /活跃 1 · 待处理 1/);
+  assert.match(body, /活跃 1/);
+  assert.match(body, /待处理 1/);
   const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
   const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
   const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {});
@@ -228,7 +229,7 @@ test('human approval uses a bright hammer and a bounded two-frame tremble', () =
   const snapshot = { agents, tasks: [{ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', title: '等待批准' }] };
   const first = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 0);
   const next = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 400);
-  assert.ok(first.lines.join('').includes('审'));
+  assert.ok(first.lines.join('').includes('⚠'));
   assert.ok(first.lines.join('').includes('\x1b[1;38;2;255;223;84m'));
   assert.notDeepEqual(first.lines, next.lines);
   assert.deepEqual(first.hits, next.hits);

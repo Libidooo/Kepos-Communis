@@ -17,7 +17,7 @@ export const countActive = (tasks: GraphViewTask[]) => tasks.filter(task => acti
 export const countPending = (tasks: GraphViewTask[]) => tasks.filter(task => task.state === 'NEEDS_HUMAN' || task.reviewDue).length;
 const filterName = (filter: CouncilFilter) => filter === 'active' ? '活跃' : filter === 'pending' ? '待处理' : '全部';
 // 待审批用「审」：U+2692 在多数终端回退成大号彩色 emoji，CJK 字符保证小号文本渲染。
-export const stateMark = (task: GraphViewTask) => task.state === 'NEEDS_HUMAN' ? '审' : task.reviewDue ? '!' : task.state === 'FAILED' || task.status === '失败' ? '✕' : task.state === 'SUCCEEDED' || task.status === '完成' ? '✓' : activeStates.has(task.state || '') ? '▶' : '·';
+export const stateMark = (task: GraphViewTask) => task.state === 'NEEDS_HUMAN' ? '⚠' : task.reviewDue ? '!' : task.state === 'FAILED' || task.status === '失败' ? '✕' : task.state === 'SUCCEEDED' || task.status === '完成' ? '✓' : activeStates.has(task.state || '') ? '▶' : '·';
 // 议会任务列表的统一筛选：图负责关系与态势，列表负责从问题找到具体任务。
 export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter, query: string): GraphViewTask[] {
   const q = query.trim();
@@ -28,7 +28,8 @@ export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter,
     return true;
   });
 }
-const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
+// 先剥完整 ANSI 序列再剥控制符：任务标题里的 [0m 残片曾以字面量漏进界面。
+const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).replace(/\x1b\[[0-9;]*[A-Za-z]/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
 // htop 式对齐列：状态/代表名定宽补齐，标题吃剩余宽度。
 const padCell = (value: string, width: number) => { const text = truncateToWidth(plain(value), width); return text + ' '.repeat(Math.max(0, width - visibleWidth(text))); };
 
@@ -109,60 +110,65 @@ function bubble(grid: Cell[][], node: VisualNode, width: number, height: number)
 }
 
 // 右侧常驻面板：框线容器 + 计数、可筛选任务列表、选中详情。列表负责寻找，详情负责判断和行动。
+// 议会简要：右上角动态高度卡片，只框住实际内容，不再拖一整列空框。
 function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNode | undefined, width: number, height: number, now: number, council?: CouncilView) {
   if (width < 120) return;
-  const x = width - 38, labelX = x + 2, labelWidth = 32, right = width - 1, focused = council?.focus === 'list';
+  const x = width - 38, labelX = x + 2, labelWidth = 32, right = width - 1;
+  const focused = council?.focus === 'list';
   const frameColor = focused ? 'borderAccent' : 'borderMuted';
+  const active = countActive(snapshot.tasks);
+  const attention = countPending(snapshot.tasks);
+  type Row = { text: string; color: string } | 'div';
+  const rows: Row[] = [
+    { text: `活跃 ${active}`, color: 'accent' },
+    { text: `待处理 ${attention}`, color: attention ? 'warning' : 'dim' },
+    'div',
+  ];
+  if (council?.list) {
+    const filtered = councilTasks(snapshot, council.filter, council.query);
+    rows.push({ text: `${council.query ? `“${council.query}” · ` : ''}${filterName(council.filter)}任务 · F8 换筛选`, color: council.filter === 'pending' && attention ? 'warning' : 'accent' });
+    if (!filtered.length) rows.push({ text: '  没有匹配的任务', color: 'dim' });
+    const detailRows = 7;
+    const visible = Math.max(1, Math.min(filtered.length, Math.max(1, height - rows.length - detailRows - 3)));
+    const start = Math.max(0, Math.min(council.index - Math.floor(visible / 2), Math.max(0, filtered.length - visible)));
+    for (let i = start; i < Math.min(filtered.length, start + visible); i++) {
+      const task = filtered[i];
+      rows.push({ text: `${i === council.index ? '›' : ' '}${stateMark(task)} ${padCell(task.status || task.state || '—', 8)} ${padCell(task.agent, 8)} ${truncateToWidth(plain(task.title || ''), labelWidth - 20)}`, color: i === council.index ? 'accent' : stateColor(task, i) });
+    }
+    if (filtered.length > visible) rows.push({ text: `  ${Math.min(filtered.length, start + visible)}/${filtered.length} · ↑↓ 选择`, color: 'dim' });
+    rows.push('div');
+  }
+  const task = selected?.task;
+  rows.push({ text: task ? `${plain(selected!.label)} 书案` : selected ? `选中 ${plain(selected.label)}` : '选中 总理', color: 'accent' });
+  if (task) {
+    const elapsed = task.started ? Math.max(0, Math.round((now - task.started) / 1000)) + 's' : '—';
+    rows.push({ text: `状态 ${task.status || task.state || '—'} · ${elapsed}`, color: stateColor(task, selected!.index) });
+    if (task.tool) rows.push({ text: `工具 ${truncateToWidth(plain(task.tool), labelWidth - 3)}`, color: 'dim' });
+    if (task.checkpoint) rows.push({ text: `进展 ${truncateToWidth(plain(task.checkpoint), labelWidth - 3)}`, color: 'dim' });
+    rows.push({ text: `输出 ${truncateToWidth(plain(task.output || '等待结果'), labelWidth - 3)}`, color: 'text' });
+    rows.push({ text: 'Enter 详情 · Ctrl+X 取消 · v 完整输出', color: 'dim' });
+  } else {
+    rows.push({ text: selected ? '尚无书案' : '总理 · Enter 输入目标', color: 'dim' });
+    rows.push({ text: 'Enter 详情 · 单击选中坐席', color: 'dim' });
+  }
+  rows.push('div', { text: '拖动 · 滚轮缩放 · F10 返回', color: 'dim' });
+  // 卡片高度贴合内容。
+  const cardH = Math.min(height, rows.length + 2);
   const title = '─ 议会简要 ';
   const titleWidth = visibleWidth(title);
   const fill = Math.max(1, (right - x - 2) - titleWidth);
   put(grid, x, 0, '╭' + title, focused ? 'accent' : 'borderAccent');
   for (let cx = x + titleWidth + 1; cx < right; cx++) put(grid, cx, 0, '─', frameColor);
   put(grid, right, 0, '╮', frameColor);
-  for (let y = 1; y < height - 1; y++) { put(grid, x, y, '│', frameColor); put(grid, right, y, '│', frameColor); }
-  put(grid, x, height - 1, '╰', frameColor);
-  for (let cx = x + 1; cx < right; cx++) put(grid, cx, height - 1, '─', frameColor);
-  put(grid, right, height - 1, '╯', frameColor);
-  const active = countActive(snapshot.tasks);
-  const attention = countPending(snapshot.tasks);
-  const rows: ([string, string] | null)[] = [
-    [`活跃 ${active} · 待处理 ${attention}`, attention ? 'warning' : 'muted'],
-    null,
-  ];
-  if (council?.list) {
-    const filtered = councilTasks(snapshot, council.filter, council.query);
-    rows.push([`${council.query ? `“${council.query}” · ` : ''}${filterName(council.filter)}任务 · F8 换筛选`, 'accent']);
-    if (!filtered.length) rows.push(['  没有匹配的任务', 'muted']);
-    const detailRows = 7;
-    const visible = Math.max(1, Math.min(filtered.length, Math.max(1, height - rows.length - detailRows - 4)));
-    const start = Math.max(0, Math.min(council.index - Math.floor(visible / 2), Math.max(0, filtered.length - visible)));
-    for (let i = start; i < Math.min(filtered.length, start + visible); i++) {
-      const task = filtered[i];
-      rows.push([`${i === council.index ? '›' : ' '}${stateMark(task)} ${padCell(task.status || task.state || '—', 8)} ${padCell(task.agent, 8)} ${truncateToWidth(plain(task.title || ''), labelWidth - 20)}`, i === council.index ? 'accent' : stateColor(task, i)]);
-    }
-    if (filtered.length > visible) rows.push([`  ${Math.min(filtered.length, start + visible)}/${filtered.length} · ↑↓ 选择`, 'muted']);
-    rows.push(null);
-  }
-  const task = selected?.task;
-  rows.push([task ? `${plain(selected!.label)} 书案` : selected ? `选中 ${plain(selected.label)}` : '选中 总理', 'accent']);
-  if (task) {
-    const elapsed = task.started ? Math.max(0, Math.round((now - task.started) / 1000)) + 's' : '—';
-    rows.push([`状态 ${task.status || task.state || '—'} · ${elapsed}`, stateColor(task, selected!.index)]);
-    if (task.tool) rows.push([`工具 ${truncateToWidth(plain(task.tool), labelWidth - 3)}`, 'muted']);
-    if (task.checkpoint) rows.push([`进展 ${truncateToWidth(plain(task.checkpoint), labelWidth - 3)}`, 'muted']);
-    rows.push([`输出 ${truncateToWidth(plain(task.output || '等待结果'), labelWidth - 3)}`, 'muted']);
-    rows.push(['Enter 详情 · Ctrl+X 取消 · v 完整输出', 'muted']);
-  } else {
-    rows.push([selected ? '尚无书案' : '总理 · Enter 输入目标', 'muted']);
-    rows.push(['Enter 详情 · 单击选中坐席', 'muted']);
-  }
-  rows.push(null, ['拖动 · 滚轮缩放 · F10 返回', 'muted']);
-  // null = 分区线：在边框上画 ├──┤，替代空行，收紧行距。
+  for (let y = 1; y < cardH - 1; y++) { put(grid, x, y, '│', frameColor); put(grid, right, y, '│', frameColor); }
+  put(grid, x, cardH - 1, '╰', frameColor);
+  for (let cx = x + 1; cx < right; cx++) put(grid, cx, cardH - 1, '─', frameColor);
+  put(grid, right, cardH - 1, '╯', frameColor);
   rows.forEach((row, index) => {
     const y = index + 1;
-    if (y >= height - 1) return;
-    if (row === null) { put(grid, x, y, '├', frameColor); for (let cx = x + 1; cx < right; cx++) put(grid, cx, y, '─', frameColor); put(grid, right, y, '┤', frameColor); return; }
-    put(grid, labelX, y, truncateToWidth(plain(row[0]), labelWidth), row[1]);
+    if (y >= cardH - 1) return;
+    if (row === 'div') { put(grid, x, y, '├', frameColor); for (let cx = x + 1; cx < right; cx++) put(grid, cx, y, '─', frameColor); put(grid, right, y, '┤', frameColor); return; }
+    put(grid, labelX, y, truncateToWidth(plain(row.text), labelWidth), row.color);
   });
 }
 
@@ -189,7 +195,8 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   for (const task of tasks) {
     const agent = byAgent.get(task.agent);
     if (agent && !task.parentWorkerId) continue;
-    realNodes.push({ id: `task:${task.id}`, label: task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(realNodes.length / 12)}`, index: 0, x: 0, y: 0 });
+    // 任务节点用标题做标签：同名代表派生的多个任务不再长成一对双胞胎。
+    realNodes.push({ id: `task:${task.id}`, label: plain(task.title || '') || task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(realNodes.length / 12)}`, index: 0, x: 0, y: 0 });
   }
   // 真实席位沿 48 槽均匀分布、空席填隙，避免全部挤在起弧的一段；多环（活跃>12）保持分组顺序。
   const activeCount = tasks.filter(task => activeStates.has(task.state || '')).length;
@@ -266,12 +273,10 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
   // 总理座盒：三行小盒取代单字符，右侧边作为连线锚点，避免连线穿过盒子。
   const anchor = { x: main.x + 5, y: main.y };
-  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? anchor.x, parent?.y ?? anchor.y, node.x, node.y, groupColor(node.task)); }
-  put(grid, main.x - 3, main.y - 1, '╭─总理─╮', selected === -1 ? 'accent' : 'text');
-  put(grid, main.x - 3, main.y, '│  ◉   │', selected === -1 ? 'accent' : 'text');
-  put(grid, main.x - 3, main.y + 1, '╰──────╯', selected === -1 ? 'accent' : 'text');
+  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
+  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '总理', 'accent');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '审', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
+  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚠', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
     // 有任务的席位在单环下显示名字（选中席位任何环都显示）；用可见宽度居中，CJK 不偏移。
     const labelled = selectedNode || (node.task && layout.track ? node : undefined);
     if (labelled) put(grid, node.x - Math.floor(visibleWidth(plain(node.label)) / 2), node.y + 1, truncateToWidth(plain(node.label), 10), color);
@@ -283,6 +288,6 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const info = selected === -1 ? '总理 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  审 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  ⚠ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }
