@@ -110,3 +110,18 @@ test('a failing graph frame falls back to the desk instead of throwing out of re
   assert.equal(desk.graphView, false);
   desk.dispose();
 });
+
+test('streaming assistant text stays visible while the message mutates in place',()=>{
+ const config={agents:[],projects:[],folded:[],drafts:{},sessionLinks:{}};
+ const live={role:'assistant',content:[],timestamp:7};
+ const entries=[{id:'e1',type:'message',message:{role:'user',content:[{type:'text',text:'hi'}]}},{id:'e2',type:'message',message:live}];
+ const context={cwd:process.cwd(),model:{id:'fixture'},isIdle:()=>false,sessionManager:{getSessionFile:()=>'f',getSessionId:()=>'s',getSessionName:()=>'n',getBranch:()=>entries}};
+ const desk=new Desk({terminal:{rows:40},requestRender(){}},{fg:(color,value)=>value},context,config,[],{tasks:[]},()=>{},()=>{});
+ desk.sending=true;desk.live=live;
+ desk.render(80); // first paint caches the base while the reply is still empty
+ live.content.push({type:'text',text:'First streaming delta'});
+ assert.match(desk.render(80).join('\n'),/First streaming delta/,'first delta shows immediately');
+ live.content[0].text+=' · second delta';
+ assert.match(desk.render(80).join('\n'),/second delta/,'later deltas keep rendering');
+ assert.doesNotMatch(desk.render(80).join('\n'),/hi.*First streaming delta.*hi/s,'no duplicated transcript');
+});

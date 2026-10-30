@@ -22,7 +22,7 @@ type Action={kind:string;path?:string;text?:string;id?:string;draft?:string};
 export class Desk {
  editor:Editor; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助'; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;
  readonly renderMetrics=new TimingWindow();
- private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;
+ private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;private liveBaseCache:string[]=[];private liveBaseCacheKey='';
  taskScope:'session'|'all'='session';
  missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphZoom=1;graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
@@ -41,7 +41,7 @@ export class Desk {
  sessionTasks(){return this.pool.tasks.filter(t=>t.cwd===this.ctx.cwd&&t.parentSessionId===this.ctx.sessionManager.getSessionId());}
  sessionKey(){return this.ctx.sessionManager.getSessionFile()||this.ctx.sessionManager.getSessionId();}
  refresh(){if(!this.alive||this.renderPending)return;this.renderPending=true;clearTimeout(this.renderTimer);this.renderTimer=setTimeout(()=>{this.renderPending=false;if(this.alive)this.tui.requestRender();},50);}
- invalidate(){this.editor.invalidate();this.historyCacheKey='';this.metricsDirty=true;this.entriesDirty=true;this.rowCache=undefined;}
+ invalidate(){this.editor.invalidate();this.historyCacheKey='';this.liveBaseCacheKey='';this.metricsDirty=true;this.entriesDirty=true;this.rowCache=undefined;}
  setFocus(f:'input'|'projects'|'crew'){this.focus=f;this.editor.focused=this.focused&&f==='input';this.refresh();}
  rows(){if(this.rowCache)return this.rowCache;const dirs=[...new Set([this.ctx.cwd,...this.config.projects,...this.sessions.map(s=>s.cwd).filter(Boolean)])];return this.rowCache=dirs.flatMap(path=>[{kind:'project',path,label:(basename(path)||path)+(this.pool.tasks.some(t=>t.cwd===path&&!terminalStates.has(t.status))?' · 有任务':'')},...(this.folded.has(path)?[]:this.sessions.filter(s=>s.cwd===path).map(s=>({kind:'session',path:s.path,label:s.name||s.firstMessage||'未命名会话',session:s})))]);}
  selectedRow(){return this.rows()[this.selected];}
@@ -81,6 +81,19 @@ export class Desk {
  try{if(preview){if(!this.previewCache.has(preview.path))this.previewCache.set(preview.path,SessionManager.open(preview.path).getBranch());entries=this.previewCache.get(preview.path)!;}else{const key=this.sessionKey();if(this.entriesDirty||!this.entriesCache||key!==this.entriesKey){this.entriesCache=this.ctx.sessionManager.getBranch();this.entriesKey=key;this.entriesDirty=false;}entries=this.entriesCache!;}}catch(e){return ['读取历史失败：'+clean(e)];}
  const key=[preview?.path||this.sessionKey(),width,entries.length,this.expandedTools,entries[entries.length-1]?.id||entries[entries.length-1]?.message?.timestamp||''].join('|');
  if(key!==this.historyCacheKey){this.historyCache=historyLines(entries,width,this.expandedTools,this.theme);this.historyCacheKey=key;}
+ // While the assistant reply streams, its message mutates in place inside the branch.
+ // The cached lines would keep the stale (often empty) snapshot, and the fallback
+ // below skips messages already present in the branch — together that hid all
+ // streaming text until message_end. Render the in-flight message fresh each frame.
+ if(!preview&&this.sending&&this.live?.role==='assistant'){
+  const liveEntry=entries.find(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp));
+  if(liveEntry){
+   const baseKey='live|'+key;
+   if(baseKey!==this.liveBaseCacheKey){this.liveBaseCache=historyLines(entries.filter(e=>e!==liveEntry&&e.message!==this.live),width,this.expandedTools,this.theme);this.liveBaseCacheKey=baseKey;}
+   const base=this.liveBaseCache[0]?.startsWith('尚无消息。')?[]:this.liveBaseCache;
+   return [...base,...historyLines([{type:'message',message:this.live}],width,this.expandedTools,this.theme)];
+  }
+ }
  if(!preview&&this.live&&!(this.live.role==='custom'&&this.live.display===false)&&!entries.some(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp))){const base=this.historyCache[0]?.startsWith('尚无消息。')?[]:this.historyCache;return [...base,...historyLines([{type:'message',message:this.live}],width,this.expandedTools,this.theme)];}
  return this.historyCache;
  }
