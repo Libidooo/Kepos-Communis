@@ -9,16 +9,18 @@ const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
 
 test('unassigned seats have no connection; assigned seats connect to the main Agent', () => {
+  // 总理座盒自带 │ 边框，判定连线时排除中心盒附近的行。
+  const withoutBox = view => view.lines.slice(0, 32).filter((_, i) => i < 12 || i > 20).join('');
   const empty = renderGraph({ agents, tasks: [] }, 100, 32, -1, 1, theme);
   assert.equal(empty.hits.length, 49);
   assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
   assert.ok(empty.lines.slice(0, 32).join('').includes('○'), 'empty seats are hollow circles');
   assert.ok(!empty.lines.slice(0, 32).join('').includes('□'));
-  assert.equal(/[─│╱╲┼]/.test(empty.lines.slice(0, 32).join('')), false);
+  assert.equal(/[─│╱╲┼]/.test(withoutBox(empty)), false);
   const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
-  assert.equal(/[─│╱╲┼]/.test(active.lines.slice(0, 32).join('')), true);
+  assert.equal(/[─│╱╲┼]/.test(withoutBox(active)), true);
   const finished = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'SUCCEEDED' }] }, 100, 32, -1, 1, theme);
-  assert.equal(/[─│╱╲┼]/.test(finished.lines.slice(0, 32).join('')), false);
+  assert.equal(/[─│╱╲┼]/.test(withoutBox(finished)), false);
 });
 
 test('wide council keeps the ring compact and uses a right-side inspector', () => {
@@ -166,7 +168,7 @@ test('narrow council toggles between the task list and the ring with Tab', () =>
   desk.dispose();
 });
 
-test('motion:false freezes the approval tremble while keeping the hammer symbol', () => {
+test('motion:false freezes the approval tremble while keeping the 审 mark', () => {
   const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {}, motion: false };
   const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
   const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {});
@@ -174,7 +176,7 @@ test('motion:false freezes the approval tremble while keeping the hammer symbol'
   desk.handleInput('\x1b[21~'); // F10
   const first = desk.render(120).join('\n');
   const second = desk.render(120).join('\n');
-  assert.ok(first.includes('⚒'));
+  assert.ok(first.includes('审'));
   assert.equal(first, second, 'no frame-to-frame motion when motion is off');
   desk.dispose();
 });
@@ -226,7 +228,7 @@ test('human approval uses a bright hammer and a bounded two-frame tremble', () =
   const snapshot = { agents, tasks: [{ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', title: '等待批准' }] };
   const first = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 0);
   const next = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 400);
-  assert.ok(first.lines.join('').includes('⚒'));
+  assert.ok(first.lines.join('').includes('审'));
   assert.ok(first.lines.join('').includes('\x1b[1;38;2;255;223;84m'));
   assert.notDeepEqual(first.lines, next.lines);
   assert.deepEqual(first.hits, next.hits);

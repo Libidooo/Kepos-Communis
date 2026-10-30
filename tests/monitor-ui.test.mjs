@@ -49,7 +49,7 @@ test('crew list is two lines per member and Enter opens the member task first',(
  const agents=[{id:'a',name:'Alice',model:'gpt-x'},{id:'b',name:'Bob',model:'claude-x'}];
  const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',state:'RUNNING',cwd:home,parentSessionId:'local'}],children:new Map()},()=>{},()=>{});
  const frame=desk.render(120).join('\n');
- assert.ok(frame.includes('Alice'));assert.ok(frame.includes('未分派'));assert.ok(!frame.includes('gpt-x'),'per-member model moved out of the list');
+ assert.ok(frame.includes('Alice'));assert.ok(frame.includes('未分派'));assert.ok(frame.includes('gpt-x'),'member model visible but dimmed');
  assert.ok(frame.includes('● 1 运行'),'header carries a running badge');
  desk.setFocus('crew');desk.crewIndex=0;
  desk.handleInput('\r');

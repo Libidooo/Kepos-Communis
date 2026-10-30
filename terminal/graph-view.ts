@@ -16,7 +16,8 @@ const connectedStates = new Set([...activeStates, 'NEEDS_HUMAN']);
 export const countActive = (tasks: GraphViewTask[]) => tasks.filter(task => activeStates.has(task.state || '')).length;
 export const countPending = (tasks: GraphViewTask[]) => tasks.filter(task => task.state === 'NEEDS_HUMAN' || task.reviewDue).length;
 const filterName = (filter: CouncilFilter) => filter === 'active' ? '活跃' : filter === 'pending' ? '待处理' : '全部';
-export const stateMark = (task: GraphViewTask) => task.state === 'NEEDS_HUMAN' ? '⚒︎' : task.reviewDue ? '!' : task.state === 'FAILED' || task.status === '失败' ? '✕' : task.state === 'SUCCEEDED' || task.status === '完成' ? '✓' : activeStates.has(task.state || '') ? '▶' : '·';
+// 待审批用「审」：U+2692 在多数终端回退成大号彩色 emoji，CJK 字符保证小号文本渲染。
+export const stateMark = (task: GraphViewTask) => task.state === 'NEEDS_HUMAN' ? '审' : task.reviewDue ? '!' : task.state === 'FAILED' || task.status === '失败' ? '✕' : task.state === 'SUCCEEDED' || task.status === '完成' ? '✓' : activeStates.has(task.state || '') ? '▶' : '·';
 // 议会任务列表的统一筛选：图负责关系与态势，列表负责从问题找到具体任务。
 export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter, query: string): GraphViewTask[] {
   const q = query.trim();
@@ -263,10 +264,18 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     }
   }
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
-  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
-  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '总理', 'accent');
+  // 总理座盒：三行小盒取代单字符，右侧边作为连线锚点，避免连线穿过盒子。
+  const anchor = { x: main.x + 5, y: main.y };
+  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? anchor.x, parent?.y ?? anchor.y, node.x, node.y, groupColor(node.task)); }
+  put(grid, main.x - 3, main.y - 1, '╭─总理─╮', selected === -1 ? 'accent' : 'text');
+  put(grid, main.x - 3, main.y, '│  ◉   │', selected === -1 ? 'accent' : 'text');
+  put(grid, main.x - 3, main.y + 1, '╰──────╯', selected === -1 ? 'accent' : 'text');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚒', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning'); if (selectedNode) put(grid, node.x - Math.floor(node.label.length / 2), node.y + 1, truncateToWidth(node.label, 10), color); hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
+  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '审', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
+    // 有任务的席位在单环下显示名字（选中席位任何环都显示）；用可见宽度居中，CJK 不偏移。
+    const labelled = selectedNode || (node.task && layout.track ? node : undefined);
+    if (labelled) put(grid, node.x - Math.floor(visibleWidth(plain(node.label)) / 2), node.y + 1, truncateToWidth(plain(node.label), 10), color);
+    hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   sidebar(grid, snapshot, selectedNode, safeWidth, safeHeight, now, council);
   if (detail) bubble(grid, selectedNode || { id: 'main', label: '总理', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
@@ -274,6 +283,6 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const info = selected === -1 ? '总理 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  ⚒︎ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  审 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }
