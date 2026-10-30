@@ -16,7 +16,7 @@ Kepos Communis 是人与 Agent 共同工作的终端空间。它组织任务分�
 </p>
 
 <p align="center">
-  <img alt="status beta" src="https://img.shields.io/badge/status-beta-B3242A?style=flat-square&labelColor=171717">
+  <img alt="status beta" src="https://img.shields.io/badge/status-beta-B52F3B?style=flat-square&labelColor=171717">
   <img alt="node 24+" src="https://img.shields.io/badge/node-%3E%3D24-0B2744?style=flat-square&labelColor=F2E9D8">
   <img alt="license MIT" src="https://img.shields.io/badge/license-MIT-171717?style=flat-square&labelColor=F2E9D8">
 </p>
