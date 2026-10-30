@@ -7,7 +7,7 @@ import { terminalStates, type WorkerPool } from './workers.ts';
 import { routeCommand, localCommands } from './command-routing.ts';
 import { TimingWindow } from './metrics.ts';
 import { PRODUCT_NAME, sessionUsage, usageText, formatTokens } from './presentation.ts';
-import { renderGraph, countActive, countPending, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
+import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
 export const fit=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
 export const fitRight=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return ' '.repeat(Math.max(0,width-visibleWidth(s)))+s;};
 export function historyLines(entries:any[],width:number,expanded=false,theme?:any):string[]{
@@ -26,7 +26,7 @@ export class Desk {
  readonly renderMetrics=new TimingWindow();
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;private liveBaseCache:string[]=[];private liveBaseCacheKey='';
  taskScope:'session'|'all'='session';
- missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphZoom=1;graphFocus:'ring'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graph?:{snapshot:()=>GraphViewSnapshot};
+ missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
@@ -105,18 +105,33 @@ export class Desk {
   const message=clean(error instanceof Error?error.message:error);this.notice='界面渲染出错：'+message;
   return [fit('Kepos 界面渲染出错，已退回工作台：'+message,Math.max(1,width)),fit('按任意键重绘；问题持续时请报告此行。',Math.max(1,width))];
  }finally{this.renderMetrics.observe(performance.now()-begin);}}
- helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开工作台','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内切换 席位图/输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 详情 · Ctrl+X 取消选中任务','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn：滚动历史，Ctrl+End 回最新','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：工作台中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 席位 → 工作台','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本工作台输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
+ helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开工作台','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 详情 · Ctrl+X 取消选中任务','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn：滚动历史，Ctrl+End 回最新','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：工作台中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 工作台','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本工作台输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
+ private graphSnapshot():GraphViewSnapshot{return this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};}
  private renderGraphFrame(width:number,rows:number):string[]{
+  this.graphWidth=width;
   this.editor.focused=this.focused&&this.graphFocus==='input';
   const input=this.editor.render(Math.max(8,width-2));
   const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};
   const active=countActive(snapshot.tasks);const attention=countPending(snapshot.tasks);
-  const header=this.theme.fg('accent',fit(`Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位图 · F10 返回':'F6 输入 · F10 返回'}`,width));
+  if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
+  this.pendingSeen=attention;
+  const header=this.theme.fg('accent',fit(`Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
   if(this.help){this.graphHits=[];const help=this.helpLines();const avail=Math.max(1,rows-input.length-3);this.inputY=1+avail;
    return [header,...help.slice(0,avail),...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
   const graphHeight=Math.max(8,rows-input.length-4);
-  const graph=renderGraph(snapshot,width,graphHeight,this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets);
+  // 窄屏放不下 sidebar：列表+详情占满，Tab 主动回环图。
+  if(width<120&&this.councilList&&this.graphFocus!=='ring'){
+   const filtered=councilTasks(snapshot,this.councilFilter,this.councilQuery);
+   this.councilIndex=Math.max(0,Math.min(this.councilIndex,Math.max(0,filtered.length-1)));
+   const list=renderCouncilList(filtered,width,graphHeight,this.councilIndex,this.theme);
+   this.graphHits=[];this.inputY=1+list.rows.length;
+   return [header,...list.rows,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
+  const council:CouncilView={list:this.councilList,filter:this.councilFilter,query:this.councilQuery,index:this.councilIndex};
+  const graph=renderGraph(snapshot,width,graphHeight,this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets,Date.now(),council);
   this.graphHits=graph.hits;
+  // 稳定选中：以稳定节点 id 对准，快照里节点增删时选中不漂移。
+  if(this.graphSelectedId){const at=this.graphHits.findIndex(item=>item.id===this.graphSelectedId);if(at>=0)this.graphSelected=at-1;else this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;}
+  else this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;
   this.inputY=1+graph.lines.length;
   return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);
  }
@@ -165,13 +180,18 @@ export class Desk {
  selectedText(){if(!this.selection)return'';const {anchor,end,lines}=this.selection;const [a,b]=anchor.row<end.row||anchor.row===end.row&&anchor.col<=end.col?[anchor,end]:[end,anchor];return stripVTControlCharacters(lines.slice(a.row,b.row+1).map((line,i)=>sliceByColumn(line,i===0?a.col:0,Math.max(0,(a.row+i===b.row?b.col:visibleWidth(line))-(i===0?a.col:0))).trimEnd()).join('\n'));}
  handleInput(data:string){
  if(matchesKey(data,Key.f7)||matchesKey(data,'ctrl+shift+c')){void this.copyAnswer();return;}
- if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.graphFocus='ring';this.focus='input';this.readStart=null;this.refresh();return;}
+ // 议会列表过滤输入：仅在该模式捕获键入，避免抢聊天输入。
+ if(this.graphView&&this.councilSearch){if(matchesKey(data,Key.escape)){this.councilSearch=false;this.refresh();return;}if(matchesKey(data,Key.backspace)||data==='\x7f'||data==='\b'){this.councilQuery=this.councilQuery.slice(0,-1);this.councilIndex=0;this.refresh();return;}if(data.length===1&&data>=' '){this.councilQuery+=data;this.councilIndex=0;}this.refresh();return;}
+ if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.graphFocus='ring';this.councilList=false;this.councilSearch=false;this.focus='input';this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'f11')){this.maximize=!this.maximize;this.notice=this.maximize?'专注阅读：中栏最大化 · F11 或 Esc 恢复':'已恢复面板';this.refresh();return;}
  if(matchesKey(data,Key.escape)&&this.focus==='input'&&this.editor.isShowingAutocomplete()){this.editor.handleInput(data);this.refresh();return;}
- if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){if(this.graphDetail){this.graphDetail=false;this.refresh();return;}if(this.graphFocus==='input'){this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位焦点 · ↑↓ 选择 · Enter 详情 · F6 切输入';this.refresh();return;}this.graphView=false;this.setFocus('input');this.notice='已回到 Kepos 工作台';this.refresh();return;}if(this.maximize){this.maximize=false;this.notice='已恢复面板';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到 Kepos 工作台';}else this.notice='已在 Kepos 工作台；输入 /pi 进入 Pi 命令行';this.refresh();return;}
+ if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){if(this.graphDetail){this.graphDetail=false;this.refresh();return;}if(this.graphFocus==='input'){this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位焦点 · ↑↓ 选择 · Enter 详情 · F6 切面板';this.refresh();return;}if(this.graphFocus==='list'){this.graphFocus='ring';this.notice='议会席位焦点 · Tab 回列表';this.refresh();return;}if(this.councilList){this.councilList=false;this.notice='已关闭任务列表 · Tab 重新打开';this.refresh();return;}this.graphView=false;this.setFocus('input');this.notice='已回到 Kepos 工作台';this.refresh();return;}if(this.maximize){this.maximize=false;this.notice='已恢复面板';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到 Kepos 工作台';}else this.notice='已在 Kepos 工作台；输入 /pi 进入 Pi 命令行';this.refresh();return;}
  if(matchesKey(data,'ctrl+c')){const selected=this.selectedText();if(selected){void this.copyText(selected);return;}this.notice='进入 Pi 命令行请使用 /pi；中止任务请按 Ctrl+X。';this.refresh();return;}
  if(matchesKey(data,'ctrl+x')&&this.graphView){const hit=this.graphHits.find(item=>item.index===this.graphSelected);if(hit?.taskId)this.finish({kind:'cancel-selected',id:hit.taskId});else{this.notice='选中席位没有可取消的任务 · 审批请用 F2 · Enter 查看详情';this.refresh();}return;}
  if(matchesKey(data,'ctrl+x')){this.finish({kind:'abort'});return;}
+ // Tab 在席位图与任务列表间切换；F8 循环列表筛选并直达待处理。放在工作台同名键之前。
+ if(this.graphView&&matchesKey(data,Key.tab)){this.councilList=!this.councilList;this.graphFocus=this.councilList?'list':'ring';this.editor.focused=false;this.notice=this.councilList?'议会任务列表 · Tab 回环图':'议会席位图 · Tab 开列表';this.refresh();return;}
+ if(this.graphView&&matchesKey(data,Key.f8)){this.councilList=true;this.graphFocus='list';this.councilFilter=this.councilFilter==='active'?'pending':this.councilFilter==='pending'?'all':'active';this.councilIndex=0;this.editor.focused=false;this.notice='议会列表 · 筛选：'+(this.councilFilter==='active'?'活跃':this.councilFilter==='pending'?'待处理':'全部')+' · / 过滤 · Enter 详情';this.refresh();return;}
  if(matchesKey(data,Key.f1)){this.help=!this.help;this.readStart=null;this.refresh();return;}
  if(matchesKey(data,Key.f2)){this.finish({kind:'menu'});return;}
  if(matchesKey(data,'ctrl+k')){this.finish({kind:'palette'});return;}
@@ -180,9 +200,18 @@ export class Desk {
  if(matchesKey(data,Key.f9)){this.missionView=!this.missionView;this.taskView=false;this.help=false;this.monitorAt=0;this.readStart=0;this.refresh();return;}
  if(matchesKey(data,Key.f5)){this.expandedTools=!this.expandedTools;this.historyCacheKey='';this.notice=this.expandedTools?'工具完整输出已展开':'工具输出已折叠（保留头尾）';this.refresh();return;}
  if(matchesKey(data,Key.f4)){this.finish({kind:'model'});return;}
- if(matchesKey(data,Key.f6)){if(this.graphView){this.graphFocus=this.graphFocus==='input'?'ring':'input';this.editor.focused=this.focused&&this.graphFocus==='input';this.notice=this.graphFocus==='input'?'议会输入 · Enter 发送给主 Agent · Esc 回席位':'议会席位 · ↑↓ 选择 · Enter 详情 · Ctrl+X 取消任务';this.refresh();return;}this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphDetail=false;this.refresh();return;}
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.down)){this.graphSelected=Math.min(47,this.graphSelected+1);this.graphDetail=false;this.refresh();return;}
+ if(matchesKey(data,Key.f6)){if(this.graphView){if(this.graphFocus==='ring'){this.graphFocus='list';this.councilList=true;this.editor.focused=false;this.councilIndex=Math.max(0,Math.min(this.councilIndex,Math.max(0,councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1)));this.notice='议会任务列表 · ↑↓ 选择 · Enter 详情 · / 过滤';}
+   else if(this.graphFocus==='list'){this.graphFocus='input';this.editor.focused=this.focused;this.notice='议会输入 · Enter 发送给主 Agent · Esc 回席位';}
+   else{this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位 · ↑↓ 选择 · Enter 详情 · Ctrl+X 取消任务';}
+   this.refresh();return;}this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.down)){this.graphSelected=Math.min(47,this.graphSelected+1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.up)){this.councilIndex=Math.max(0,this.councilIndex-1);this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.down)){this.councilIndex=Math.min(councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1,this.councilIndex+1);this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='list'&&data==='/'&&!this.councilSearch){this.councilSearch=true;this.notice='列表过滤：输入关键词 · Esc 结束';this.refresh();return;}
+ // 列表 Enter 定位到图上对应坐席并打开详情；v 进入完整产出阅读层。
+ if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.enter)){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const hit=task?this.graphHits.find(item=>item.taskId===task.id):undefined;if(hit){this.graphSelected=hit.index;this.graphSelectedId=hit.id;this.graphDetail=true;this.refresh();}else{this.notice='当前画面没有这个坐席 · 窄屏请 Tab 回环图';this.refresh();}return;}
+ if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.panelTasks().findIndex(item=>item.id===task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
  // 议会内 Enter 只按焦点行事：席位焦点开详情（草稿不发送），输入焦点才发送。
  if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){this.graphDetail=true;this.refresh();return;}
  if(this.graphView&&this.graphFocus==='input'&&matchesKey(data,Key.enter)){this.send();return;}
@@ -198,10 +227,12 @@ export class Desk {
  this.refresh();
  }
  handleMouse(e:any){if(e.shift)return;
+ if(this.graphView&&this.councilList&&this.graphWidth>=120&&e.x>=this.graphWidth-42){this.councilIndex=Math.max(0,this.councilIndex+Math.sign(e.wheelDelta||0));this.refresh();return{handled:true};}
  if(this.graphView&&e.type==='wheel'){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(e.wheelDelta>0?.1:-.1)));this.refresh();return{handled:true};}
  if(this.graphView&&this.graphDrag&&(e.type==='drag'||e.type==='release')){const deltaX=e.x-this.graphDrag.lastX,deltaY=(e.y-1)-this.graphDrag.lastY;const offset=this.graphOffsets[this.graphDrag.id]||{x:0,y:0};this.graphOffsets[this.graphDrag.id]={x:offset.x+deltaX,y:offset.y+deltaY};this.graphDrag.lastX=e.x;this.graphDrag.lastY=e.y-1;if(e.type==='release')this.graphDrag=undefined;this.refresh();return{handled:true,focus:true};}
  if(this.graphView&&e.y>=this.inputY&&e.type==='press'){this.graphFocus='input';this.setFocus('input');return{handled:true,focus:true};}
- if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphFocus='ring';this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y-1};this.refresh();return{handled:true,focus:true,capture:e.type==='press'};}}
+ if(this.graphView&&this.councilList&&this.graphWidth>=120&&e.x>=this.graphWidth-42&&e.type==='press'){this.graphFocus='list';this.editor.focused=false;this.refresh();return{handled:true,focus:true};}
+ if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphFocus='ring';this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphSelectedId=hit.id;this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y-1};this.refresh();return{handled:true,focus:true,capture:e.type==='press'};}}
  const centerX=this.leftWidth+(this.leftWidth?3:0);const inTranscript=e.y>=2&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+this.centerWidth&&this.focus!=='crew';
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-2,col:e.x-centerX},end:{row:e.y-2,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-1,e.y-2)),col:Math.max(0,Math.min(this.centerWidth,e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}

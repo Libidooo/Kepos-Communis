@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderGraph } from '../dist/terminal/graph-view.js';
+import { renderGraph, renderCouncilList, councilTasks } from '../dist/terminal/graph-view.js';
 import { Desk } from '../dist/terminal/desk.js';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { fileURLToPath } from 'node:url';
@@ -87,6 +87,81 @@ test('Ctrl+X on an assigned agent seat cancels that seat task instead of abortin
   desk.render(120); // fills graphHits so the Ctrl+X lookup can resolve the seat's task
   desk.handleInput('\x18'); // ctrl+x
   assert.deepEqual(actions, [{ kind: 'cancel-selected', id: 'task-a' }]);
+  desk.dispose();
+});
+
+test('layout keeps every seat on its own cell even with a full council', () => {
+  const crew = Array.from({ length: 48 }, (_, i) => ({ id: String(i), name: 'R' + i }));
+  const tasks = crew.map((agent, i) => ({ id: 'w' + i, agent: agent.name, state: 'RUNNING' }));
+  const view = renderGraph({ agents: crew, tasks }, 140, 40, -1, 1, theme);
+  const keys = new Set(view.hits.map(hit => hit.x + ',' + hit.y));
+  assert.equal(keys.size, view.hits.length, 'no two seats share a cell');
+});
+
+test('council task filters pick active, pending and match keywords', () => {
+  const snapshot = { agents: [{ id: 'a', name: 'A' }], tasks: [
+    { id: 'run', agent: 'A', state: 'RUNNING', title: '扫描代码' },
+    { id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', status: '等待人类审批', title: '批准发布' },
+    { id: 'done', agent: 'A', state: 'SUCCEEDED', status: '完成', title: '旧任务' },
+  ] };
+  assert.deepEqual(councilTasks(snapshot, 'active', '').map(task => task.id), ['run']);
+  assert.deepEqual(councilTasks(snapshot, 'pending', '').map(task => task.id), ['gate']);
+  assert.deepEqual(councilTasks(snapshot, 'all', '发布').map(task => task.id), ['gate']);
+  assert.equal(councilTasks(snapshot, 'all', '').length, 3);
+});
+
+test('narrow council list renders full-width rows inside the width', () => {
+  const tasks = [
+    { id: 'run', agent: 'A', state: 'RUNNING', title: '扫描代码' },
+    { id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', status: '等待人类审批', title: '批准发布' },
+  ];
+  const list = renderCouncilList(tasks, 100, 12, 1, theme);
+  assert.ok(list.rows.some(row => row.includes('批准发布')));
+  assert.equal(list.taskId, 'gate');
+  assert.ok(list.rows.every(row => visibleWidth(row) <= 100));
+});
+
+test('council list: F8 opens with a filter, Enter locates the seat, selection stays stable', () => {
+  const snapshot = { agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING', title: '检查' }] };
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {});
+  desk.graph = { snapshot: () => snapshot };
+  desk.handleInput('\x1b[21~'); // F10
+  desk.handleInput('\x1b[19~'); // F8 opens the list and cycles the filter active->pending
+  assert.equal(desk.councilList, true);
+  assert.equal(desk.graphFocus, 'list');
+  assert.equal(desk.councilFilter, 'pending');
+  desk.handleInput('\x1b[19~'); // pending->all
+  assert.equal(desk.councilFilter, 'all');
+  const frame = desk.render(140).join('\n');
+  assert.match(frame, /全部任务/);
+  assert.match(frame, /检查/);
+  desk.handleInput('\x1b[B'); // down (single task, stays on it)
+  desk.handleInput('\r'); // Enter locates the seat and opens the detail
+  assert.equal(desk.graphDetail, true);
+  assert.equal(desk.graphSelectedId, 'agent:a');
+  snapshot.tasks.unshift({ id: 'new', agent: 'A', state: 'QUEUED', title: '新任务' });
+  desk.render(140);
+  assert.equal(desk.graphSelectedId, 'agent:a', 'selection follows the node, not the index');
+  desk.dispose();
+});
+
+test('narrow council toggles between the task list and the ring with Tab', () => {
+  const snapshot = { agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING', title: '检查' }] };
+  const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
+  const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
+  const desk = new Desk({ terminal: { rows: 30 }, requestRender() {} }, theme, context, config, [], { tasks: [] }, () => {}, () => {});
+  desk.graph = { snapshot: () => snapshot };
+  desk.handleInput('\x1b[21~'); // F10
+  desk.handleInput('\t'); // Tab -> list mode
+  assert.equal(desk.councilList, true);
+  const frame = desk.render(110).join('\n');
+  assert.match(frame, /任务列表/);
+  assert.match(frame, /检查/);
+  desk.handleInput('\t'); // Tab -> back to the ring
+  assert.equal(desk.councilList, false);
+  assert.match(desk.render(110).join('\n'), /■/);
   desk.dispose();
 });
 
