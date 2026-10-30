@@ -121,7 +121,7 @@ export class Desk {
  }finally{this.renderMetrics.observe(performance.now()-begin);}}
  // 书案预算条：双色，空余段 dim，避免 0% 被读成满格。
  budgetBar(task:any){const pct=Math.max(0,Math.min(100,Math.round(((task.ended||Date.now())-task.started)/Math.max(1,(task.limit||300)*1000)*100)));const filled=Math.max(0,Math.min(10,Math.round(pct/10)));return this.theme.fg(task.stalled?'warning':'accent','▓'.repeat(filled))+this.theme.fg('dim','░'.repeat(10-filled))+' '+pct+'%';}
- helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 详情 · Ctrl+X 取消选中任务','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本议案输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
+ helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 详情 · Ctrl+X 取消选中任务','议会输入：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本议案输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
  private graphSnapshot():GraphViewSnapshot{return this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};}
  private renderGraphFrame(width:number,rows:number):string[]{
   this.graphWidth=width;
@@ -270,7 +270,24 @@ export class Desk {
  if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.panelTasks().findIndex(item=>item.id===task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
  // 议会内 Enter 只按焦点行事：席位焦点开详情（草稿不发送），输入焦点才发送。
  if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){this.graphDetail=true;this.refresh();return;}
- if(this.graphView&&this.graphFocus==='input'&&matchesKey(data,Key.enter)){this.send();return;}
+ if(this.graphView&&this.graphFocus==='input'&&matchesKey(data,Key.enter)){
+  // 选中运行中的席位时，消息直达该代表（Pi 把流式中的新消息排队）；未选中则发给主 Agent。
+  const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);
+  const text=this.editor.getExpandedText().trim();
+  if(text&&hit){
+   const parent=this.ctx.sessionManager.getSessionId();
+   // sendMessage 是异步且需真实 capability（authorize 按哈希校验）：句柄必须向 pool 取活凭据。
+   const handle=this.pool.liveHandle?.(hit.taskId,parent);
+   if(!handle){this.notice='无法转发：拿不到该任务的活句柄（可能已结束）';this.refresh();return;}
+   void this.pool.sendMessage(handle,parent,text).then((outcome:any)=>{
+    if(outcome.delivered){this.editor.setText('');this.notice=`已转发给 ${outcome.agent||hit.taskId}${outcome.queued?'（排队中）':''}`;}
+    else{this.notice='转发失败：'+(outcome.error||'未知原因')+'（原稿保留）';}
+    this.refresh();
+   });
+   this.refresh();return;
+  }
+  this.send();return;
+ }
  if(this.graphView&&this.graphFocus==='ring'&&(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown))){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(matchesKey(data,Key.pageUp)?0.1:-0.1)));this.refresh();return;}
  if(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown)){const lines=this.displayLines.length?this.displayLines:this.history(Math.max(8,this.centerWidth-4));this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(matchesKey(data,Key.pageUp)?-Math.max(1,this.bodyHeight-2):Math.max(1,this.bodyHeight-2)));if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'ctrl+end')){this.readStart=null;this.refresh();return;}

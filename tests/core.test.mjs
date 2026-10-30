@@ -48,3 +48,22 @@ test('nested transactions isolate failed savepoints and retain outer changes',()
  assert.throws(()=>db.transaction(()=>{db.set('outer',9);db.transaction(()=>db.set('after',9));throw Error('rollback all');}),/rollback all/);
  assert.equal(db.get('outer'),1);assert.equal(db.get('after'),3);db.close();
 });
+
+test('worker pool authorizes by hashing the presented capability; live handles recover in-process', async () => {
+ const { createHash } = await import('node:crypto');
+ const { WorkerPool } = await import('../dist/terminal/workers.js');
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-auth-')); const db=new OrbitalDatabase(path.join(root,'state.sqlite'));
+ const capability='cap-raw-123';
+ db.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run('w-auth','parent','corr',createHash('sha256').update(capability).digest('hex'),'epoch','RUNNING',JSON.stringify({id:'w-auth',status:'运行中',ownerPid:process.pid,parentSessionId:'parent'}));
+ const pool=new WorkerPool(db);
+ const good={version:1,workerId:'w-auth',parentSessionId:'parent',capability};
+ assert.deepEqual(pool.result(good,'parent'),{state:'RUNNING'});
+ assert.equal(pool.result({...good,capability:createHash('sha256').update(capability).digest('hex')},'parent').state,'UNKNOWN_HANDLE','presenting a hash instead of the raw capability must not authorize');
+ assert.equal(pool.result(good,'other').state,'UNKNOWN_HANDLE');
+ pool.capabilities.set('w-auth',capability);
+ const recovered=pool.liveHandle('w-auth','parent');
+ assert.equal(recovered?.capability,capability);
+ assert.equal(pool.result(recovered,'parent').state,'RUNNING');
+ assert.equal(pool.liveHandle('w-auth','foreign'),undefined);
+ db.close();
+});

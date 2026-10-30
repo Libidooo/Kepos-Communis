@@ -16,6 +16,12 @@ The main agent runs with the Pi SDK's default tools (read/bash/edit/write), so a
 
 This is an application-level control: pattern matching can be evaded by a model deliberately obfuscating commands, and the strict/proxy postures are audit-and-confirm barriers rather than cryptographic guarantees. The hard boundary is the readonly posture. OS-level isolation of the store is tracked as future work.
 
+## Local scheduler RPC and the endpoint token
+
+`kepos daemon` publishes a local RPC surface (default `127.0.0.1:7789`) and stores two files in the data directory: `scheduler.port` (discovery) and `scheduler.token` (bearer credential, written 0600 where the OS honors it; it survives daemon restarts by design). Anything running as the same OS user that reads the token can dispatch workers, cancel tasks and read task state — the same-user boundary is the threat model, matching the Pi auth store under the same directory.
+
+Gate approval over RPC is additionally bounded by the approval policy: `plan approve` is refused unless the workspace is in 代理审批 (proxy) mode, so a model cannot approve its own human gate by scripting against the token while strict mode is active. Human approvals stay the TUI confirm or the operator running `kepos missions approve` themselves. Deleting the two endpoint files (or stopping the daemon cleanly) removes the surface; a token leaked to another local user is rotated by deleting `scheduler.token` and restarting the daemon.
+
 ## Worker sandbox (0.3.0-beta.5)
 
 Delegated workers run as separate Pi processes with read-only tools only (read/grep/find/ls; anything else is refused at launch). Two controls bound what they can reach:

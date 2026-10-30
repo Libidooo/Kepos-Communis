@@ -66,7 +66,7 @@ catch (error: any) {
 } }
 function limitText(value: unknown, max = 4000): string { return String(value ?? '').slice(0, max); }
 /** Durable plans coordinate bounded workers. No scheduler tick ever invokes a model itself. */
-export type MissionWorkerPool = Pick<WorkerPool, 'launch' | 'result' | 'cancelHandle'> & Partial<Pick<WorkerPool, 'subscribe'>>;
+export type MissionWorkerPool = Pick<WorkerPool, 'launch' | 'result' | 'cancelHandle'> & Partial<Pick<WorkerPool, 'subscribe' | 'liveHandle'>>;
 
 export class MissionScheduler {
     private timer?: ReturnType<typeof setInterval>;
@@ -77,6 +77,11 @@ export class MissionScheduler {
     private listeners = new Set<(event: any) => void>();
     private lastMission = '';
     private epoch = randomUUID();
+    // Raw worker capabilities live only in the dispatching process; the database keeps
+    // hashes so a leaked row does not hand out the live handle. A scheduler that lacks
+    // the raw capability (restart, another process) recovers it via pool.liveHandle or
+    // hands the step to a human instead of presenting a hash and failing authorization.
+    private liveHandles = new Map<string, WorkerHandle>();
     private concurrency: number;
     readonly graph: GraphStore;
     lastError?: string;
@@ -287,8 +292,10 @@ export class MissionScheduler {
             const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
             handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false);
             const launched = handle;
-            // Pool authorization only checks that the capability is a string; store a
-            // hash so a leaked database row does not hand out the live capability.
+            this.liveHandles.set(job.key, launched);
+            // The pool authorizes by hashing the presented capability, so only the raw
+            // value is ever sent to it; the database row keeps the hash so a leaked
+            // database does not hand out the live handle.
             const stored = { ...launched, capability: createHash('sha256').update(launched.capability).digest('hex') };
             this.database.transaction(() => {
                 this.database.prepare('UPDATE mission_jobs SET handle=? WHERE id=? AND state=\'RUNNING\'').run(JSON.stringify(stored), job.key);
@@ -300,9 +307,15 @@ export class MissionScheduler {
         catch (error) {
             // The launch may already have spawned a worker before the bookkeeping
             // transaction failed; never leave it running with no recorded handle.
-            if (handle) { try { this.pool.cancelHandle(handle, m.parentSessionId); } catch {} }
+            if (handle) { this.liveHandles.delete(job.key); try { this.pool.cancelHandle(handle, m.parentSessionId); } catch {} }
             this.setJob(job, 'FAILED', String(error));
         }
+    }
+    /** The raw capability for a dispatched step: this scheduler's own launch, or the shared pool's in-process recovery. */
+    private handleFor(job: JobRecord, parent: string): WorkerHandle | undefined {
+        const live = this.liveHandles.get(job.key);
+        if (live) return live;
+        return job.handle && this.pool.liveHandle ? this.pool.liveHandle(job.handle.workerId, parent) : undefined;
     }
     cancel(id: string, parent: string) {
         const m = this.authorize(id, parent);
@@ -310,8 +323,16 @@ export class MissionScheduler {
             return;
         this.setMission(m, 'CANCELLED');
         for (const job of m.jobs) {
-            if (job.handle && job.state === 'RUNNING')
-                this.pool.cancelHandle(job.handle, parent);
+            if (job.state === 'RUNNING' && job.handle) {
+                const handle = this.handleFor(job, parent);
+                if (handle) {
+                    this.liveHandles.delete(job.key);
+                    this.pool.cancelHandle(handle, parent);
+                    this.setJob(job, 'CANCELLED', 'Cancelled by operator');
+                }
+                // Without the raw capability this process cannot authorize the cancel;
+                // reconcile settles the job from the worker's real receipt instead.
+            }
             else if (!terminal.has(job.state))
                 this.setJob(job, 'CANCELLED', 'Cancelled by operator');
         }
@@ -326,14 +347,18 @@ export class MissionScheduler {
             for (const plan of plans) {
                 if (plan.state === 'CANCELLED')
                     for (const job of plan.jobs)
-                        if (job.state === 'RUNNING' && job.handle)
-                            this.pool.cancelHandle(job.handle, plan.parentSessionId);
+                        if (job.state === 'RUNNING' && job.handle) {
+                            const handle = this.handleFor(job, plan.parentSessionId);
+                            if (handle) this.pool.cancelHandle(handle, plan.parentSessionId);
+                        }
                 this.reconcile(plan);
                 let current = this.get(plan.id)!;
                 if (current.deadline && current.deadline <= Date.now() && !terminal.has(current.state)) {
                     for (const job of current.jobs) {
-                        if (job.state === 'RUNNING' && job.handle)
-                            this.pool.cancelHandle(job.handle, current.parentSessionId);
+                        if (job.state === 'RUNNING' && job.handle) {
+                            const handle = this.handleFor(job, current.parentSessionId);
+                            if (handle) this.pool.cancelHandle(handle, current.parentSessionId);
+                        }
                         if (job.state === 'QUEUED')
                             this.setJob(job, 'CANCELLED', 'Mission deadline reached');
                     }
@@ -391,14 +416,23 @@ export class MissionScheduler {
         }
     }
     private reconcile(m: MissionRecord) {
+        // A cancelled plan is settled as cancelled whatever the orphaned worker does;
+        // only a live plan turns a lost receipt into a human decision.
+        const cancelledPlan = m.state === 'CANCELLED';
         for (const job of m.jobs.filter(item => item.state === 'RUNNING')) {
             if (!job.handle) {
-                this.setJob(job, 'NEEDS_HUMAN', 'Dispatch outcome unknown; no automatic replay');
+                this.setJob(job, cancelledPlan ? 'CANCELLED' : 'NEEDS_HUMAN', 'Dispatch outcome unknown; no automatic replay');
                 continue;
             }
-            const receipt = this.pool.result(job.handle, m.parentSessionId) as any;
+            const handle = this.handleFor(job, m.parentSessionId);
+            if (!handle) {
+                this.setJob(job, cancelledPlan ? 'CANCELLED' : 'NEEDS_HUMAN', cancelledPlan ? 'Cancelled by operator; the worker stops at its own deadline' : 'Worker capability is not held in this process; the worker stops at its own deadline and is not replayed');
+                continue;
+            }
+            const receipt = this.pool.result(handle, m.parentSessionId) as any;
             if (running.has(receipt.state))
                 continue;
+            this.liveHandles.delete(job.key);
             if (receipt.state === 'SUCCEEDED') {
                 this.database.transaction(() => {
                     this.database.prepare("UPDATE mission_jobs SET state='SUCCEEDED',output=?,checkpoint=?,ended=? WHERE id=? AND state='RUNNING'").run(receipt.output || '', limitText(receipt.output, 1000), Date.now(), job.key);

@@ -30,6 +30,16 @@ const DEFAULT_COUNCIL_ROLE_COUNT = 10;
 export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const config=loadConfig();const poolKey=Symbol.for('orbital.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let tool='';let pulse=0;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
+ // Windows console close kills the process without Pi's graceful shutdown (SIGHUP is
+ // handled POSIX-only there), so session_shutdown never runs and warm executors would
+ // linger until their heartbeat notices. A process-level last-gasp kill covers every
+ // exit path; registered once per process so /reload cannot stack handlers.
+ const cleanupKey=Symbol.for('kepos.exit-cleanup:'+root);
+ if(!globalStore[cleanupKey]){globalStore[cleanupKey]=true;
+  const hardExit=()=>{try{globalStore[poolKey]?.hardKill();}catch{}};
+  process.on('exit',hardExit);
+  if(process.platform==='win32')process.prependListener('SIGHUP',()=>{hardExit();process.exit(0);});
+ }
  const scheduler:MissionScheduler=globalStore[missionKey]||(globalStore[missionKey]=new MissionScheduler(db(),pool));
  const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,dependsOn:j.dependsOn||[],checkpoint:j.checkpoint?.slice(0,500),error:j.error}))});
  const save=()=>{saveConfig(config);refreshSupervisionPrompt?.();desk?.invalidate();};
@@ -51,7 +61,14 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  const bindPool=()=>{unsubscribePool();unsubscribeMissions();unsubscribeMissions=scheduler.subscribe(event=>{if(!desk)return;if(event.state==='NEEDS_HUMAN'&&process.stdout.isTTY)process.stdout.write('\x07');if(['NEEDS_HUMAN','SUCCEEDED','FAILED'].includes(event.state)){desk.notice=`${event.state==='NEEDS_HUMAN'?'需要人类处理':'计划状态更新'}：${event.goal} · ${event.cwd} · F9查看`;desk.refresh();}});unsubscribePool=pool.subscribe(event=>{
   if(!desk)return;
   if(event.type!=='task_progress')desk.invalidate();
-  if(event.task.cwd===desk.ctx.cwd&&event.task.parentSessionId===desk.ctx.sessionManager.getSessionId())desk.notice=event.type==='task_finished'?`子 Agent ${event.task.agent}：${event.task.status}`:event.type==='task_review_due'?`子 Agent ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`:event.type==='task_stalled'?`⚠ 子 Agent ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`:event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:desk.notice;
+  if(event.task.cwd===desk.ctx.cwd&&event.task.parentSessionId===desk.ctx.sessionManager.getSessionId()){
+   // 失败类终态与要求人类介入的事件必须"听得见"：此前失败只留一条 4 秒 notice，
+   // 委派秒败时用户毫无感知（报错无阻拦）。错误原因带进 notice，不用翻任务详情。
+   const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
+   const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
+   if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
+   desk.notice=event.type==='task_finished'?(failed?`✕ 子 Agent ${event.task.agent} ${event.task.status}：${clean(event.task.error||'无错误信息').slice(0,160)} · F3 看完整产出`:`子 Agent ${event.task.agent}：${event.task.status}`):event.type==='task_review_due'?`子 Agent ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`:event.type==='task_stalled'?`⚠ 子 Agent ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`:event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:desk.notice;
+  }
   scheduleRepaint();
  });};bindPool();
  function install(ctx:any){current=ctx;if(ctx.mode!=='tui'||process.env.KEPOS_APP!=='1')return;
@@ -133,7 +150,8 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
   const base:any=existing||{id:randomUUID(),name:suggestedName!,role:selectedRole?rolePrompt(selectedRole,locale):'独立只读调查',roleKey:selectedRole?.key,model:ctx.model?.id||'',provider:ctx.model?.provider||'',skills:[],tools:Array.from(READ_ONLY_TOOLS)};
   // MCP temporary grants: the human owns the configuration (mcp.json); the main agent
   // may grant configured servers per task. The grant dies with the worker process.
-  const grant=resolveMcpGrant(task.mcp,configuredMcpServers(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'),ctx.cwd),currentPolicy());
+  // MCP 临时授权的解析顺序：task 显式指定 > 成员默认（mcpServers）> 不授权。
+  const grant=resolveMcpGrant(task.mcp??(base.mcpServers?.length?base.mcpServers:undefined),configuredMcpServers(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'),ctx.cwd),currentPolicy());
   if('error' in grant)throw Error(grant.error);
   const mcpServers=grant.servers.length?grant.servers:undefined;
   const crew={...base,name:suggestedName||base.name,role:task.role||(selectedRole?rolePrompt(selectedRole,locale):base.role),roleKey:selectedRole?.key||base.roleKey,model:task.model||base.model,provider:task.provider||base.provider,skills:task.skills??base.skills??[],readScope:task.readScope??base.readScope??config.workerReadScope??'project',...(task.readAllow||base.readAllow?{readAllow:[...new Set([...(task.readAllow??[]),...(base.readAllow??[])])]}:{})};if(mcpServers)crew.mcpServers=mcpServers;
@@ -337,6 +355,21 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(old){const presets=[{label:'全部只读工具',tools:Array.from(READ_ONLY_TOOLS)},{label:'仅读取文件',tools:['read']},{label:'不使用工具',tools:[]}];
  const existing=JSON.stringify([...(tools??READ_ONLY_TOOLS)].sort());presets.sort((a,b)=>Number(JSON.stringify([...b.tools].sort())===existing)-Number(JSON.stringify([...a.tools].sort())===existing));
  const pick=await ctx.ui.select('专家只读工具范围',presets.map(p=>p.label));if(!pick)return;tools=presets.find(p=>p.label===pick)!.tools;}
+ // 成员级默认：读取范围与 MCP 临时授权清单（分派时可被 task 覆盖）。
+ const scopePick=await ctx.ui.select('读取范围（readScope）',['跟随分派（默认 project）','project · 仅任务目录','machine · 除敏感位置外可读']);if(scopePick===undefined)return;
+ const memberScope=scopePick.startsWith('project')?'project':scopePick.startsWith('machine')?'machine':undefined;
+ let memberMcp:string[]|undefined;
+ if(old){const {names}=skillIndex();
+  const mcpInput=await ctx.ui.input('默认授权的 MCP 服务器（逗号分隔；须已在 mcp.json 配置；留空=不授权）',(old.mcpServers??[]).join(','));
+  if(mcpInput===undefined)return;
+  const requestedMcp=mcpInput.split(/[,，]/).map(s=>s.trim()).filter(Boolean);
+  if(requestedMcp.length){
+   const configured=configuredMcpServers(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'),ctx.cwd);
+   const unknownMcp=requestedMcp.filter(s=>!configured.includes(s));
+   if(unknownMcp.length)throw Error('这些 MCP 服务器未配置：'+unknownMcp.join(', ')+'（已配置：'+configured.join(', ')||'无'+'）');
+   memberMcp=requestedMcp;
+  }
+ }
  if(old&&!aiSkills){
   const {names}=skillIndex();
   const input=await ctx.ui.input('已装 Skill（逗号分隔；留空保留现有）',(old.skills??[]).join(','));
@@ -348,7 +381,7 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
    skills=requested;
   }
  }
- const value:Crew={id:old?.id||randomUUID(),name:clean(name.trim()),provider:model.provider,model:model.id,roleKey,role:role.trim(),...(tools?{tools}:{}),...(skills?.length?{skills}:{})};if(old)Object.assign(old,value);else config.agents.push(value);save();}
+ const value:Crew={id:old?.id||randomUUID(),name:clean(name.trim()),provider:model.provider,model:model.id,roleKey,role:role.trim(),...(tools?{tools}:{}),...(skills?.length?{skills}:{}),...(memberScope?{readScope:memberScope}:{}),...(memberMcp?.length?{mcpServers:memberMcp}:{})};if(old)Object.assign(old,value);else config.agents.push(value);save();}
   async function delegateForm(ctx:any){if(!config.agents.length){await crewForm(ctx);return;}const pick=await ctx.ui.select(`分派只读任务 · 默认 ${DEFAULT_TASK_SECONDS/60} 分钟 · 最多 ${MAX_CONCURRENT_CHILDREN} 项`,config.agents.map(a=>a.name));const crew=config.agents.find(a=>a.name===pick);if(!crew)return;const text=await ctx.ui.editor('具体任务与完成标准','');if(!text?.trim())return;
   if(!await ctx.ui.confirm('启动代表？',`模型：${crew.provider}/${crew.model}\n目录：${ctx.cwd}\n只读工具；会产生模型费用；默认 ${DEFAULT_TASK_SECONDS/60} 分钟，每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核。`))return;
  const sourceGeneration=generation;const sourceSession=ctx.sessionManager.getSessionFile()||ctx.sessionManager.getSessionId();

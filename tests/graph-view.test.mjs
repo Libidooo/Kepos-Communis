@@ -306,3 +306,23 @@ test('real seats spread evenly around the ring and the center is the 总理', ()
   assert.ok(view.lines.join('').includes('总理'), 'center node is the 总理');
   assert.ok(view.lines.join('').includes('·'), 'orbit track drawn as dim dots');
 });
+
+test('multi-ring layouts keep sequential seat indexes so selection and cancel address real nodes', () => {
+  const agents40 = Array.from({ length: 40 }, (_, i) => ({ id: 'a' + i, name: 'A' + i }));
+  const tasks = agents40.slice(0, 20).map((agent, i) => ({ id: 't' + i, agent: agent.name, state: 'RUNNING' }));
+  // 20 个活跃任务触发多环分支；hits[0] 是总理座（index=-1），其后必须严格 0..n-1。
+  const view = renderGraph({ agents: agents40, tasks }, 100, 40, -1, 1, theme);
+  assert.equal(view.hits.length, 49);
+  view.hits.slice(1).forEach((hit, i) => assert.equal(hit.index, i, `hit ${i} must carry index ${i}`));
+  const selected = renderGraph({ agents: agents40, tasks }, 100, 40, 5, 1, theme);
+  assert.equal(selected.selected.index, 5, 'selected index resolves to the addressed node');
+});
+
+test('single-ring slot collisions never drop real nodes', () => {
+  // 47 个席位：k=47 的槽位舍入后与 k=0 碰撞，旧实现会静默覆盖第一个席位。
+  const agents47 = Array.from({ length: 47 }, (_, i) => ({ id: 'a' + i, name: 'A' + i }));
+  const view = renderGraph({ agents: agents47, tasks: [] }, 100, 40, -1, 1, theme);
+  const ids = new Set(view.hits.map(hit => hit.id));
+  for (const agent of agents47) assert.ok(ids.has('agent:' + agent.id), 'agent ' + agent.id + ' must survive the layout');
+  assert.deepEqual(view.hits.slice(1).map(hit => hit.index).sort((a, b) => a - b), [...Array(48).keys()]);
+});

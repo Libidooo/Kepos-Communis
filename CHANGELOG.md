@@ -2,6 +2,21 @@
 
 ## 0.3.0-beta.5 — 2026-10-30
 
+Exit and failure-surfacing fixes (2026-10-31 round):
+
+- **Exiting Kepos can no longer leave workers behind**: Windows console close kills the process without Pi's graceful shutdown (SIGHUP is handled POSIX-only), so `session_shutdown` never ran and warm executors lingered until their parent-death heartbeat fired. The extension now registers a process-level last-gasp cleanup — `pool.hardKill()` (synchronous SIGKILL of every running executor, no DB writes) on `exit`, plus a win32 `SIGHUP` handler that kills and exits; registered once per process so `/reload` cannot stack handlers.
+- **Delegate failures are loud instead of sailing past**: a worker that dies at startup (e.g. pi rejecting launch args) used to leave only a 4-second "子 Agent X：失败" notice with the reason buried in task detail. Failure-family terminal states (失败/超时/已中断) now ring the terminal bell and surface the error reason directly in the notice; 空转 (stalled) and 预算到顶 (budget stop) alerts ring too.
+- **Cancel settles promptly when the process is already gone**: cancelling a task whose worker already exited used to park it in CANCEL_REQUESTED until the 10-second cleanup timer, looking like "cancel does nothing". The cancel path now detects a dead process and settles immediately.
+- Desk → worker message forwarding wired correctly: the call is awaited and fetches the live capability via `pool.liveHandle` (a literal capability string could never pass hash authorization).
+
+Design-review fixes (2026-10-30 evening round):
+
+- **Mission dispatch works against the real pool again**: `WorkerPool.authorize` hashes the presented capability, so the scheduler's hashed DB handle used to fail authorization and every dispatched step was misread as `FAILED "Worker UNKNOWN_HANDLE"` (cancel/deadline cancels silently no-oped, workers ran to their own deadline). Raw capabilities now live only in the dispatching process (scheduler `liveHandles` + pool `capabilities`); the database keeps hashes; a scheduler that lost them recovers via `pool.liveHandle` in-process or hands the step to `NEEDS_HUMAN` honestly instead of faking a worker failure. Cancelled plans settle their orphaned steps as CANCELLED.
+- **Gate approval over RPC follows the approval policy**: `plan approve` on the SchedulerHost was executable by anyone holding `scheduler.token` regardless of the strict posture; it is now proxy-mode-only (strict/readonly get an actionable refusal). The default is fail-safe strict. `scheduler.token` is written 0600 where the OS honors it, and the boundary is documented in SECURITY.md.
+- **Daemon takes the lease before opening the RPC port**: a second daemon can no longer publish/clear the shared `scheduler.port` file; on exit the port file is only removed when it still points at our own listener (a crashed daemon no longer has its endpoint clobbered by the next process).
+- `kepos relay add` persists and probes the effective (normalized) URL — it used to save the raw input while probing could pass via a `/v1` candidate, so OpenAI-style relays added through the CLI 404'd at call time; behavior now matches the TUI flow.
+- F10 council graph: multi-ring layouts assign sequential seat indexes (selection, click-hit and Ctrl+X were addressing `index: 0` nodes), single-ring slot collisions probe to the next free seat instead of silently overwriting one, and the pending-approval symbol comment now matches the committed `⚠` decision.
+
 Security and approval hardening (D1-D2, human-approved decisions):
 
 - Three-mode approval policy (F2 → 审批模式, default strict): tool_call interception asks the human before bash/edit/write touches human gates or Kepos data; proxy mode lets the model approve gates via orbital_plan approve with audit notices; readonly supervision removes bash/powershell/edit/write from the main agent.

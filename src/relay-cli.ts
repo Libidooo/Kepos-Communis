@@ -45,10 +45,12 @@ export async function relayCommand(options: any, paths: AppPaths): Promise<void>
       const keyEnv = options.keyEnv || relayEnvName(name);
       const id = RELAY_ID_PREFIX + slugify(name);
       // The key itself never lands on disk: models.json keeps a $ENV reference.
-      upsertRelay(paths.agentDir, id, { name, baseUrl: positioned, api, apiKey: '$' + keyEnv }, options.enable ? String(options.enable).split(',').map((item: string) => item.trim()).filter(Boolean) : undefined);
+      // Probe and persist the same effective URL (mirrors the TUI flow): probing the
+      // raw input could pass via a /v1 candidate while the stored URL 404s at call time.
+      upsertRelay(paths.agentDir, id, { name, baseUrl, api, apiKey: '$' + keyEnv }, options.enable ? String(options.enable).split(',').map((item: string) => item.trim()).filter(Boolean) : undefined);
       console.log(`已保存 ${id} → ${modelsJsonPath(paths.agentDir)}`);
       console.log(`API key 不落盘：把 key 放入环境变量 ${keyEnv}（当前会话 export/set；永久写入你的 shell 配置或 setx ${keyEnv} <key>）`);
-      const probe = await probeRelay(positioned, options.key ?? process.env[keyEnv]);
+      const probe = await probeRelay(baseUrl, options.key ?? process.env[keyEnv]);
       printProbe(probe);
       if (!probe.ok) process.exitCode = 1;
       return;

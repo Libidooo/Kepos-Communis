@@ -105,3 +105,16 @@ test('cc-switch providers are parsed tolerantly and imported as env references',
  const empty=mkdtempSync(join(tmpdir(),'kepos-nocc-'));
  assert.deepEqual(readCcSwitchProviders(empty),[]);
 });
+
+test('relay add persists the effective (normalized) URL and probes that same value',async t=>{
+ const { relayCommand } = await import('../dist/src/relay-cli.js');
+ const { appPaths } = await import('../dist/src/config.js');
+ const server=createServer((req,res)=>{res.setHeader('content-type','application/json');res.end(JSON.stringify({data:[{id:'m1'},{id:'m2'}]}));});
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(()=>new Promise(resolve=>server.close(resolve)));
+ const home=mkdtempSync(join(tmpdir(),'kepos-relay-cli-'));
+ await relayCommand({args:['add','mock','http://127.0.0.1:'+server.address().port]},appPaths({KEPOS_HOME:home}));
+ // 旧实现保存原始 URL（无 /v1），探活却可能经 /v1 候选通过，真实调用时 404。
+ const relay=readRelays(appPaths({KEPOS_HOME:home}).agentDir)['relay_mock'];
+ assert.equal(relay.baseUrl,'http://127.0.0.1:'+server.address().port+'/v1');
+});

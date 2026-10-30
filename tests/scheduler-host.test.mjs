@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, existsSync } from 'node:fs';
+import { mkdtempSync, existsSync, readFileSync, writeFileSync, unlinkSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connect } from 'node:net';
@@ -69,7 +69,7 @@ test('daemon RPC surface: endpoint files persist, full lifecycle round-trips, cl
 
 test('plans pause/approve actions reach the scheduler; unknown actions are rejected',async t=>{
  const scheduler=fakeScheduler();
- const host=new SchedulerHost(fakePool(),scheduler,{port:0});
+ const host=new SchedulerHost(fakePool(),scheduler,{port:0,approvalPolicy:'proxy'});
  const address=await host.listen();
  t.after(async()=>{await host.close();});
  const client=new SchedulerClient({port:address.port,token:host.token});
@@ -96,4 +96,40 @@ test('wrong tokens are rejected and oversized lines drop the connection',async t
  const b=new SchedulerClient({port:address.port,token:host.token});
  assert.equal((await a.health()).ok,true);
  assert.equal((await b.health()).ok,true);
+});
+
+test('gate approval over RPC follows the approval policy; strict is the fail-safe default',async t=>{
+ const scheduler=fakeScheduler();
+ const strict=new SchedulerHost(fakePool(),scheduler,{port:0});
+ const address=await strict.listen();
+ t.after(async()=>{await strict.close();});
+ const client=new SchedulerClient({port:address.port,token:strict.token});
+ await client.plan('p1','p','pause');
+ await assert.rejects(client.plan('p1','p','approve','job-9'),/严格审批模式/);
+ assert.equal(scheduler.calls.some(call=>call[0]==='approve'),false,'no approval reached the scheduler in strict mode');
+ const proxy=new SchedulerHost(fakePool(),scheduler,{port:0,approvalPolicy:'proxy'});
+ const proxyAddress=await proxy.listen();
+ t.after(async()=>{await proxy.close();});
+ await new SchedulerClient({port:proxyAddress.port,token:proxy.token}).plan('p1','p','approve','job-9');
+ assert.ok(scheduler.calls.some(call=>call[0]==='approve'),'proxy mode lets an approval through');
+});
+
+test("closing a daemon never deletes another owner's published port file",async t=>{
+ const dataDir=mkdtempSync(join(tmpdir(),'kepos-rpc-owner-'));
+ const host=new SchedulerHost(fakePool(),fakeScheduler(),{port:0,dataDir});
+ await host.listen();
+ const portFile=schedulerEndpointPaths(dataDir).port;
+ writeFileSync(portFile,'59999\n'); // 另一个属主发布了不同端口：退出时不得删除
+ await host.close();
+ assert.equal(readFileSync(portFile,'utf8').trim(),'59999','foreign endpoint file survives');
+ unlinkSync(portFile);
+});
+
+test('the scheduler token file is owner-only where the OS supports it',async t=>{
+ if(process.platform==='win32'){t.skip('POSIX permission model');return;}
+ const dataDir=mkdtempSync(join(tmpdir(),'kepos-rpc-mode-'));
+ const host=new SchedulerHost(fakePool(),fakeScheduler(),{port:0,dataDir});
+ await host.listen();
+ t.after(async()=>{await host.close();});
+ assert.equal(statSync(schedulerEndpointPaths(dataDir).token).mode & 0o777,0o600);
 });

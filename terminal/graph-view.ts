@@ -16,7 +16,8 @@ const connectedStates = new Set([...activeStates, 'NEEDS_HUMAN']);
 export const countActive = (tasks: GraphViewTask[]) => tasks.filter(task => activeStates.has(task.state || '')).length;
 export const countPending = (tasks: GraphViewTask[]) => tasks.filter(task => task.state === 'NEEDS_HUMAN' || task.reviewDue).length;
 const filterName = (filter: CouncilFilter) => filter === 'active' ? '活跃' : filter === 'pending' ? '待处理' : '全部';
-// 待审批用「审」：U+2692 在多数终端回退成大号彩色 emoji，CJK 字符保证小号文本渲染。
+// 待审批符号用 ⚠（0e9aa53 调色板定的）：desk 徽章、列表标记与图保持同一符号语言；
+// 若某终端把它回退成大号 emoji，改符号时必须同步这里、desk.ts 徽章与 F1 帮助文案。
 export const stateMark = (task: GraphViewTask) => task.state === 'NEEDS_HUMAN' ? '⚠' : task.reviewDue ? '!' : task.state === 'FAILED' || task.status === '失败' ? '✕' : task.state === 'SUCCEEDED' || task.status === '完成' ? '✓' : activeStates.has(task.state || '') ? '▶' : '·';
 // 议会任务列表的统一筛选：图负责关系与态势，列表负责从问题找到具体任务。
 export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter, query: string): GraphViewTask[] {
@@ -199,15 +200,22 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
     realNodes.push({ id: `task:${task.id}`, label: plain(task.title || '') || task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(realNodes.length / 12)}`, index: 0, x: 0, y: 0 });
   }
   // 真实席位沿 48 槽均匀分布、空席填隙，避免全部挤在起弧的一段；多环（活跃>12）保持分组顺序。
+  // 不论哪个分支，节点 index 都必须连续覆盖 0..n-1：键盘 ↑↓、点击命中和 Ctrl+X 都按
+  // index 寻址（hits[0] 是 index=-1 的总理座），漏赋值会让选中态整体错位。
   const activeCount = tasks.filter(task => activeStates.has(task.state || '')).length;
   const nodes: VisualNode[] = [];
   if (realNodes.length < 48 && activeCount <= 12) {
     const step = 48 / realNodes.length;
     const slots: (VisualNode | undefined)[] = Array(48).fill(undefined);
-    realNodes.forEach((node, k) => { slots[Math.round(k * step) % 48] = node; });
+    realNodes.forEach((node, k) => {
+      let slot = Math.round(k * step) % 48;
+      while (slots[slot]) slot = (slot + 1) % 48; // 舍入碰撞沿环右移找空位，绝不覆盖已占席位。
+      slots[slot] = node;
+    });
     const empty = (index: number): VisualNode => ({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
     for (let index = 0; index < 48; index++) { const slot = slots[index]; if (slot) { slot.index = index; nodes.push(slot); } else nodes.push(empty(index)); }
   } else {
+    realNodes.forEach((node, index) => { node.index = index; });
     nodes.push(...realNodes);
     for (let index = nodes.length; index < 48; index++) nodes.push({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
     if (nodes.length > 48) nodes.length = 48;

@@ -112,3 +112,57 @@ test('planTree renders depth-first dependency order with state glyphs',async()=>
  assert.equal(messy.length,3);
  assert.match(messy.join('|'),/✕ c · orphan/);
 });
+
+// 与真实 WorkerPool 相同的授权契约：呈上的 capability 必须是原始值（池内哈希后比对）。
+function secureFixture(t,options={}){
+ const cwd=mkdtempSync(join(tmpdir(),'kepos-sec-'));const db=new OrbitalDatabase(join(cwd,'state.sqlite'));
+ const raw=new Map(),records=new Map(),cancelled=[],dispatch=[];
+ let next=0;
+ const authorize=(h,p)=>{if(!h||h.parentSessionId!==p)return false;const stored=raw.get(h.workerId);return !!stored&&h.capability===stored;};
+ const pool={children:new Map(),launch(a,text,dir,session,seconds,signal,parent){const id='w'+(++next);const capability='cap-'+id;const h={version:1,workerId:id,parentSessionId:parent,capability};raw.set(id,capability);records.set(id,{state:'RUNNING'});dispatch.push(h);return h;},result(h,p){return authorize(h,p)?(records.get(h.workerId)||{state:'UNKNOWN_HANDLE'}):{state:'UNKNOWN_HANDLE'};},cancelHandle(h,p){if(!authorize(h,p))return{state:'UNKNOWN_HANDLE'};cancelled.push(h.workerId);records.set(h.workerId,{state:'CANCELLED'});return{state:'CANCELLED'};}};
+ const scheduler=new MissionScheduler(db,pool,options);t.after(()=>{scheduler.stop();db.close();});
+ const enqueue=(jobs,goal='fixture')=>scheduler.enqueue({goal,cwd,parentSessionId:'parent',jobs});
+ return{cwd,db,pool,scheduler,enqueue,raw,records,dispatch,cancelled};
+}
+
+test('mission steps present the raw capability to the pool and store only its hash',async t=>{
+ const f=secureFixture(t);const m=f.enqueue([{id:'a',agent,task:'a'}]);
+ await f.scheduler.tick();assert.equal(f.dispatch.length,1);
+ const stored=JSON.parse(f.db.prepare('SELECT handle FROM mission_jobs WHERE id=?').get(m.id+':a').handle);
+ const raw=f.raw.get(f.dispatch[0].workerId);
+ assert.notEqual(stored.capability,raw,'the database never holds the live capability');
+ assert.equal(stored.capability,createHash('sha256').update(raw).digest('hex'));
+ f.records.set(f.dispatch[0].workerId,{state:'SUCCEEDED',output:'evidence',resultHash:'h'});
+ await f.scheduler.tick();
+ // 呈上原始 capability 才能通过真实授权；旧实现把哈希当 capability 呈上，任务被误判 FAILED。
+ assert.equal(f.scheduler.get(m.id).jobs[0].state,'SUCCEEDED');
+ assert.equal(f.scheduler.get(m.id).state,'SUCCEEDED');
+});
+
+test('cancel reaches the worker with the raw capability and settles the job',async t=>{
+ const f=secureFixture(t);const m=f.enqueue([{id:'a',agent,task:'a'}]);
+ await f.scheduler.tick();f.scheduler.cancel(m.id,'parent');
+ assert.deepEqual(f.cancelled,[f.dispatch[0].workerId]);
+ assert.equal(f.scheduler.get(m.id).jobs[0].state,'CANCELLED');
+ assert.equal(f.scheduler.get(m.id).state,'CANCELLED');
+});
+
+test('a scheduler without the raw capability asks a human instead of faking a worker failure',async t=>{
+ const f=secureFixture(t);const m=f.enqueue([{id:'a',agent,task:'a'}]);
+ await f.scheduler.tick();
+ f.scheduler.liveHandles.clear(); // 模拟重启后内存句柄丢失（库里的 handle 只有哈希）
+ await f.scheduler.tick();
+ const job=f.scheduler.get(m.id).jobs[0];
+ assert.equal(job.state,'NEEDS_HUMAN');
+ assert.match(job.error,/capability is not held/);
+});
+
+test('a fresh scheduler in the same process cancels through the pool live handle',async t=>{
+ const f=secureFixture(t);const m=f.enqueue([{id:'a',agent,task:'a'}]);
+ await f.scheduler.tick();
+ // 真实 WorkerPool 提供 liveHandle：同进程内重建的 scheduler 靠它恢复句柄。
+ f.pool.liveHandle=(workerId,parent)=>f.records.get(workerId)?.state==='CANCELLED'?undefined:{version:1,workerId,parentSessionId:parent,capability:f.raw.get(workerId)};
+ const other=new MissionScheduler(f.db,f.pool);
+ try{other.cancel(m.id,'parent');}finally{other.stop();}
+ assert.deepEqual(f.cancelled,[f.dispatch[0].workerId]);
+});

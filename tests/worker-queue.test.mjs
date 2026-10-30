@@ -154,3 +154,22 @@ test('a stalled task is flagged for review but never auto-killed',async t=>{
  assert.equal(f.pool.result(handle,'a').state,'SUCCEEDED');
  assert.equal(f.pool.tasks.find(item=>item.id===handle.workerId).stalled,false,'progress clears the flag');
 });
+
+test('hardKill synchronously kills running executors, clears the queue, and is safe to repeat',async t=>{
+ const f=fixture(t,2);f.launch('a','p1');f.launch('b','p2');f.launch('c','p1');await turn();
+ const killed=[];
+ // spy 如实模拟 SIGKILL：同步返回，进程随后死亡（close + onExit），让生命周期自然收敛。
+ for(const e of f.executors)e.child.kill=sig=>{killed.push(sig);queueMicrotask(()=>{e.dead=true;e.child.emit('close',1);e.onExit?.(Error('killed'));});};
+ f.pool.hardKill();f.pool.hardKill(); // 幂等：第二次必须是无操作
+ assert.equal(killed.length,2,'each running executor killed exactly once (children map is the same process)');
+ assert.ok(killed.every(sig=>sig==='SIGKILL'));
+ await turn();
+ assert.equal(f.pool.tasks[2].state,'QUEUED','closed pool never dispatches the queued task');
+});
+
+test('cancelling a task whose process already exited settles immediately instead of hanging',async t=>{
+ const f=fixture(t);f.launch('x');await turn();
+ const e=f.executors[0];e.dead=true;e.child.exitCode=1; // 进程已退出（如 pi 拒绝启动参数），永远不会再来 close 事件
+ f.pool.cancel(f.pool.tasks[0].id);await turn();
+ assert.equal(f.pool.tasks[0].state,'CANCELLED',`expected prompt CANCELLED, got ${f.pool.tasks[0].state} / ${f.pool.tasks[0].error||''}`);
+});

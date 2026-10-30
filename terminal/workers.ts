@@ -226,6 +226,16 @@ export class WorkerPool {
   this.cancelAll();
   for (const executor of this.executors) executor.kill();
  }
+ /** Last-gasp synchronous cleanup for process-exit handlers: no DB writes, no async killTree. */
+ hardKill() {
+  if (this.closed) return;
+  this.closed = true;
+  for (const entry of this.queued.values()) { try { clearTimeout(entry.timer); } catch {} }
+  this.queued.clear();
+  const killed = new Set<ChildProcess>();
+  for (const executor of this.executors) { killed.add(executor.child); try { executor.child.kill?.('SIGKILL'); } catch {} }
+  for (const child of this.children.values()) { if (killed.has(child)) continue; killed.add(child); try { child.kill?.('SIGKILL'); } catch {} }
+ }
  async shutdown(timeoutMs=5000) {
   this.close();
   if (!this.children.size && !this.completions.size) return;
@@ -360,6 +370,10 @@ export class WorkerPool {
     if (finished || stopping) return;
     stopping = true;
     this.transition(task, 'CANCEL_REQUESTED');
+    // A process that already exited can never confirm the cancellation (e.g. pi
+    // rejected our launch args); settle now instead of parking the task in
+    // CANCEL_REQUESTED until the 10-second cleanup timer fires.
+    if (executor.dead || executor.child.exitCode !== null || executor.child.signalCode !== null) { finish(state, error); return; }
     executor.onExit = () => finish(state, error);
     executor.kill();
     cleanupTimer = setTimeout(() => { executor.kill(); finish('FAILED', error + '; cleanup pending: process exit not confirmed within 10 seconds', false); }, 10000);

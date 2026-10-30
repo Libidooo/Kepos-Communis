@@ -3,6 +3,7 @@ import { createServer, connect, type Server as NetServer, type Socket } from 'no
 import { existsSync, mkdirSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { READ_ONLY_TOOLS, DEFAULT_TASK_SECONDS, type WorkerHandle } from './worker-contract.ts';
+import { normalizePolicy } from './approval.ts';
 import type { WorkerPool } from './workers.ts';
 import type { MissionScheduler } from './scheduler.ts';
 
@@ -13,7 +14,7 @@ import type { MissionScheduler } from './scheduler.ts';
  * endpoint lives in the data directory and the token is generated on first start.
  */
 
-export interface SchedulerHostOptions { port: number; host?: string; token?: string; dataDir?: string }
+export interface SchedulerHostOptions { port: number; host?: string; token?: string; dataDir?: string; approvalPolicy?: unknown }
 
 export function schedulerEndpointPaths(dataDir: string) { return { token: join(dataDir, 'scheduler.token'), port: join(dataDir, 'scheduler.port') }; }
 
@@ -30,13 +31,19 @@ export function readSchedulerEndpoint(dataDir: string): { token: string; port: n
 function persistEndpoint(dataDir: string, token: string, port: number): void {
   mkdirSync(dataDir, { recursive: true });
   const paths = schedulerEndpointPaths(dataDir);
-  writeFileSync(paths.token, token + '\n');
+  // The token authorizes gate approval and worker dispatch on this machine; keep it
+  // owner-only where the OS supports it. The token survives restarts by design.
+  writeFileSync(paths.token, token + '\n', { mode: 0o600 });
   writeFileSync(paths.port, String(port) + '\n');
 }
 
-function clearEndpoint(dataDir: string): void {
+/** Remove the port file only when it still points at our own listener. */
+function clearEndpoint(dataDir: string, port?: number): void {
+  if (port === undefined) return;
   const paths = schedulerEndpointPaths(dataDir);
-  for (const file of [paths.port]) { try { if (existsSync(file)) unlinkSync(file); } catch {} }
+  try {
+    if (existsSync(paths.port) && readFileSync(paths.port, 'utf8').trim() === String(port)) unlinkSync(paths.port);
+  } catch {}
 }
 
 function digest(value: string) { return createHash('sha256').update(value).digest(); }
@@ -47,15 +54,19 @@ type Request = { id: string; action: string; token?: string } & Record<string, a
 
 export class SchedulerHost {
   private server?: NetServer;
+  private boundPort?: number;
   readonly token: string;
+  readonly approvalPolicy: 'human' | 'proxy' | 'readonly';
 
   constructor(private readonly pool: WorkerPool, private readonly scheduler: MissionScheduler, private readonly options: SchedulerHostOptions) {
     const paths = options.dataDir ? schedulerEndpointPaths(options.dataDir) : undefined;
     this.token = options.token || (paths && existsSync(paths.token) ? readFileSync(paths.token, 'utf8').trim() : '') || randomBytes(24).toString('hex');
+    // Fail safe: without an explicit policy the RPC surface behaves like strict approval.
+    this.approvalPolicy = normalizePolicy(options.approvalPolicy);
   }
 
   async listen(): Promise<{ host: string; port: number }> {
-    if (this.server) return { host: this.options.host || '127.0.0.1', port: (this.server.address() as any)?.port || this.options.port };
+    if (this.server) return { host: this.options.host || '127.0.0.1', port: this.boundPort ?? this.options.port };
     const server = createServer(socket => this.attach(socket));
     await new Promise<void>((resolve, reject) => {
       server.once('error', reject);
@@ -64,6 +75,7 @@ export class SchedulerHost {
     this.server = server;
     const address = server.address();
     const port = typeof address === 'object' && address ? address.port : this.options.port;
+    this.boundPort = port;
     if (this.options.dataDir) persistEndpoint(this.options.dataDir, this.token, port);
     return { host: this.options.host || '127.0.0.1', port };
   }
@@ -72,7 +84,7 @@ export class SchedulerHost {
     if (!this.server) return;
     await new Promise<void>(resolve => this.server!.close(() => resolve()));
     this.server = undefined;
-    if (this.options.dataDir) clearEndpoint(this.options.dataDir);
+    if (this.options.dataDir) clearEndpoint(this.options.dataDir, this.boundPort);
   }
 
   private attach(socket: Socket) {
@@ -139,7 +151,14 @@ export class SchedulerHost {
           case 'pause': this.scheduler.pause(planId, parent); break;
           case 'resume': this.scheduler.resume(planId, parent); this.scheduler.start(); break;
           case 'cancel': this.scheduler.cancel(planId, parent); break;
-          case 'approve': if (!request.jobId) throw Error('approve requires jobId'); this.scheduler.approve(planId, parent, request.jobId); this.scheduler.start(); break;
+          case 'approve': {
+            // The token cannot tell a human from a model-crafted script, so gate approval
+            // over RPC is reserved for proxy approval mode (the human-gated paths stay the
+            // TUI confirm and the operator running `kepos missions approve` directly).
+            if (this.approvalPolicy !== 'proxy') throw Error('严格审批模式下人工门禁只能由人类批准；请在 TUI 中批准（F2 → 审批模式），或由人类直接运行 kepos missions approve，或将审批模式切换为代理审批');
+            if (!request.jobId) throw Error('approve requires jobId');
+            this.scheduler.approve(planId, parent, request.jobId); this.scheduler.start(); break;
+          }
           default: throw Error('Unknown plan action: ' + request.planAction);
         }
         return { done: true };
