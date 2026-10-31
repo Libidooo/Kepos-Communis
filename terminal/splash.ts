@@ -2,21 +2,32 @@ import { getCellDimensions, type CellDimensions, type Component } from '@earendi
 
 // An opening interpretation of the v14 lectern mark, not a replacement for the formal logo.
 export const SPLASH_TIMING = {
-  frameMs: 40, tableMs: 720, plaqueStartMs: 840, plaqueEndMs: 1360,
-  wordmarkStartMs: 960, sweepStartMs: 1120, sweepEndMs: 1720, revealMs: 1760,
-  holdMs: 1000, fadeMs: 240,
+  frameMs: 40,
+  tableMs: 640,
+  lightStartMs: 720,
+  lightEndMs: 1520,
+  wordmarkStartMs: 880,
+  sweepStartMs: 1120,
+  sweepEndMs: 1640,
+  revealMs: 1720,
+  holdMs: 1000,
+  fadeMs: 240,
 } as const;
 export const SPLASH_STEPS = (SPLASH_TIMING.revealMs + SPLASH_TIMING.holdMs + SPLASH_TIMING.fadeMs) / SPLASH_TIMING.frameMs;
-const SEATS = 48;
-const BRAND = [181, 47, 59] as const;
-const WARM_WHITE = [232, 168, 151] as const;
-const WHITE = [255, 255, 255] as const;
-const QUADRANTS = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
-// A near-overhead orthographic camera keeps the ring round while showing the boards below each top.
 export const SPLASH_VIEW = { tilt: Math.PI / 9, depth: Math.cos(Math.PI / 9), drop: Math.sin(Math.PI / 9) } as const;
 
-// Seven square pixels high, packed into half-blocks to suit a terminal's tall cells.
-const FONT: Record<string, string[]> = {
+const SEATS = 48;
+// Brand reds, from the darkest shadow to the lit rim, all inside the vermilion family.
+const SHADOW = [62, 14, 22] as const;
+const BRAND = [181, 47, 59] as const;
+const LIT = [238, 128, 102] as const;
+const RIM = [252, 190, 150] as const;
+const AMBER = [255, 196, 120] as const;
+const WHITE = [255, 255, 255] as const;
+const QUADRANTS = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
+
+// A 5x7 stencil grotesque: squared counters, flat terminals, cut diagonals on K/M/N.
+const DISPLAY: Record<string, string[]> = {
   K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
   E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
   P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
@@ -28,31 +39,48 @@ const FONT: Record<string, string[]> = {
   N: ['10001', '11001', '11001', '10101', '10011', '10011', '10001'],
   I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
 };
-const COMPACT_FONT: Record<string, string[]> = {
+const COMPACT: Record<string, string[]> = {
   K: ['101', '101', '110', '100', '110', '101', '101'],
   E: ['111', '100', '100', '110', '100', '100', '111'],
   P: ['110', '101', '101', '110', '100', '100', '100'],
   O: ['010', '101', '101', '101', '101', '101', '010'],
   S: ['011', '100', '100', '010', '001', '001', '110'],
   C: ['011', '100', '100', '100', '100', '100', '011'],
-  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+  M: ['101', '111', '111', '101', '101', '101', '101'],
   U: ['101', '101', '101', '101', '101', '101', '010'],
-  N: ['10001', '11001', '11001', '10101', '10011', '10011', '10001'],
+  N: ['101', '111', '111', '111', '111', '111', '101'],
+  I: ['111', '010', '010', '010', '010', '010', '111'],
+};
+
+const MICRO: Record<string, string[]> = {
+  K: ['101', '101', '110', '100', '110', '101', '101'],
+  E: ['111', '100', '110', '100', '111', '100', '111'],
+  P: ['110', '101', '110', '100', '100', '100', '100'],
+  O: ['010', '101', '101', '101', '101', '101', '010'],
+  S: ['011', '100', '010', '001', '001', '110', '000'],
+  C: ['011', '100', '100', '100', '100', '100', '011'],
+  M: ['101', '111', '111', '101', '101', '101', '101'],
+  U: ['101', '101', '101', '101', '101', '101', '010'],
+  N: ['101', '111', '111', '111', '111', '111', '101'],
   I: ['111', '010', '010', '010', '010', '010', '111'],
 };
 
 type Point = { x: number; y: number };
 type Rect = Point & { width: number; height: number };
-type Wordmark = { variant: 'large' | 'regular' | 'compact'; lines: string[]; width: number; height: number };
+type Variant = 'display' | 'compact' | 'micro';
+export type SplashSample = { x: number; y: number; part: 'desktop' | 'plaque'; coverage: number };
 export type SplashLectern = {
-  id: number; angle: number; center: Point; normal: { x: number; y: number; z: number };
-  desktop: Point[]; plaque: Point[]; boardHeight: number;
-  samples: { x: number; y: number; part: 'desktop' | 'plaque'; coverage: number }[];
+  id: number; angle: number; center: Point; outward: Point;
+  tablet: Point[]; plate: Point[]; slot: number;
+  samples: SplashSample[];
+};
+export type SplashWordmark = Rect & {
+  variant: Variant; fontWidth: number; fontHeight: number; bits: Uint8Array;
 };
 export type SplashLayout = {
   width: number; height: number; cellAspect: number; gap: number;
-  ring: Rect & { cx: number; cy: number; radius: number; points: Point[]; lecterns: SplashLectern[] };
-  wordmark: Rect & { variant: Wordmark['variant']; lines: string[] };
+  ring: Rect & { cx: number; cy: number; radius: number; lecterns: SplashLectern[] };
+  wordmark: SplashWordmark;
 };
 export type SplashOptions = { cellAspect?: number };
 
@@ -60,44 +88,72 @@ const clamp = (value: number) => Math.max(0, Math.min(1, value));
 const smooth = (value: number) => { const t = clamp(value); return t * t * (3 - 2 * t); };
 const extent = (value: number) => Number.isFinite(value) ? Math.max(0, Math.floor(value)) : 0;
 const aspectOf = (dimensions: CellDimensions) => dimensions.widthPx > 0 && dimensions.heightPx > 0 ? dimensions.heightPx / dimensions.widthPx : 2;
+const mix = (a: readonly number[], b: readonly number[], t: number) => a.map((c, i) => c + (b[i] - c) * clamp(t));
 
-function makeWordmark(font: Record<string, string[]>, scale: number, variant: Wordmark['variant']): Wordmark {
-  const pixels = (text: string) => Array.from({ length: 7 }, (_, y) => [...text].map(ch => font[ch][y]).join('0'));
-  const words = [pixels('KEPOS'), pixels('COMMUNIS')];
-  const width = words[1][0].length * scale;
-  const raster = [...words[0], ...Array(3).fill(''), ...words[1]]
-    .flatMap(row => Array(scale).fill([...row.padEnd(width / scale, '0')].map(bit => bit.repeat(scale)).join('')));
-  const lines: string[] = [];
-  for (let y = 0; y < raster.length; y += 2) {
-    let line = '';
-    for (let x = 0; x < width; x++) {
-      const top = raster[y][x] === '1', bottom = raster[y + 1]?.[x] === '1';
-      line += top ? bottom ? '█' : '▀' : bottom ? '▄' : ' ';
-    }
-    lines.push(line);
-  }
-  return { variant, width, height: lines.length, lines };
+// Square type pixels: two sub-columns by one sub-row renders 10x10 px in a 10x20 cell.
+function textGrid(font: Record<string, string[]>, text: string): boolean[][] {
+  const rows = Array.from({ length: 7 }, () => [] as boolean[]);
+  [...text].forEach((char, index) => {
+    const glyph = font[char];
+    if (!glyph) return;
+    if (index) rows.forEach(row => row.push(false));
+    rows.forEach((row, y) => [...glyph[y]].forEach(bit => row.push(bit === '1')));
+  });
+  return rows;
 }
-const WORDMARKS = [makeWordmark(FONT, 2, 'large'), makeWordmark(FONT, 1, 'regular'), makeWordmark(COMPACT_FONT, 1, 'compact')];
+function makeWordmark(font: Record<string, string[]>, variant: Variant, block = 1): SplashWordmark {
+  const lines = [textGrid(font, 'KEPOS'), Array.from({ length: 7 }, () => [] as boolean[]), textGrid(font, 'COMMUNIS')].flat();
+  const fontWidth = Math.max(...lines.map(line => line.length)), fontHeight = lines.length;
+  // A terminal sub-pixel is 5x10 px, so one glyph pixel is square only at 2 sub-columns by 1 sub-row.
+  // Scaling `block` multiplies BOTH axes by the same factor, keeping the face undistorted.
+  const subWidth = fontWidth * 2 * block, subHeight = fontHeight * block;
+  const bits = new Uint8Array(subWidth * subHeight);
+  lines.forEach((line, y0) => line.forEach((on, x) => {
+    if (!on) return;
+    for (let dy = 0; dy < block; dy++) for (let dx = 0; dx < block * 2; dx++) {
+      bits[(y0 * block + dy) * subWidth + x * block * 2 + dx] = 1;
+    }
+  }));
+  // Reserve one extra sub-pixel column for the offset drop shadow so it stays inside the logotype box.
+  return { x: 0, y: 0, width: Math.ceil((subWidth + 1) / 2), height: Math.ceil((subHeight + 1) / 2), variant, fontWidth, fontHeight, bits };
+}
+// Largest first: layout picks the biggest lockup that fits, so wide terminals get a poster-scale wordmark.
+const WORDMARKS = [
+  makeWordmark(DISPLAY, 'display', 2),
+  makeWordmark(DISPLAY, 'display', 1),
+  makeWordmark(COMPACT, 'compact', 1),
+];
 
-function lecternGeometry(radius: number, aspect: number): SplashLectern[] {
-  const side = 2 * radius * Math.sin(Math.PI / SEATS) * .53;
-  return Array.from({ length: SEATS }, (_, id) => {
-    const angle = id * Math.PI * 2 / SEATS;
-    const nx = Math.sin(angle), ny = -Math.cos(angle), tx = Math.cos(angle), ty = Math.sin(angle);
-    const point = (tangent: number, radial: number, z = 0): Point => ({
+function projectSeat(radius: number, angle: number, aspect: number) {
+  const nx = Math.sin(angle), ny = -Math.cos(angle), tx = Math.cos(angle), ty = Math.sin(angle);
+  return {
+    nx, ny, tx, ty,
+    // Near-overhead orthographic camera: the ring stays round, depth drops toward the viewer.
+    point: (tangent: number, radial: number): Point => ({
       x: (nx * (radius + radial) + tx * tangent) * aspect,
-      y: (ny * (radius + radial) + ty * tangent) * SPLASH_VIEW.depth - z * SPLASH_VIEW.drop,
-    });
-    // Pick the visible front face; its board hangs below the shared tabletop edge, never out of the ring.
-    const face = Math.abs(ny) >= Math.abs(ty) ? { tangent: false, sign: Math.sign(ny) || 1, x: nx, y: ny }
-      : { tangent: true, sign: Math.sign(ty) || 1, x: tx, y: ty };
-    const edge = (along: number, z: number) => face.tangent
-      ? point(face.sign * side / 2, along, z) : point(along, face.sign * side / 2, z);
-    const boardHeight = side * 1.35;
-    return { id, angle, center: point(0, 0), normal: { x: face.x * face.sign, y: face.y * face.sign, z: 0 }, boardHeight,
-      desktop: [point(-side / 2, -side / 2), point(side / 2, -side / 2), point(side / 2, side / 2), point(-side / 2, side / 2)],
-      plaque: [edge(-side / 2, 0), edge(side / 2, 0), edge(side / 2, -boardHeight), edge(-side / 2, -boardHeight)],
+      y: (ny * (radius + radial) + ty * tangent) * SPLASH_VIEW.depth,
+    }),
+  };
+}
+
+function buildLecterns(radius: number, aspect: number): SplashLectern[] {
+  const slot = 2 * Math.PI * radius / SEATS;
+  // Pure top-view tablet: brand trapezoid proportions (narrow outer edge, wider inner edge),
+  // sized to fill its angular slot so neighbouring desks sit close without touching.
+  // Slightly inside the angular slot: large enough to read as a desk, with a clean gap all round.
+  const outer = slot * .38 / 2, inner = slot * .68 / 2, depth = slot * .62;
+  return Array.from({ length: SEATS }, (_, id) => {
+    const angle = id * Math.PI * 2 / SEATS, seat = projectSeat(radius, angle, aspect);
+    // Diagonal seats project their long edge into fewer cells, so they need a little more
+    // clearance than the axis-aligned ones to keep the same visible gap.
+    // Trim by how flat the projected seat is: near the horizontal axis the tabletop
+    // compresses vertically and its cells crowd against its neighbours.
+    const trim = 1 - .16 * Math.abs(Math.sin(angle));
+    const o = outer * trim, i = inner * trim;
+    return {
+      id, angle, center: seat.point(0, 0), outward: { x: seat.nx, y: seat.ny }, slot,
+      tablet: [seat.point(-o, depth / 2), seat.point(o, depth / 2), seat.point(i, -depth / 2), seat.point(-i, -depth / 2)],
+      plate: [],
       samples: [],
     };
   });
@@ -115,128 +171,188 @@ function inside(point: Point, polygon: Point[]): boolean {
   return true;
 }
 
-function sampleLectern(lectern: SplashLectern): void {
-  for (const part of ['desktop', 'plaque'] as const) {
-    const polygon = lectern[part];
-    const x0 = Math.floor(Math.min(...polygon.map(p => p.x)) * 2), x1 = Math.ceil(Math.max(...polygon.map(p => p.x)) * 2);
-    const y0 = Math.floor(Math.min(...polygon.map(p => p.y)) * 2), y1 = Math.ceil(Math.max(...polygon.map(p => p.y)) * 2);
-    for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-      let hits = 0;
-      // Supersample each quadrant; edge coverage controls brightness, not stray outline dots.
-      for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
-        const p = { x: (x + (sx + .5) / 4) / 2, y: (y + (sy + .5) / 4) / 2 };
-        if (inside(p, polygon)) hits++;
-      }
-      if (hits >= 3) lectern.samples.push({ x, y, part, coverage: hits / 16 });
+function sampleSurface(lectern: SplashLectern, part: 'desktop' | 'plaque', polygon: Point[]): void {
+  const x0 = Math.floor(Math.min(...polygon.map(p => p.x)) * 2), x1 = Math.ceil(Math.max(...polygon.map(p => p.x)) * 2);
+  const y0 = Math.floor(Math.min(...polygon.map(p => p.y)) * 2), y1 = Math.ceil(Math.max(...polygon.map(p => p.y)) * 2);
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    let hits = 0;
+    for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+      if (inside({ x: (x + (sx + .5) / 4) / 2, y: (y + (sy + .5) / 4) / 2 }, polygon)) hits++;
     }
+    // Keep every touched sub-cell and let coverage modulate brightness: this anti-aliases edges
+    // instead of dropping half-cells, which is what produced the staircase silhouette.
+    if (hits >= 5)     lectern.samples.push({ x, y, part, coverage: hits / 16 });
   }
 }
+
+const layoutCache = new Map<string, SplashLayout | null>();
 
 export function layoutSplash(width: number, rows: number, options: SplashOptions = {}): SplashLayout | null {
   const W = extent(width), H = extent(rows);
   const cellAspect = Number.isFinite(options.cellAspect) ? Math.max(1, Math.min(3, options.cellAspect!)) : 2;
-  const marginX = Math.max(2, Math.min(6, Math.floor(W * .04))), marginY = 2;
-  const gap = Math.max(4, Math.min(8, Math.round(W * .04)));
+  const cacheKey = `${W}|${H}|${cellAspect}`;
+  if (layoutCache.has(cacheKey)) return layoutCache.get(cacheKey)!;
+  const result = computeLayout(W, H, cellAspect);
+  if (layoutCache.size > 12) layoutCache.clear();
+  layoutCache.set(cacheKey, result);
+  return result;
+}
+
+function computeLayout(W: number, H: number, cellAspect: number): SplashLayout | null {
+  const marginX = W < 90 ? 1 : Math.max(2, Math.min(6, Math.floor(W * .04))), marginY = 2;
+  const gap = W < 90 ? 3 : Math.max(4, Math.min(8, Math.round(W * .04)));
   const availableW = W - marginX * 2, availableH = H - marginY * 2;
   for (const wordmark of WORDMARKS) {
     if (wordmark.height > availableH) continue;
-    const radius = Math.min(16, Math.max(7, H * .31), (availableH - 2) / 2.2, (availableW - wordmark.width - gap - 2) / (2.2 * cellAspect));
-    if (radius < 7) continue;
-    const lecterns = lecternGeometry(radius, cellAspect);
-    const vertices = lecterns.flatMap(seat => [...seat.desktop, ...seat.plaque]);
-    const rx = Math.max(...vertices.map(p => Math.abs(p.x))), ry = Math.max(...vertices.map(p => Math.abs(p.y)));
-    const ringWidth = Math.ceil(rx * 2) + 2, ringHeight = Math.ceil(ry * 2) + 2;
-    if (ringWidth + gap + wordmark.width > availableW || ringHeight > availableH) continue;
-    const x = Math.floor((W - ringWidth - gap - wordmark.width) / 2);
-    const y = Math.floor((H - ringHeight) / 2), cx = x + ringWidth / 2, cy = y + ringHeight / 2;
-    const translate = (p: Point) => ({ x: cx + p.x, y: cy + p.y });
-    lecterns.forEach(seat => {
-      seat.center = translate(seat.center); seat.desktop = seat.desktop.map(translate); seat.plaque = seat.plaque.map(translate);
-      sampleLectern(seat);
-    });
-    if (lecterns.some(seat => !seat.samples.some(p => p.part === 'desktop') || !seat.samples.some(p => p.part === 'plaque'))) continue;
-    return {
-      width: W, height: H, cellAspect, gap,
-      ring: { x, y, width: ringWidth, height: ringHeight, cx, cy, radius, lecterns, points: lecterns.map(seat => seat.center) },
-      wordmark: { x: x + ringWidth + gap, y: Math.round(cy - wordmark.height / 2),
-        width: wordmark.width, height: wordmark.height, lines: wordmark.lines, variant: wordmark.variant },
-    };
+    // Try every radius from the largest plausible one downwards and let the measured
+    // footprint decide — geometry here is not linear enough for a safe closed-form budget.
+    // Keep the ring at least as wide as the logotype so the lockup stays balanced.
+    const minRing = Math.max(24, Math.round(wordmark.width * .9));
+    for (let radius = 20; radius >= 5; radius -= .25) {
+      // Below this slot size 48 separate lecterns cannot coexist; shrink the ring instead of merging shapes.
+      if (2 * Math.PI * radius / SEATS < .80) continue;
+      const lecterns = buildLecterns(radius, cellAspect);
+      // Only near-side plates hang below the ring; far-side ones tuck up behind their tablets.
+      const tablets = lecterns.flatMap(seat => seat.tablet);
+      const nearPlate = lecterns.flatMap(seat => seat.center.y > 0 ? seat.plate : []);
+      const vertices = [...tablets, ...nearPlate];
+      const rx = Math.max(...vertices.map(p => Math.abs(p.x))), ry = Math.max(...vertices.map(p => Math.abs(p.y)));
+      const ringWidth = Math.ceil(rx * 2) + 2, ringHeight = Math.ceil(ry * 2) + 2;
+      if (ringWidth < minRing) continue;
+      if (ringWidth + gap + wordmark.width > availableW || ringHeight > availableH) continue;
+      const x = Math.floor((W - ringWidth - gap - wordmark.width) / 2);
+      const y = Math.floor((H - ringHeight) / 2), cx = x + ringWidth / 2, cy = y + ringHeight / 2;
+      const translate = (p: Point) => ({ x: cx + p.x, y: cy + p.y });
+      lecterns.forEach(seat => {
+        seat.center = translate(seat.center);
+        seat.tablet = seat.tablet.map(translate);
+        seat.plate = seat.plate.map(translate);
+        sampleSurface(seat, 'desktop', seat.tablet);
+        sampleSurface(seat, 'plaque', seat.plate);
+      });
+      // Narrow lockups drop the name plates: 48 tablets must stay separate, and the plates
+      // are what collide first when the slot shrinks.
+      const compact = ringWidth < 62;
+      if (compact) for (const seat of lecterns) seat.samples = seat.samples.filter(s => s.part === 'desktop');
+      if (lecterns.some(seat => !seat.samples.some(s => s.part === 'desktop') || (!compact && !seat.samples.some(s => s.part === 'plaque')))) { continue; }
+      return {
+        width: W, height: H, cellAspect, gap,
+        ring: { x, y, width: ringWidth, height: ringHeight, cx, cy, radius, lecterns },
+        wordmark: { ...wordmark, x: x + ringWidth + gap, y: Math.round(cy - wordmark.height / 2) },
+      };
+    }
   }
   return null;
 }
 
-type Cell = { char: string; color: string };
-const ink = (rgb: readonly number[], opacity: number) => rgb.map(channel => Math.round(channel * clamp(opacity))).join(';');
 export function splashLight(elapsed: number): { x: number; y: number; z: number; progress: number } {
-  const progress = smooth((elapsed - SPLASH_TIMING.plaqueStartMs) / (SPLASH_TIMING.plaqueEndMs - SPLASH_TIMING.plaqueStartMs));
-  const azimuth = Math.PI * (1 - progress), elevation = Math.PI / 6;
+  const progress = smooth((elapsed - SPLASH_TIMING.lightStartMs) / (SPLASH_TIMING.lightEndMs - SPLASH_TIMING.lightStartMs));
+  const azimuth = Math.PI * (1 - progress), elevation = Math.PI / 5;
   return { x: Math.cos(azimuth) * Math.cos(elevation), y: Math.sin(azimuth) * Math.cos(elevation), z: Math.sin(elevation), progress };
 }
 
 export function lecternProgress(elapsed: number, index: number): { desktop: number; plaque: number } {
-  const desktop = smooth((elapsed - index / (SEATS - 1) * (SPLASH_TIMING.tableMs - 280)) / 280);
-  const light = splashLight(elapsed);
-  // The illumination front sweeps left to right; boards do not grow or move in screen space.
-  const position = (Math.sin(index * Math.PI * 2 / SEATS) + 1) / 2;
-  const plaque = smooth((light.progress - position * .58) / .42);
-  return { desktop, plaque };
+  const tablet = smooth((elapsed - index / (SEATS - 1) * (SPLASH_TIMING.tableMs - 260)) / 260);
+  // Light is a moving front, so plates read as illuminated rather than grown.
+  const facing = (Math.sin(index * Math.PI * 2 / SEATS) + 1) / 2;
+  const plaque = smooth((splashLight(elapsed).progress - facing * .62) / .38);
+  return { desktop: tablet, plaque };
 }
 
 export function lecternLighting(elapsed: number, seat: SplashLectern): { desktop: number; plaque: number } {
   const light = splashLight(elapsed);
-  const incidence = Math.max(0, seat.normal.x * light.x + seat.normal.y * light.y);
-  const rightBias = (Math.sin(seat.angle) * light.x - Math.cos(seat.angle) * light.y + 1) / 2;
-  return { desktop: .76 + .22 * light.z + .12 * rightBias, plaque: .36 + .65 * incidence };
+  // Plates are vertical signs: their brightness follows how squarely they face the light.
+  const plaque = Math.max(0, seat.outward.x * light.x + seat.outward.y * light.y);
+  // Tables are the only surface now, so the tonal spread has to come from them: a deeper
+  // shadow at the far side and a brighter lit rim near the light.
+  return { desktop: .12 + .92 * plaque + .12 * light.z, plaque };
+}
+
+type Buffer = { rgb: Float32Array; alpha: Float32Array };
+
+function paint(buffer: Buffer, subWidth: number, subHeight: number, x: number, y: number, rgb: readonly number[], alpha: number) {
+  const ix = Math.round(x), iy = Math.round(y);
+  if (alpha <= 0 || ix < 0 || iy < 0 || ix >= subWidth || iy >= subHeight) return;
+  const index = iy * subWidth + ix, previous = buffer.alpha[index], next = alpha + previous * (1 - alpha);
+  for (let channel = 0; channel < 3; channel++) {
+    buffer.rgb[index * 3 + channel] = (rgb[channel] * alpha + buffer.rgb[index * 3 + channel] * previous * (1 - alpha)) / next;
+  }
+  buffer.alpha[index] = next;
 }
 
 function drawSplash(elapsed: number, layout: SplashLayout): string[] {
-  const grid: (Cell | undefined)[][] = Array.from({ length: layout.height }, () => Array(layout.width));
+  const subWidth = layout.width * 2, subHeight = layout.height * 2;
+  const buffer: Buffer = { rgb: new Float32Array(subWidth * subHeight * 3), alpha: new Float32Array(subWidth * subHeight) };
   const exitAt = SPLASH_TIMING.revealMs + SPLASH_TIMING.holdMs;
   const fade = 1 - smooth((elapsed - exitAt) / SPLASH_TIMING.fadeMs);
-  const pixels = new Map<number, { x: number; y: number; rgb: number[]; alpha: number }>();
+  const light = splashLight(elapsed);
+  const lightScreen = { x: light.x * layout.cellAspect, y: light.y * SPLASH_VIEW.depth };
+  const lightLength = Math.hypot(lightScreen.x, lightScreen.y) || 1;
+
   if (fade > 0) [...layout.ring.lecterns].sort((a, b) => a.center.y - b.center.y).forEach(seat => {
     const progress = lecternProgress(elapsed, seat.id), lighting = lecternLighting(elapsed, seat);
     for (const sample of seat.samples) {
-      const opacity = progress[sample.part];
+      const opacity = progress[sample.part] * fade;
       if (opacity <= 0) continue;
-      const color = BRAND.map(c => c * lighting[sample.part]);
-      const alpha = sample.coverage * opacity, key = sample.y * layout.width * 2 + sample.x;
-      const previous = pixels.get(key);
-      pixels.set(key, { x: sample.x, y: sample.y, alpha: alpha + (previous?.alpha || 0) * (1 - alpha),
-        rgb: color.map((c, i) => c * alpha + (previous?.rgb[i] || 0) * (1 - alpha)) });
+      const dx = (sample.x / 2 - seat.center.x) / (seat.slot * layout.cellAspect);
+      const dy = (sample.y / 2 - seat.center.y) / (seat.slot * SPLASH_VIEW.depth);
+      const rim = sample.part === 'desktop' ? Math.max(0, (dx * lightScreen.x + dy * lightScreen.y) / lightLength) ** 2 : 0;
+      const base = sample.part === 'desktop'
+        ? mix(SHADOW, LIT, lighting.desktop)
+        : mix(SHADOW, LIT, lighting.plaque);
+      const rgb = mix(base, RIM, rim * .8);
+      paint(buffer, subWidth, subHeight, sample.x, sample.y, rgb, opacity * sample.coverage);
     }
   });
-  const cells = new Map<number, { x: number; y: number; mask: number; rgb: number[]; count: number }>();
-  for (const pixel of pixels.values()) {
-    const x = Math.floor(pixel.x / 2), y = Math.floor(pixel.y / 2), key = y * layout.width + x;
-    const cell = cells.get(key) || { x, y, mask: 0, rgb: [0, 0, 0], count: 0 };
-    cell.mask |= 1 << ((pixel.y % 2) * 2 + pixel.x % 2);
-    cell.rgb = cell.rgb.map((c, i) => c + pixel.rgb[i]); cell.count++;
-    cells.set(key, cell);
-  }
-  for (const cell of cells.values()) grid[cell.y][cell.x] = { char: QUADRANTS[cell.mask], color: ink(cell.rgb.map(c => c / cell.count), fade) };
 
-  const opacity = smooth((elapsed - SPLASH_TIMING.wordmarkStartMs) / 280) * fade;
-  const sweep = clamp((elapsed - SPLASH_TIMING.sweepStartMs) / (SPLASH_TIMING.sweepEndMs - SPLASH_TIMING.sweepStartMs));
-  const head = sweep * 1.4 - .2;
-  if (opacity > 0) layout.wordmark.lines.forEach((line, y) => {
-    [...line].forEach((char, x) => {
-      if (char === ' ') return;
-      const distance = Math.abs(x / Math.max(1, layout.wordmark.width - 1) - head);
-      const glow = elapsed < SPLASH_TIMING.sweepStartMs || elapsed >= SPLASH_TIMING.sweepEndMs ? 0 : Math.max(0, 1 - distance / .18) * .85;
-      const rgb = WHITE.map((c, i) => c + (WARM_WHITE[i] - c) * glow);
-      grid[layout.wordmark.y + y][layout.wordmark.x + x] = { char, color: ink(rgb, opacity) };
-    });
-  });
-  return grid.map(row => {
-    let line = '', color = '';
-    for (const cell of row) {
-      const next = cell?.color || '';
-      if (next !== color) { line += next ? `\x1b[38;2;${next}m` : '\x1b[39m'; color = next; }
-      line += cell?.char || ' ';
+  if (fade > 0) {
+    const originX = layout.wordmark.x * 2, originY = layout.wordmark.y * 2;
+    const opacity = smooth((elapsed - SPLASH_TIMING.wordmarkStartMs) / 320) * fade;
+    const sweep = clamp((elapsed - SPLASH_TIMING.sweepStartMs) / (SPLASH_TIMING.sweepEndMs - SPLASH_TIMING.sweepStartMs));
+    const colorAt = (column: number) => {
+      const position = column / Math.max(1, layout.wordmark.fontWidth * 2 - 1);
+      const head = sweep * 1.35 - .15;
+      const glow = sweep <= 0 || sweep >= 1 ? 0 : Math.max(0, 1 - Math.abs(position - head) / .22);
+      // The band starts deep vermilion and warms to amber before settling back to white.
+      const tint = mix(BRAND, AMBER, sweep);
+      return { rgb: mix(WHITE, tint, glow * .9), glow };
+    };
+    // The shadow clears before the lockup settles, so the held frame is byte-identical every tick.
+    const shadowLife = 1 - smooth((elapsed - (SPLASH_TIMING.sweepEndMs - 320)) / 200);
+    if (opacity > 0 && shadowLife > 0) {
+      for (let y = 0; y < layout.wordmark.fontHeight; y++) for (let x = 0; x < layout.wordmark.fontWidth * 2; x++) {
+        if (!layout.wordmark.bits[y * layout.wordmark.fontWidth * 2 + x]) continue;
+        paint(buffer, subWidth, subHeight, originX + x + 1, originY + y + 1, SHADOW, opacity * shadowLife * .55);
+      }
     }
-    return line + (color ? '\x1b[39m' : '');
-  });
+    if (opacity > 0) {
+      for (let y = 0; y < layout.wordmark.fontHeight; y++) for (let x = 0; x < layout.wordmark.fontWidth * 2; x++) {
+        if (!layout.wordmark.bits[y * layout.wordmark.fontWidth * 2 + x]) continue;
+        paint(buffer, subWidth, subHeight, originX + x, originY + y, colorAt(x).rgb, opacity);
+      }
+    }
+  }
+
+  const lines: string[] = [];
+  for (let row = 0; row < layout.height; row++) {
+    let line = '', current = '';
+    for (let column = 0; column < layout.width; column++) {
+      let mask = 0, r = 0, g = 0, b = 0, weight = 0;
+      for (let bit = 0; bit < 4; bit++) {
+        const index = (row * 2 + Math.floor(bit / 2)) * subWidth + column * 2 + (bit % 2);
+        const alpha = buffer.alpha[index];
+        if (alpha < .06) continue;
+        mask |= 1 << bit;
+        r += buffer.rgb[index * 3] * alpha; g += buffer.rgb[index * 3 + 1] * alpha; b += buffer.rgb[index * 3 + 2] * alpha;
+        weight += alpha;
+      }
+      const color = weight ? `${Math.round(r / weight)};${Math.round(g / weight)};${Math.round(b / weight)}` : '';
+      if (color !== current) { line += color ? `\x1b[38;2;${color}m` : '\x1b[39m'; current = color; }
+      line += mask ? QUADRANTS[mask] : ' ';
+    }
+    lines.push(line + (current ? '\x1b[39m' : ''));
+  }
+  return lines;
 }
 
 export function buildSplashFrame(step: number, width: number, rows: number, _theme?: any, options: SplashOptions = {}): string[] {

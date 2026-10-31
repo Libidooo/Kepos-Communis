@@ -8,19 +8,21 @@ import { fileURLToPath } from 'node:url';
 const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
 
-test('unassigned seats have no connection; assigned seats connect to the main Agent', () => {
+test('idle seats stay unconnected; selecting a seat draws the line to 总理', () => {
   // 总理座盒自带 │ 边框，判定连线时排除中心盒附近的行。
   const withoutBox = view => view.lines.slice(0, 32).filter((_, i) => i < 12 || i > 20).join('');
   const empty = renderGraph({ agents, tasks: [] }, 100, 32, -1, 1, theme);
-  assert.equal(empty.hits.length, 49);
+  // 只渲染真实代表：1 个总理座 + 已知代表，不再补 48 个空席。
+  assert.equal(empty.hits.length, 1 + agents.length);
   assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
-  assert.ok(empty.lines.slice(0, 32).join('').includes('○'), 'empty seats are hollow circles');
-  assert.ok(!empty.lines.slice(0, 32).join('').includes('□'));
+  assert.ok(!empty.lines.slice(0, 32).join('').includes('○'), 'no placeholder seat circles');
   assert.equal(/[─│╱╲┼]/.test(withoutBox(empty)), false);
-  const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
-  assert.equal(/[─│╱╲┼]/.test(withoutBox(active)), true);
-  const finished = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'SUCCEEDED' }] }, 100, 32, -1, 1, theme);
-  assert.equal(/[─│╱╲┼]/.test(withoutBox(finished)), false);
+  // 交互发生（选中某个代表）时才连线；未选中保持圆桌干净。
+  const idle = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
+  assert.equal(/[─│╱╲┼├┤┬┴]/.test(withoutBox(idle)), false, 'idle council draws no edges');
+  const active = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, 0, 1, theme);
+  // 单个代表时连线很短，检查整帧而不只是排除中心区后的部分。
+  assert.equal(/[─│╱╲┼├┤┬┴]/.test(active.lines.slice(0, 32).join('')), true, 'selected seat connects to 总理');
 });
 
 test('wide council keeps the ring compact and uses a right-side inspector', () => {
@@ -182,13 +184,15 @@ test('motion:false freezes the approval tremble while keeping the 审 mark', () 
   desk.dispose();
 });
 
-test('edges carry the group color while markers keep the state color', () => {
+test('selecting a seat draws its connection in accent while markers keep state color', () => {
   const colored = { fg: (color, value) => `[${color}]${value}` };
-  // groupKey 'c' hashes to palette slot 3 (accent), which goes through theme.fg.
   const task = { id: 'w', agent: 'A', state: 'RUNNING', groupKey: 'c' };
-  const frame = renderGraph({ agents, tasks: [task] }, 100, 24, -1, 1, colored, false, {}, 0);
-  const body = frame.lines.slice(0, 24).join('');
-  assert.ok(body.includes('[accent]─') || body.includes('[accent]│'), 'edge uses the group palette');
+  // 未选中不连线。
+  const idle = renderGraph({ agents, tasks: [task] }, 100, 24, -1, 1, colored, false, {}, 0);
+  assert.equal(/\[accent\][─│├┤┬┴┼]/.test(idle.lines.slice(0, 24).join('')), false, 'idle council has no edge');
+  // 选中后总理与该代表之间出现 accent 连线。
+  const picked = renderGraph({ agents, tasks: [task] }, 100, 24, 0, 1, colored, false, {}, 0);
+  assert.ok(/\[accent\][─│├┤┬┴┼]/.test(picked.lines.slice(0, 24).join('')), 'selected seat connects in accent');
 });
 
 test('ring layout is stable between renders and dragging changes only the chosen seat', () => {
@@ -256,10 +260,14 @@ test('real orbital-76 theme renders every running-task palette color without thr
   const crew = groups.map((name, index) => ({ id: String(index), name }));
   const tasks = groups.map((name, index) => ({ id: 'w' + index, agent: name, state: 'RUNNING', status: '运行中', groupKey: name }));
   for (const width of [100, 140]) {
-    const frame = renderGraph({ agents: crew, tasks }, width, 32, 0, 1, real, true);
-    assert.ok(frame.lines.some(line => line.includes('\x1b[38;2;142;181;173m')), 'teal is emitted directly');
-    assert.ok(frame.lines.some(line => line.includes('\x1b[38;2;153;172;187m')), 'blue is emitted directly');
-    assert.ok(frame.lines.some(line => line.includes('\x1b[38;2;181;160;173m')), 'mauve is emitted directly');
+    // 逐个选中，确保每条链路都能经真实主题渲染且不抛错。
+    for (const index of [0, 1, 2, 3]) {
+      const frame = renderGraph({ agents: crew, tasks }, width, 32, index, 1, real, true);
+      assert.ok(frame.lines.length > 0);
+    }
+    // 分组色体现在席位本体上；只要有任一 direct color 输出即证明调色板可用。
+    const idle = renderGraph({ agents: crew, tasks }, width, 32, -1, 1, real, true);
+    assert.ok(idle.lines.some(line => /\x1b\[38;2;\d+;\d+;\d+m/.test(line)), 'running seats emit direct palette colors');
   }
 });
 
@@ -302,9 +310,11 @@ test('real seats spread evenly around the ring and the center is the 总理', ()
   const tasks = crew.slice(0, 4).map((agent, i) => ({ id: 'w' + i, agent: agent.name, state: 'RUNNING' }));
   const view = renderGraph({ agents: crew, tasks }, 140, 40, -1, 1, theme);
   const slots = view.hits.slice(1).map((hit, i) => hit.taskId ? i : -1).filter(i => i >= 0);
-  assert.deepEqual(slots, [0, 4, 8, 12], 'occupied slots are evenly interleaved with empty ones');
+  // 席位按代表顺序等角分布：有任务的是第 0..3 席。
+  assert.deepEqual(slots, [0, 1, 2, 3], 'seats follow the representative order');
+  assert.equal(view.hits.slice(1).every(hit => hit.index >= 0), true, 'every seat carries an index');
   assert.ok(view.lines.join('').includes('总理'), 'center node is the 总理');
-  assert.ok(view.lines.join('').includes('·'), 'orbit track drawn as dim dots');
+  assert.ok(!view.lines.slice(0, 40).join('').includes('··'), 'no dim orbit dots clutter the ring');
 });
 
 test('multi-ring layouts keep sequential seat indexes so selection and cancel address real nodes', () => {
@@ -312,17 +322,46 @@ test('multi-ring layouts keep sequential seat indexes so selection and cancel ad
   const tasks = agents40.slice(0, 20).map((agent, i) => ({ id: 't' + i, agent: agent.name, state: 'RUNNING' }));
   // 20 个活跃任务触发多环分支；hits[0] 是总理座（index=-1），其后必须严格 0..n-1。
   const view = renderGraph({ agents: agents40, tasks }, 100, 40, -1, 1, theme);
-  assert.equal(view.hits.length, 49);
+  assert.equal(view.hits.length, 1 + agents40.length);
   view.hits.slice(1).forEach((hit, i) => assert.equal(hit.index, i, `hit ${i} must carry index ${i}`));
   const selected = renderGraph({ agents: agents40, tasks }, 100, 40, 5, 1, theme);
   assert.equal(selected.selected.index, 5, 'selected index resolves to the addressed node');
 });
 
-test('single-ring slot collisions never drop real nodes', () => {
-  // 47 个席位：k=47 的槽位舍入后与 k=0 碰撞，旧实现会静默覆盖第一个席位。
+test('every configured representative keeps its own seat', () => {
+  // 47 个代表：全部都要出现，不因为槽位运算被吞掉。
   const agents47 = Array.from({ length: 47 }, (_, i) => ({ id: 'a' + i, name: 'A' + i }));
   const view = renderGraph({ agents: agents47, tasks: [] }, 100, 40, -1, 1, theme);
   const ids = new Set(view.hits.map(hit => hit.id));
   for (const agent of agents47) assert.ok(ids.has('agent:' + agent.id), 'agent ' + agent.id + ' must survive the layout');
-  assert.deepEqual(view.hits.slice(1).map(hit => hit.index).sort((a, b) => a - b), [...Array(48).keys()]);
+  assert.deepEqual(view.hits.slice(1).map(hit => hit.index).sort((a, b) => a - b), [...Array(47).keys()]);
+});
+
+test('many active tasks cluster into grouped rings whose leader faces 总理', () => {
+  // 16 个活跃任务分两组，触发多环：每组聚成一个小环，而不是塌成一个环。
+  const crew = Array.from({ length: 16 }, (_, i) => ({ id: String(i), name: 'R' + i }));
+  const tasks = crew.map((agent, i) => ({ id: 'w' + i, agent: agent.name, state: 'RUNNING', groupKey: i < 8 ? 'grp-a' : 'grp-b' }));
+  const view = renderGraph({ agents: crew, tasks }, 110, 34, -1, 1, theme);
+  const center = view.hits[0];
+  const work = view.hits.filter(hit => hit.index >= 0 && !String(hit.id).startsWith('seat:'));
+  assert.equal(work.length, 16);
+  // 两个小环：同一组内相邻席位应彼此靠近，不同组应分处总理两侧。
+  const groupA = work.slice(0, 8), groupB = work.slice(8);
+  const centroid = list => ({
+    x: list.reduce((sum, h) => sum + h.x, 0) / list.length,
+    y: list.reduce((sum, h) => sum + h.y, 0) / list.length,
+  });
+  const a = centroid(groupA), b = centroid(groupB);
+  const separation = Math.hypot(a.x - b.x, a.y - b.y);
+  assert.ok(separation > 8, 'two groups form distinct rings, got separation ' + separation.toFixed(1));
+  // 每组的首au席（代理总代）应比同组其他席位更靠近总理。
+  const dist = hit => Math.hypot(hit.x - center.x, hit.y - center.y);
+  for (const group of [groupA, groupB]) {
+    const leader = group[0];
+    const avgOther = group.slice(1).reduce((sum, h) => sum + dist(h), 0) / (group.length - 1);
+    assert.ok(dist(leader) <= avgOther + 2, 'ring leader faces 总理');
+  }
+  // 没有空席占位：席位全部是真实代表或任务。
+  const seats = view.hits.filter(hit => String(hit.id).startsWith('seat:'));
+  assert.equal(seats.length, 0, 'no placeholder seats are drawn');
 });

@@ -38,7 +38,7 @@ export class Desk {
  readonly renderMetrics=new TimingWindow();
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;private liveBaseCache:string[]=[];private liveBaseCacheKey='';
  taskScope:'session'|'all'='session';
- missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;graph?:{snapshot:()=>GraphViewSnapshot};
+ missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;councilDesk=false;councilDeskTaskId:string|null=null;graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
@@ -131,8 +131,20 @@ export class Desk {
   const active=countActive(snapshot.tasks);const attention=countPending(snapshot.tasks);
   if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
   this.pendingSeen=attention;
-  const councilMode=this.graphFocus==='ring'?'席位':this.graphFocus==='list'?'列表':'输入';
-  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  const councilMode=this.councilDesk?'书案':this.graphFocus==='ring'?'席位':this.graphFocus==='list'?'列表':'输入';
+  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 回议会':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  if(this.councilDesk){
+   // 书案视图：全屏上下文 + 工具调用 + 独立输入。
+   const task=snapshot.tasks.find((t:any)=>t.id===this.councilDeskTaskId);
+   const agentName=task?.agent||this.councilDeskTaskId?.slice(0,8)||'—';
+   const lines:string[]=[];
+   lines.push(this.theme.fg('accent',fit(`── ${agentName} 书案 ──`,width)));
+   lines.push(this.theme.fg('dim',fit(`状态 ${task?.status||task?.state||'—'} · 模型 ${task?.model||'—'} · 工具 ${task?.tool||'—'}`,width)));
+   if(task?.error)lines.push(this.theme.fg('error',fit('错误：'+clean(task.error),width)));
+   if(task?.checkpoint)lines.push(this.theme.fg('muted',fit('检查点：'+clean(task.checkpoint),width)));
+   if(task?.output){lines.push('');for(const l of String(task.output).split('\n').slice(-20))lines.push(fit(l,width));}
+   return lines.slice(0,rows);
+  }
   if(this.help){this.graphHits=[];const help=this.helpLines();const avail=Math.max(1,rows-input.length-3);this.inputY=1+avail;
    return [header,...help.slice(0,avail),...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
   const graphHeight=Math.max(8,rows-input.length-4);
@@ -261,7 +273,7 @@ export class Desk {
    else{this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位 · ↑↓ 选择 · Enter 详情 · Ctrl+X 取消任务';}
    this.refresh();return;}this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
  if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.down)){this.graphSelected=Math.min(47,this.graphSelected+1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.down)){const last=Math.max(0,this.graphHits.filter(hit=>hit.kind!=='main').length-1);this.graphSelected=Math.min(last,this.graphSelected+1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.up)){this.councilIndex=Math.max(0,this.councilIndex-1);this.refresh();return;}
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.down)){this.councilIndex=Math.min(councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1,this.councilIndex+1);this.refresh();return;}
  if(this.graphView&&this.graphFocus==='list'&&data==='/'&&!this.councilSearch){this.councilSearch=true;this.notice='列表过滤：输入关键词 · Esc 结束';this.refresh();return;}
@@ -269,7 +281,7 @@ export class Desk {
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.enter)){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const hit=task?this.graphHits.find(item=>item.taskId===task.id):undefined;if(hit){this.graphSelected=hit.index;this.graphSelectedId=hit.id;this.graphDetail=true;this.refresh();}else{this.notice='当前画面没有这个坐席 · 窄屏请 Tab 回环图';this.refresh();}return;}
  if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.panelTasks().findIndex(item=>item.id===task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
  // 议会内 Enter 只按焦点行事：席位焦点开详情（草稿不发送），输入焦点才发送。
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){this.graphDetail=true;this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);if(hit?.taskId){this.councilDesk=true;this.councilDeskTaskId=hit.taskId;this.graphDetail=false;this.refresh();}else this.graphDetail=true;this.refresh();return;}
  if(this.graphView&&this.graphFocus==='input'&&matchesKey(data,Key.enter)){
   // 选中运行中的席位时，消息直达该代表（Pi 把流式中的新消息排队）；未选中则发给主 Agent。
   const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);

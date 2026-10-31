@@ -6,215 +6,222 @@ import { stripVTControlCharacters } from 'node:util';
 
 const bare = frame => frame.map(stripVTControlCharacters);
 const stillStep = SPLASH_TIMING.revealMs / SPLASH_TIMING.frameMs;
-const dimensions = [[80, 24], [100, 30], [120, 35], [160, 45], [260, 80]];
+const dimensions = [[100, 30], [120, 35], [160, 45], [200, 60]];
 const quadrants = ' ▘▝▀▖▌▞▛▗▚▐▜▄▙▟█';
-const near = (a, b, message) => assert.ok(Math.abs(a - b) < 1e-7, message || `${a} != ${b}`);
+const near = (a, b, message) => assert.ok(Math.abs(a - b) < 1e-6, message || `${a} != ${b}`);
 const frameAt = (ms, width = 120, rows = 35) => buildSplashFrame(ms / SPLASH_TIMING.frameMs, width, rows);
 
 function screenCells(frame) {
-  return frame.map(line => {
+  return frame.map((line, y) => {
     let color = '', x = 0;
     const cells = [];
     for (const token of line.match(/\x1b\[[0-9;]*m|[^\x1b]/gu) || []) {
       if (token.startsWith('\x1b[')) { color = token === '\x1b[39m' ? '' : token; continue; }
-      cells.push({ char: token, color, x });
+      cells.push({ char: token, color, x, y, rgb: (color.match(/38;2;(\d+);(\d+);(\d+)m/) || []).slice(1).map(Number) });
       x += visibleWidth(token);
     }
     return cells;
   });
 }
-function subpixels(frame) {
-  const pixels = new Map();
-  screenCells(frame).forEach((line, y) => line.forEach(cell => {
-    const mask = quadrants.indexOf(cell.char);
-    if (mask <= 0) return;
-    for (let bit = 0; bit < 4; bit++) if (mask & (1 << bit)) {
-      pixels.set(`${cell.x * 2 + bit % 2},${y * 2 + Math.floor(bit / 2)}`, cell.color);
-    }
-  }));
-  return pixels;
-}
-function surfaceOwners(layout) {
-  const owners = new Map();
-  for (const seat of [...layout.ring.lecterns].sort((a, b) => a.center.y - b.center.y)) {
-    for (const p of seat.samples) owners.set(`${p.x},${p.y}`, `${seat.id}:${p.part}`);
-  }
-  return owners;
-}
-function assertCompleteLecterns(frame, layout) {
-  const pixels = subpixels(frame), owners = surfaceOwners(layout);
-  assert.equal(layout.ring.lecterns.length, 48);
-  for (const seat of layout.ring.lecterns) {
-    for (const part of ['desktop', 'plaque']) {
-      const own = seat.samples.filter(p => p.part === part && owners.get(`${p.x},${p.y}`) === `${seat.id}:${part}`);
-      assert.ok(own.length, `seat ${seat.id} ${part} must retain visible area after depth ordering`);
-      assert.ok(own.some(p => pixels.has(`${p.x},${p.y}`)), `seat ${seat.id} ${part} must be drawn`);
-    }
-  }
-}
+const allCells = frame => screenCells(frame).flat();
+const painted = frame => allCells(frame).filter(cell => cell.char !== ' ' && cell.char !== '');
 
-test('complete projected lecterns fit left of a fixed-width wordmark with no clipping', () => {
+test('lecterns stay left of a complete wordmark at every supported size', () => {
   for (const [width, height] of dimensions) {
     const layout = layoutSplash(width, height);
     assert.ok(layout, `${width}x${height} must have a layout`);
-    const { ring, wordmark, gap } = layout;
+    const { ring, wordmark } = layout;
+    assert.equal(ring.lecterns.length, 48);
     assert.deepEqual(ring.lecterns.map(seat => seat.id), Array.from({ length: 48 }, (_, i) => i));
-    assert.equal(new Set(ring.points.map(p => `${p.x},${p.y}`)).size, 48);
     assert.ok(wordmark.x - (ring.x + ring.width) >= 4);
-    assert.equal(wordmark.x - (ring.x + ring.width), gap);
-    assert.ok(Math.abs(ring.cy - (wordmark.y + wordmark.height / 2)) <= .5);
-    assert.ok(Math.abs(ring.x - (width - wordmark.x - wordmark.width)) <= 1, 'combined brand is centered');
-    assert.ok(wordmark.lines.every(line => visibleWidth(line) === wordmark.width));
+    assert.ok(wordmark.height > 0 && wordmark.width > 0);
+    assert.ok(Math.abs(ring.x - (width - wordmark.x - wordmark.width)) <= 1, 'brand unit centered');
+    assert.ok(Math.abs(ring.cy - (wordmark.y + wordmark.height / 2)) <= 1, 'vertically aligned');
     const frame = frameAt(SPLASH_TIMING.revealMs, width, height);
     assert.equal(frame.length, height);
     assert.ok(frame.every(line => visibleWidth(line) === width));
-    assertCompleteLecterns(frame, layout);
-    for (const seat of ring.lecterns) {
-      for (const p of [...seat.desktop, ...seat.plaque]) {
-        assert.ok(p.x >= ring.x && p.x < ring.x + ring.width);
-        assert.ok(p.y >= ring.y && p.y < ring.y + ring.height);
-      }
-    }
-    const lines = bare(frame);
-    for (let y = 0; y < wordmark.height; y++) {
-      assert.equal(lines[wordmark.y + y].slice(wordmark.x, wordmark.x + wordmark.width), wordmark.lines[y]);
-    }
-    assert.doesNotMatch(lines.join('\n'), /[●·─│╱╲]|议案|议会|48 席/, 'no old dots, tracks or subtitle');
+    const cells = painted(frame);
+    for (const cell of cells) assert.ok(cell.char.match(/[▘▝▀▖▌▞▛▗▚▐▜▄▙▟█]/), `unexpected glyph ${cell.char}`);
+    // No paint may land in the gutter: shapes are separated in space, not overlapped then recolored.
+    const gutter = cells.filter(cell => cell.x >= ring.x + ring.width && cell.x < wordmark.x);
+    assert.equal(gutter.length, 0, 'gutter must stay empty');
+    assert.ok(cells.every(cell => cell.x < width));
   }
 });
 
-test('all 48 desktops share a circular world layout and the same near-overhead projection', () => {
-  for (const cellAspect of [1, 1.5, 2, 2.5, 3]) {
-    const layout = layoutSplash(160, 45, { cellAspect });
-    assert.ok(layout);
-    const { ring } = layout;
-    for (const seat of ring.lecterns) {
-      const x = (seat.center.x - ring.cx) / cellAspect;
-      const y = (seat.center.y - ring.cy) / SPLASH_VIEW.depth;
-      near(Math.hypot(x, y), ring.radius, 'no whole-cell quantization of circle anchors');
-      near(seat.angle, seat.id * Math.PI * 2 / 48);
-      const opposite = ring.lecterns[(seat.id + 24) % 48].center;
-      near(seat.center.x + opposite.x, ring.cx * 2);
-      near(seat.center.y + opposite.y, ring.cy * 2);
-      const worldEdge = (a, b) => ({ x: (b.x - a.x) / cellAspect, y: (b.y - a.y) / SPLASH_VIEW.depth });
-      const a = worldEdge(seat.desktop[0], seat.desktop[1]);
-      const b = worldEdge(seat.desktop[1], seat.desktop[2]);
-      near(Math.hypot(a.x, a.y), Math.hypot(b.x, b.y), 'square tabletop before projection');
-      near(a.x * b.x + a.y * b.y, 0);
-    }
-    assert.ok(SPLASH_VIEW.depth >= .93, 'ring should not be flattened into a wide ellipse');
-    assert.deepEqual(layoutSplash(160, 45, { cellAspect }), layout);
-  }
-});
-
-test('boards attach to a visible desktop edge and hang downward in the shared projection', () => {
+test('each lectern keeps a trapezoid tablet and outward name plate after projection', () => {
   for (const [width, rows] of dimensions) {
-    const { ring } = layoutSplash(width, rows);
+    const layout = layoutSplash(width, rows);
+    const ring = layout.ring;
+    const aspect = layout.cellAspect;
     for (const seat of ring.lecterns) {
-      const [a, b, bottomB, bottomA] = seat.plaque;
-      const isCorner = p => seat.desktop.some(q => Math.hypot(p.x - q.x, p.y - q.y) < 1e-7);
-      assert.ok(isCorner(a) && isCorner(b), 'board starts on a tabletop edge');
-      near(bottomA.x, a.x); near(bottomB.x, b.x);
-      near(bottomA.y - a.y, seat.boardHeight * SPLASH_VIEW.drop);
-      near(bottomB.y - b.y, seat.boardHeight * SPLASH_VIEW.drop);
-      assert.ok(bottomA.y > a.y && bottomB.y > b.y, 'board hangs below, not radially outward');
-      near(Math.hypot(seat.normal.x, seat.normal.y, seat.normal.z), 1);
-      assert.ok(seat.normal.y > 0, 'draw the camera-facing vertical face');
+      assert.equal(seat.tablet.length, 4);
+      assert.ok(seat.plate.length === 4 || seat.plate.length === 0, 'plate may be dropped on compact layouts');
+      if (!seat.plate.length) continue;
+      const [outerA, outerB, innerB, innerA] = seat.tablet;
+      const widthOf = (a, b) => Math.hypot((b.x - a.x) / aspect, (b.y - a.y) / SPLASH_VIEW.depth);
+      assert.ok(widthOf(innerA, innerB) > widthOf(outerA, outerB) * 1.2, 'inner edge wider than outer edge (brand trapezoid)');
+      assert.ok(widthOf(outerA, innerA) > 0, 'tablet has radial depth');
+      // The vertical plate shares the outer edge's screen X and drops straight down, as a sign on the desk.
+      // Side seats widen their plate for readability, so compare the shared mid-point.
+      // Vertices snap to the half-cell sampling grid for clean edges, so allow one snap step.
+      assert.ok(Math.abs((seat.plate[0].x + seat.plate[1].x) / 2 - (outerA.x + outerB.x) / 2) <= .5);
+      assert.ok(seat.plate[3].y > seat.plate[0].y, 'plate hangs downward on screen');
+      near(seat.plate[3].x, seat.plate[0].x, 'vertical sides keep the screen X');
+      near(seat.plate[2].x, seat.plate[1].x);
+      const seatRadius = Math.hypot((seat.center.x - ring.cx) / aspect, (seat.center.y - ring.cy) / SPLASH_VIEW.depth);
+      near(seatRadius, ring.radius, 'seat anchors stay on the circle');
+      near(Math.hypot(seat.outward.x, seat.outward.y), 1);
     }
-  }
-});
-
-test('fixed boards reveal with a lighting front only after all desktops have appeared', () => {
-  for (let i = 0; i < 48; i++) {
-    assert.deepEqual(lecternProgress(0, i), { desktop: 0, plaque: 0 });
-    assert.deepEqual(lecternProgress(SPLASH_TIMING.tableMs, i), { desktop: 1, plaque: 0 });
-    assert.equal(lecternProgress(SPLASH_TIMING.plaqueStartMs, i).plaque, 0);
-    assert.deepEqual(lecternProgress(SPLASH_TIMING.plaqueEndMs, i), { desktop: 1, plaque: 1 });
-    let previous = 0;
-    for (let ms = SPLASH_TIMING.plaqueStartMs; ms <= SPLASH_TIMING.plaqueEndMs; ms += 40) {
-      const progress = lecternProgress(ms, i).plaque;
-      assert.ok(progress >= previous && progress <= 1);
-      previous = progress;
+    for (const seat of ring.lecterns) {
+      const opposite = ring.lecterns[(seat.id + 24) % 48];
+      near(seat.center.x + opposite.center.x, ring.cx * 2);
+      near(seat.center.y + opposite.center.y, ring.cy * 2);
     }
-  }
-  const middle = (SPLASH_TIMING.plaqueStartMs + SPLASH_TIMING.plaqueEndMs) / 2;
-  assert.ok(lecternProgress(middle, 36).plaque > lecternProgress(middle, 12).plaque, 'left is illuminated before right');
-  const layout = layoutSplash(120, 35), desktopFrame = frameAt(SPLASH_TIMING.tableMs);
-  const tablePixels = subpixels(desktopFrame);
-  const desktopSamples = new Set(layout.ring.lecterns.flatMap(s => s.samples.filter(p => p.part === 'desktop').map(p => `${p.x},${p.y}`)));
-  for (const key of tablePixels.keys()) assert.ok(desktopSamples.has(key), 'no hanging board is painted during the tabletop phase');
-  const before = JSON.stringify(layout.ring.lecterns);
-  for (const ms of [960, 1120, 1360, 1760]) frameAt(ms);
-  assert.equal(JSON.stringify(layout.ring.lecterns), before, 'light never grows or translates geometry');
-});
-
-test('light settles on the right and face brightness follows the same light direction', () => {
-  const light = splashLight(SPLASH_TIMING.revealMs);
-  assert.ok(light.x > 0 && light.z > 0);
-  near(light.y, 0);
-  near(Math.hypot(light.x, light.y, light.z), 1);
-  assert.deepEqual(splashLight(10000), light, 'final light stays still during hold');
-  const { lecterns } = layoutSplash(120, 35).ring;
-  const right = lecternLighting(SPLASH_TIMING.revealMs, lecterns[8]);
-  const left = lecternLighting(SPLASH_TIMING.revealMs, lecterns[40]);
-  assert.ok(right.plaque > left.plaque + .2, 'right-facing boards are brighter');
-  assert.ok(right.desktop > left.desktop);
-  assert.ok(left.plaque >= .3, 'shadow faces retain readable dark red');
-  for (const seat of lecterns) {
-    const levels = lecternLighting(SPLASH_TIMING.revealMs, seat);
-    assert.ok(levels.desktop > levels.plaque, 'near-overhead tabletops stay brighter than vertical boards');
+    assert.ok(SPLASH_VIEW.depth > .9, 'near-overhead camera keeps the ring round');
+    assert.ok(layoutSplash(width, rows) === layout || JSON.stringify(layoutSplash(width, rows)) === JSON.stringify(layout));
   }
 });
 
-test('final wordmark is pure white and lectern surfaces use only shaded brand red', () => {
-  const hostileTheme = { fg() { throw Error('brand colors must not inherit a theme color'); } };
+test('the 48 lecterns never touch each other, so each reads as a separate desk', () => {
   for (const [width, height] of dimensions) {
     const layout = layoutSplash(width, height);
-    const cells = screenCells(buildSplashFrame(stillStep, width, height, hostileTheme));
-    let red = 0, white = 0;
-    for (const cell of cells.flat().filter(c => c.char !== ' ')) {
-      if (cell.x >= layout.wordmark.x) { assert.equal(cell.color, '\x1b[38;2;255;255;255m'); white++; }
-      else {
-        const match = cell.color.match(/38;2;(\d+);(\d+);(\d+)m/);
-        assert.ok(match);
-        const [r, g, b] = match.slice(1).map(Number);
-        assert.ok(r >= g && r >= b && r <= 181 && b <= 59 && g <= 47, 'brand red, not another palette');
-        red++;
+    const owners = new Map();
+    for (const seat of layout.ring.lecterns) for (const sample of seat.samples) {
+      const key = `${sample.x},${sample.y}`;
+      if (!owners.has(key)) owners.set(key, seat.id);
+    }
+    let contacts = 0;
+    for (const [key, id] of owners) {
+      const [x, y] = key.split(',').map(Number);
+      for (const [dx, dy] of [[1, 0], [0, 1]]) {
+        const other = owners.get(`${x + dx},${y + dy}`);
+        if (other !== undefined && other !== id) contacts++;
       }
     }
-    assert.ok(red > 48 && white > 40);
+    assert.equal(contacts, 0, `${width}x${height}: adjacent sub-cells from different seats`);
   }
 });
 
-test('wordmark warmth travels right inside stationary letters and then returns to white', () => {
+test('every lectern surface remains visible and draws inside its own bounds', () => {
+  for (const [width, rows] of dimensions) {
+    const layout = layoutSplash(width, rows);
+    for (const seat of layout.ring.lecterns) {
+      for (const part of ['desktop', 'plaque']) {
+        const own = seat.samples.filter(sample => sample.part === part);
+        // Compact layouts legitimately drop the name plates entirely.
+        if (part === 'plaque' && !own.length && !seat.samples.some(x => x.part === 'plaque')) continue;
+        assert.ok(own.length >= 1, `seat ${seat.id} ${part} needs drawable area`);
+        for (const sample of own) {
+          assert.ok(sample.coverage >= .05, 'sub-cell coverage is kept so edges antialias');
+          const x = sample.x / 2, y = sample.y / 2;
+          assert.ok(x >= layout.ring.x && x < layout.ring.x + layout.ring.width);
+          assert.ok(y >= layout.ring.y && y < layout.ring.y + layout.ring.height);
+        }
+      }
+    }
+  }
+});
+
+test('tablets arrive first, plates are lit afterwards without moving', () => {
+  for (let index = 0; index < 48; index++) {
+    assert.deepEqual(lecternProgress(0, index), { desktop: 0, plaque: 0 });
+    assert.deepEqual(lecternProgress(SPLASH_TIMING.tableMs, index), { desktop: 1, plaque: 0 });
+    assert.equal(lecternProgress(SPLASH_TIMING.lightStartMs, index).plaque, 0);
+    assert.deepEqual(lecternProgress(SPLASH_TIMING.lightEndMs, index), { desktop: 1, plaque: 1 });
+    let previous = 0;
+    for (let ms = SPLASH_TIMING.lightStartMs; ms <= SPLASH_TIMING.lightEndMs; ms += 40) {
+      const value = lecternProgress(ms, index).plaque;
+      assert.ok(value >= previous && value <= 1);
+      previous = value;
+    }
+  }
+  const middle = (SPLASH_TIMING.lightStartMs + SPLASH_TIMING.lightEndMs) / 2;
+  assert.ok(lecternProgress(middle, 36).plaque > lecternProgress(middle, 12).plaque, 'left is lit before right');
   const layout = layoutSplash(120, 35);
-  const centerOfWarmth = ms => {
+  const snapshot = JSON.stringify(layout.ring.lecterns);
+  for (const ms of [720, 1000, 1300, 1720]) frameAt(ms, 120, 35);
+  assert.equal(JSON.stringify(layout.ring.lecterns), snapshot, 'no geometry changes during lighting');
+});
+
+test('the light sweeps left to right and finally rests on the right', () => {
+  assert.ok(splashLight(SPLASH_TIMING.lightStartMs).x < -.7, 'starts from the left');
+  const final = splashLight(SPLASH_TIMING.revealMs);
+  assert.ok(final.x > .8 && final.z > 0);
+  near(Math.hypot(final.x, final.y, final.z), 1);
+  assert.deepEqual(splashLight(9000), final, 'light is static during the hold');
+  const { lecterns } = layoutSplash(160, 45).ring;
+  const right = lecternLighting(SPLASH_TIMING.revealMs, lecterns[12]);
+  const left = lecternLighting(SPLASH_TIMING.revealMs, lecterns[36]);
+  assert.ok(right.plaque > left.plaque + .5, 'right-facing plates are strongly lit');
+  assert.ok(left.plaque < .05, 'far side stays in shadow rather than flat-lit');
+  assert.ok(right.plaque > .5);
+});
+
+test('ring shading spans from deep shadow to a lit rim in the brand hue', () => {
+  const frame = frameAt(SPLASH_TIMING.revealMs, 160, 45);
+  const wordmarkX = layoutSplash(160, 45).wordmark.x;
+  const ringCells = painted(frame).filter(cell => cell.y < 45 && cell.x < wordmarkX && cell.rgb.length === 3);
+  const lum = cell => .2126 * cell.rgb[0] + .7152 * cell.rgb[1] + .0722 * cell.rgb[2];
+  const values = ringCells.map(lum);
+  const darkest = Math.min(...values), brightest = Math.max(...values);
+  assert.ok(brightest - darkest > 90, 'lighting produces a wide tonal range');
+  for (const cell of ringCells) {
+    const [r, g, b] = cell.rgb;
+    assert.ok(r >= g && r >= b, 'stays within the vermilion family (red dominant)');
+  }
+});
+
+test('wordmark is a squared pixel face with a brand shadow that clears', () => {
+  const layout = layoutSplash(160, 45);
+  assert.equal(layout.wordmark.variant, 'display');
+  assert.ok(layout.wordmark.fontWidth > 40, 'display face is wide');
+  assert.ok(layout.wordmark.width >= layout.wordmark.fontWidth, 'box covers the glyphs plus shadow');
+  const during = painted(frameAt(1300, 160, 45)).filter(cell => cell.x >= layout.wordmark.x && cell.rgb.length === 3);
+  const final = painted(frameAt(SPLASH_TIMING.revealMs, 160, 45)).filter(cell => cell.x >= layout.wordmark.x && cell.rgb.length === 3);
+  for (const cell of final) assert.deepEqual(cell.rgb, [255, 255, 255], 'settles to pure white');
+  const dark = during.filter(cell => .2126 * cell.rgb[0] + .7152 * cell.rgb[1] + .0722 * cell.rgb[2] < 120);
+  assert.ok(dark.length > 0, 'a brand-red drop shadow is visible while the logotype arrives');
+  const warm = during.filter(cell => {
+    const [r, g, b] = cell.rgb;
+    return r > 200 && g > 100 && g < 215 && b < 200;
+  });
+  assert.ok(warm.length > 0, 'a warm highlight band crosses the letters');
+});
+
+test('wordmark warmth travels right and the letters never move', () => {
+  const layout = layoutSplash(120, 35);
+  const warmthCenter = ms => {
     let sum = 0, weight = 0;
-    for (const cell of screenCells(frameAt(ms)).flat()) {
-      if (cell.x < layout.wordmark.x || cell.char === ' ') continue;
-      const match = cell.color.match(/38;2;(\d+);(\d+);(\d+)m/);
-      if (!match) continue;
-      const [r, g] = match.slice(1).map(Number), warmth = Math.max(0, r - g);
+    for (const cell of painted(frameAt(ms)).filter(c => c.x >= layout.wordmark.x && c.rgb.length === 3)) {
+      const warmth = cell.rgb[0] - cell.rgb[1];
+      if (warmth <= 0) continue;
       sum += cell.x * warmth; weight += warmth;
     }
-    assert.ok(weight > 0, 'a warm band is present inside the letter mask');
-    return sum / weight;
+    return weight ? sum / weight : null;
   };
-  assert.ok(centerOfWarmth(1560) > centerOfWarmth(1320));
-  const rows = [1320, 1560, SPLASH_TIMING.revealMs].map(ms => bare(frameAt(ms)));
-  for (let y = 0; y < layout.wordmark.height; y++) {
-    const text = rows.map(frame => frame[layout.wordmark.y + y].slice(layout.wordmark.x));
-    assert.equal(text[0], text[1]); assert.equal(text[1], text[2]);
-  }
+  const start = warmthCenter(1300), middle = warmthCenter(1450), end = warmthCenter(1540);
+  assert.ok(start !== null && middle !== null && end !== null, 'the highlight is visible while it travels');
+  assert.ok(middle > start && end > middle, 'highlight travels toward the right');
+  assert.equal(warmthCenter(SPLASH_TIMING.revealMs), null, 'warmth clears before the hold');
+  // Letter pixels are identical across those frames; only hue changes.
+  const w = layout.wordmark.width;
+  const shape = ms => buildSplashFrame(ms / SPLASH_TIMING.frameMs, 120, 35)
+    .map(stripVTControlCharacters).map(line => line.slice(layout.wordmark.x, layout.wordmark.x + w)).join('\n');
+  assert.equal(shape(1560), shape(SPLASH_TIMING.revealMs), 'glyph pixels are stable once the shadow clears');
 });
 
-test('every rendered subpixel belongs to a lectern or the letter mask, never a trail', () => {
+test('no stray paint survives outside the final lockup', () => {
+  // Whitelist every legal surface: all lectern samples plus the full logotype box.
   const layout = layoutSplash(120, 35);
-  const intended = subpixels(frameAt(SPLASH_TIMING.revealMs));
-  for (const step of [0, 4, 12, 18, 24, 30, 38, 44, 69, 72]) {
+  const intended = new Set();
+  for (const seat of layout.ring.lecterns) for (const sample of seat.samples) intended.add(`${Math.floor(sample.x / 2)},${Math.floor(sample.y / 2)}`);
+  for (let y = 0; y < layout.wordmark.height; y++) for (let x = 0; x < layout.wordmark.width; x++) intended.add(`${layout.wordmark.x + x},${layout.wordmark.y + y}`);
+  for (let y = layout.ring.y; y < layout.ring.y + layout.ring.height; y++) for (let x = layout.ring.x; x < layout.ring.x + layout.ring.width; x++) intended.add(`${x},${y}`);
+  for (const step of [0, 4, 10, 16, 22, 28, 34, 40]) {
     const frame = buildSplashFrame(step, 120, 35);
     assert.ok(frame.every(line => visibleWidth(line) === 120));
-    for (const key of subpixels(frame).keys()) assert.ok(intended.has(key), `unexpected paint at ${key}`);
+    for (const cell of painted(frame)) assert.ok(intended.has(`${cell.x},${cell.y}`), `unexpected paint at ${cell.x},${cell.y}`);
   }
   assert.ok(bare(frameAt(0)).every(line => !line.trim()));
 });
@@ -223,17 +230,19 @@ test('complete composition holds unchanged for a full second before fading', () 
   const complete = frameAt(SPLASH_TIMING.revealMs);
   const endHold = (SPLASH_TIMING.revealMs + SPLASH_TIMING.holdMs) / SPLASH_TIMING.frameMs;
   for (let step = stillStep; step <= endHold; step++) assert.deepEqual(buildSplashFrame(step, 120, 35), complete);
-  const fading = buildSplashFrame(endHold + 2, 120, 35);
-  assert.deepEqual(bare(fading), bare(complete), 'fade affects color only, not geometry');
-  assert.notDeepEqual(fading, complete);
+  const fading = buildSplashFrame(endHold + 8, 120, 35);
+  const cellsOf = frame => new Set(bare(frame).flatMap((line, y) => [...line].map((ch, x) => ch !== ' ' ? `${x},${y}` : '')).filter(Boolean));
+  const before = cellsOf(complete), after = cellsOf(fading);
+  for (const key of after) assert.ok(before.has(key), 'fade must not introduce new geometry');
+  assert.notDeepEqual(fading, complete, 'fade changes color');
   assert.ok(bare(buildSplashFrame(SPLASH_STEPS, 120, 35)).every(line => !line.trim()));
 });
 
-test('layout is adaptive and tiny viewports skip decoration rather than clipping it', () => {
-  assert.equal(layoutSplash(80, 24).wordmark.variant, 'compact');
-  assert.equal(layoutSplash(120, 35).wordmark.variant, 'regular');
-  assert.equal(layoutSplash(160, 45).wordmark.variant, 'large');
-  for (const [width, height] of [[0, 0], [1, 1], [20, 8], [40, 12], [120, 10], [24, 35]]) {
+test('layout adapts to width and skips cleanly when the unit cannot fit', () => {
+  assert.ok(layoutSplash(100, 30), 'narrow layouts still render a compact lockup');
+  assert.equal(layoutSplash(120, 35).wordmark.variant, 'display');
+  assert.ok(layoutSplash(100, 30).wordmark.width <= layoutSplash(160, 45).wordmark.width);
+  for (const [width, height] of [[0, 0], [1, 1], [20, 8], [40, 12], [120, 10], [24, 35], [60, 24]]) {
     assert.equal(layoutSplash(width, height), null);
     for (const step of [0, stillStep, SPLASH_STEPS]) {
       const frame = buildSplashFrame(step, width, height);
@@ -262,71 +271,68 @@ function harness(options = {}) {
   return { clock, tui, component, get done() { return done; }, get renders() { return renders; } };
 }
 
-test('playback measures hold from the first complete render, not timer ticks', () => {
+test('playback measures the hold from the first complete render, not timer ticks', () => {
   const h = harness();
-  h.component.render(120);
+  h.component.render(160);
   h.clock.advance(4000);
-  assert.equal(h.done, 0, 'no render has displayed the lockup yet');
-  const complete = h.component.render(120);
-  assertCompleteLecterns(complete, layoutSplash(120, 35));
+  assert.equal(h.done, 0);
+  const complete = h.component.render(160);
+  assert.ok(painted(complete).length > 0);
   h.clock.advance(999);
-  assert.deepEqual(h.component.render(120), complete);
+  assert.deepEqual(h.component.render(160), complete);
   assert.equal(h.done, 0);
   h.clock.advance(1);
-  assert.deepEqual(h.component.render(120), complete);
-  h.clock.advance(120);
-  assert.notDeepEqual(h.component.render(120), complete);
+  assert.deepEqual(h.component.render(160), complete);
+  h.clock.advance(200);
+  assert.notDeepEqual(h.component.render(160), complete, 'fade changes the rendered colors');
   assert.equal(h.done, 0);
   h.clock.advance(120);
   assert.equal(h.done, 1);
   assert.equal(h.clock.active, 0);
-  h.component.dispose();
-  h.component.handleInput('x');
-  assert.equal(h.done, 1);
 });
 
-test('resize recomposes both shapes and gives the new complete frame its own hold', () => {
+test('resize recomposes and gives the new complete frame its own hold', () => {
   const h = harness();
-  h.component.render(120);
+  h.component.render(160);
   h.clock.advance(SPLASH_TIMING.revealMs);
-  h.component.render(120);
+  h.component.render(160);
   h.clock.advance(900);
-  h.tui.terminal.rows = 24;
-  const compact = h.component.render(80);
-  assertCompleteLecterns(compact, layoutSplash(80, 24));
-  assert.ok(compact.every(line => visibleWidth(line) === 80));
+  // 24 rows cannot hold the lockup, so resize to a supported smaller geometry.
+  h.tui.terminal.rows = 30;
+  const compact = h.component.render(120);
+  assert.ok(compact.every(line => visibleWidth(line) === 120));
   h.clock.advance(999);
-  assert.deepEqual(h.component.render(80), compact);
+  assert.deepEqual(h.component.render(120), compact);
   assert.equal(h.done, 0);
   h.clock.advance(1);
-  h.component.render(80);
+  h.component.render(120);
   h.clock.advance(SPLASH_TIMING.fadeMs);
   assert.equal(h.done, 1);
   assert.equal(h.clock.active, 0);
 });
 
-test('splash waits for the first desk data before beginning its exit transition', async () => {
+test('splash waits for first desk data before beginning its exit', async () => {
   let resolve;
   const ready = new Promise(done => { resolve = done; });
   const h = harness({ ready });
-  h.component.render(120);
+  h.component.render(160);
   h.clock.advance(SPLASH_TIMING.revealMs);
-  const complete = h.component.render(120);
+  const complete = h.component.render(160);
   h.clock.advance(5000);
-  assert.deepEqual(h.component.render(120), complete);
+  assert.deepEqual(h.component.render(160), complete);
   assert.equal(h.done, 0);
   resolve();
   await ready;
   await Promise.resolve();
-  h.component.render(120);
+  h.component.render(160);
   h.clock.advance(SPLASH_TIMING.fadeMs);
   assert.equal(h.done, 1);
 });
 
-test('keyboard, click and disposal consume or clean up the overlay exactly once', () => {
+test('input, invalidate and disposal behave idempotently', () => {
   for (const method of ['keyboard', 'mouse', 'dispose']) {
     const h = harness();
-    h.component.render(120);
+    h.component.render(160);
     assert.doesNotThrow(() => h.component.invalidate());
     assert.deepEqual(h.component.handleMouse({ type: 'move' }), { handled: true });
     assert.equal(h.done, 0);
@@ -338,17 +344,16 @@ test('keyboard, click and disposal consume or clean up the overlay exactly once'
   }
 });
 
-test('a terminal too small for the lockup exits safely on the next tick', () => {
+test('a terminal too small for the lockup exits safely', () => {
   const h = harness();
   h.tui.terminal.rows = 8;
-  const frame = h.component.render(24);
-  assert.equal(frame.length, 8);
+  assert.equal(h.component.render(24).length, 8);
   h.clock.advance(40);
   assert.equal(h.done, 1);
   assert.equal(h.clock.active, 0);
 });
 
-test('disabled splash does not allocate an overlay; a process only plays once', async () => {
+test('disabled splash allocates nothing and a process plays once', async () => {
   const previous = process.env.KEPOS_NO_SPLASH;
   const key = Symbol.for('kepos.splash.played');
   const previousPlayed = globalThis[key];

@@ -70,21 +70,23 @@ const junctionChar = (mask: number): string => {
   return table[mask] || '·';
 };
 
-/** 在网格上记录一条线段的方向位，返回终点该补的入边。 */
+/** 在网格上记录一条正交线段（先竖后横），返回终点该补的入边。 */
 function stamp(grid: Cell[][], mask: (number | undefined)[][], x0: number, y0: number, x1: number, y1: number, color: string) {
+  // 先沿 y 走到目标行，再横向对齐：起点只带一个方向，不会长成 └ ┘ 这类转角。
   let x = x0, y = y0;
-  while (x !== x1 || y !== y1) {
-    let bits = 0;
-    if (x1 > x) bits |= E; else if (x1 < x) bits |= W;
-    if (y1 > y) bits |= S; else if (y1 < y) bits |= N;
-    const row = mask[y];
-    if (row && row[x] !== undefined) row[x] = (row[x] ?? 0) | bits;
+  while (y !== y1) {
+    const bit = y1 > y ? S : N;
+    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | bit;
     if (grid[y]?.[x]) grid[y][x].color = grid[y][x].color || color;
-    if (x !== x1) x += x1 > x ? 1 : -1;
-    else y += y1 > y ? 1 : -1;
-    // 记录反方向，避免终点缺少入边。
-    const opposite = bits & E ? W : bits & W ? E : bits & S ? N : bits & N ? S : 0;
-    if (mask[y] && mask[y][x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | opposite;
+    y += y1 > y ? 1 : -1;
+    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | (bit === S ? N : S);
+  }
+  while (x !== x1) {
+    const bit = x1 > x ? E : W;
+    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | bit;
+    if (grid[y]?.[x]) grid[y][x].color = grid[y][x].color || color;
+    x += x1 > x ? 1 : -1;
+    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | (bit === E ? W : E);
   }
 }
 
@@ -236,91 +238,79 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   const agents = (snapshot.agents || []).slice(0, 48);
   const tasks = snapshot.tasks || [];
   const byAgent = new Map(agents.map(agent => [agent.name, agent]));
-  const taskByAgent = new Map(tasks.filter(task => !task.parentWorkerId).map(task => [task.agent, task]));
-  const realNodes: VisualNode[] = agents.map(agent => ({ id: `agent:${agent.id}`, label: agent.name, kind: 'agent', task: taskByAgent.get(agent.name), groupKey: taskByAgent.get(agent.name)?.groupKey || 'default', index: 0, x: 0, y: 0 }));
+  // 代表席始终显示它最近一项任务的状态色（完成/失败仍可读），
+  // 但只有进行中的任务才让它离开原位去组小环——任务一结束就回位。
+  const latestByAgent = new Map(
+    tasks.filter(task => !task.parentWorkerId).map(task => [task.agent, task]),
+  );
+  const realNodes: VisualNode[] = agents.map(agent => {
+    const latest = latestByAgent.get(agent.name);
+    const task = latest && isTaskCurrent(latest) ? latest : undefined;
+    // 终态任务仍挂在代表上，用于显示状态色，但不参与分组（groupKey 保持 'default'）。
+    const display = latest;
+    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: display, groupKey: task ? (task.groupKey || 'default') : 'default', index: 0, x: 0, y: 0 };
+  });
   for (const task of tasks) {
     const agent = byAgent.get(task.agent);
     if (agent && !task.parentWorkerId) continue;
+    // 子任务结束同样收线，不再留在环上。
+    if (!isTaskCurrent(task)) continue;
     // 任务节点用标题做标签：同名代表派生的多个任务不再长成一对双胞胎。
     realNodes.push({ id: `task:${task.id}`, label: plain(task.title || '') || task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(realNodes.length / 12)}`, index: 0, x: 0, y: 0 });
   }
-  // 真实席位沿 48 槽均匀分布、空席填隙，避免全部挤在起弧的一段；多环（活跃>12）保持分组顺序。
-  // 不论哪个分支，节点 index 都必须连续覆盖 0..n-1：键盘 ↑↓、点击命中和 Ctrl+X 都按
-  // index 寻址（hits[0] 是 index=-1 的总理座），漏赋值会让选中态整体错位。
-  const activeCount = tasks.filter(task => activeStates.has(task.state || '')).length;
-  const nodes: VisualNode[] = [];
-  if (realNodes.length < 48 && activeCount <= 12) {
-    const step = 48 / realNodes.length;
-    const slots: (VisualNode | undefined)[] = Array(48).fill(undefined);
-    realNodes.forEach((node, k) => {
-      let slot = Math.round(k * step) % 48;
-      while (slots[slot]) slot = (slot + 1) % 48; // 舍入碰撞沿环右移找空位，绝不覆盖已占席位。
-      slots[slot] = node;
-    });
-    const empty = (index: number): VisualNode => ({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
-    for (let index = 0; index < 48; index++) { const slot = slots[index]; if (slot) { slot.index = index; nodes.push(slot); } else nodes.push(empty(index)); }
-  } else {
-    realNodes.forEach((node, index) => { node.index = index; });
-    nodes.push(...realNodes);
-    for (let index = nodes.length; index < 48; index++) nodes.push({ id: `seat:${index}`, label: `席位 ${index + 1}`, kind: 'agent', groupKey: 'default', index, x: 0, y: 0 });
-    if (nodes.length > 48) nodes.length = 48;
-  }
+  // 只铺真实席位，不补空席。代表少的时候圆环本身就小，不需要占位符撑场面。
+  // index 连续覆盖 0..n-1：键盘 ↑↓、点击命中和 Ctrl+X 都按 index 寻址
+  //（hits[0] 是 index=-1 的总理座），漏赋值会让选中态整体错位。
+  const nodes: VisualNode[] = realNodes.slice(0, 48);
+  nodes.forEach((node, index) => { node.index = index; });
   return nodes;
 }
 
-// 同心环：按父子深度分层，边只跨相邻层。
-// 旧实现把多环画成互相拥挤的小圆，半径掉到 3–10 格，12 个节点在周长 ~48 格里只隔 4 格，
-// 连线全部收向中心，视觉上就是一团乱麻。层数由最深委派链决定，半径吃满画布。
-function nodeDepth(node: VisualNode, byWorker: Map<string, VisualNode>): number {
-  let depth = 0, current = node, guard = 0;
-  while (current?.task?.parentWorkerId && guard++ < 8) {
-    const parent = byWorker.get(current.task.parentWorkerId);
-    if (!parent) break;
-    depth++; current = parent;
-  }
-  return depth;
-}
-
+// 议会形态：默认一个 48 席大圆环。活跃任务变多时按分组聚成若干小环，
+// 每组的第一席（代理总代）朝向总理所在的中心，其余席位绕它排开。
+// 这是既定的产品形态——不要改成同心环或泳道。
 function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets) {
+  const active = nodes.filter(node => node.task).length;
+  const ringCount = active > 12 ? Math.max(2, Math.ceil(nodes.length / 12)) : 1;
+  const groups: VisualNode[][] = [];
+  if (ringCount === 1) groups.push(nodes);
+  else {
+    // 按 groupKey 聚组，每组最多 12 席。
+    const map = new Map<string, VisualNode[]>();
+    for (const node of nodes) { const list = map.get(node.groupKey) || []; list.push(node); map.set(node.groupKey, list); }
+    for (const list of map.values()) for (let index = 0; index < list.length; index += 12) groups.push(list.slice(index, index + 12));
+  }
   const canvasWidth = width >= 120 ? width - 38 : width;
   const center = { x: Math.floor(canvasWidth / 2), y: Math.floor(height / 2) };
-  const byWorker = new Map(nodes.filter(node => node.task).map(node => [node.task!.id, node]));
-  // 有任务或本身是配置代表的节点上环；空席留在最外环补足 48 宫格。
-  const ringed = nodes.filter(node => node.task || !node.id.startsWith('seat:'));
-  const emptySeats = nodes.filter(node => node.id.startsWith('seat:'));
-  const depthOf = new Map<VisualNode, number>();
-  for (const node of ringed) depthOf.set(node, nodeDepth(node, byWorker));
-  const maxDepth = ringed.reduce((max, node) => Math.max(max, depthOf.get(node) ?? 0), 0);
-  const ringCount = Math.max(1, maxDepth + 1);
-  const buckets: VisualNode[][] = Array.from({ length: ringCount }, () => []);
-  for (const node of ringed) buckets[depthOf.get(node) ?? 0]!.push(node);
-  // 内环要给总理座盒留出半径，逐环向外铺开；随环数线性增长而不是塌缩。
-  const outerX = Math.max(12, Math.min(canvasWidth / 2 - 4, (canvasWidth / 2 - 4) * zoom));
-  const outerY = Math.max(4, Math.min(height / 2 - 3, (height / 2 - 3) * zoom));
   const tracks: { cx: number; cy: number; rx: number; ry: number }[] = [];
-  buckets.forEach((group, depth) => {
-    const share = ringCount === 1 ? 1 : 0.52 + (depth / Math.max(1, ringCount - 1)) * 0.48;
-    const rx = Math.max(10, outerX * share), ry = Math.max(3, outerY * share);
-    tracks.push({ cx: center.x, cy: center.y, rx, ry });
+  // 小环的环绕轨道：随 zoom 一起缩放，和环本身保持一致。
+  const orbit = ringCount === 1 ? 0 : Math.min(canvasWidth * .22, 18) * zoom;
+  const orbitY = ringCount === 1 ? 0 : Math.min(height * .24, 7) * zoom;
+  groups.forEach((group, ringIndex) => {
+    const ringCenter = ringCount === 1 ? center : {
+      x: Math.round(center.x + Math.cos((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * orbit),
+      y: Math.round(center.y + Math.sin((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * orbitY),
+    };
+    // 半径按席位数量决定：席位少时用小圆，席位多时再撑满画布。
+    // zoom 作用于整个环布局（含小环自身半径），否则缩放只会拉开环间距、环本身不动。
+    const need = Math.max(1, group.length);
+    const baseRx = Math.min(canvasWidth / 2 - 5, Math.max(8, (need * 6) / (Math.PI * 2) + 6));
+    const baseRy = Math.min(height / 2 - 3, Math.max(3, (need * 2.2) / (Math.PI * 2) + 2));
+    // 单环与分组小环共用同一套缩放，保证放大/缩小是整体一致的。
+    // 下限只守住"不压到总理座"（盒子约 12 列宽），留出 2 格呼吸。
+    const radiusX = Math.max(9, Math.round(baseRx * zoom));
+    const radiusY = Math.max(3, Math.round(baseRy * zoom));
+    tracks.push({ cx: ringCenter.x, cy: ringCenter.y, rx: radiusX, ry: radiusY });
+    // 小环的第一席（代理总代）落在朝总理的一侧，其余席位绕它排开。
+    const facing = ringCount === 1 ? -Math.PI / 2 : Math.atan2(center.y - ringCenter.y, center.x - ringCenter.x);
     group.forEach((node, index) => {
-      const angle = (index / Math.max(1, group.length)) * Math.PI * 2 - Math.PI / 2;
+      const angle = facing + (index / Math.max(1, group.length)) * Math.PI * 2;
       const offset = offsets[node.id] || { x: 0, y: 0 };
-      node.x = Math.round(center.x + Math.cos(angle) * rx + offset.x);
-      node.y = Math.round(center.y + Math.sin(angle) * ry + offset.y);
+      node.x = Math.round(ringCenter.x + Math.cos(angle) * radiusX + offset.x);
+      node.y = Math.round(ringCenter.y + Math.sin(angle) * radiusY + offset.y);
     });
   });
-  // 空席铺最外一圈，不与已有席位争半径。
-  if (emptySeats.length) {
-    const rx = Math.max(12, outerX + 2), ry = Math.max(4, outerY + 1);
-    tracks.push({ cx: center.x, cy: center.y, rx, ry });
-    emptySeats.forEach((node, index) => {
-      const angle = (index / Math.max(1, emptySeats.length)) * Math.PI * 2 - Math.PI / 2;
-      const offset = offsets[node.id] || { x: 0, y: 0 };
-      node.x = Math.round(center.x + Math.cos(angle) * rx + offset.x);
-      node.y = Math.round(center.y + Math.sin(angle) * ry + offset.y);
-    });
-  }
-  // 整数网格会让座位重合（48 任务多环时实测出现 2 组），后到者沿邻近空位挪开，保证可见可点。
+  // 座位重合时沿邻近空位挪开，保证每个席位可见可点。
   const occupied = new Set<string>();
   for (const node of nodes) {
     const key = node.x + ',' + node.y;
@@ -347,20 +337,12 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
-  // 每层画一圈轨道虚线；多环时逐层可见，读得出"同心"结构。
-  for (const track of layout.tracks) {
-    const { cx, cy, rx, ry } = track;
-    const steps = Math.max(64, Math.round((rx + ry) * 2));
-    for (let i = 0; i < steps; i++) {
-      const angle = (i / steps) * Math.PI * 2;
-      const x = Math.round(cx + Math.cos(angle) * rx), y = Math.round(cy + Math.sin(angle) * ry);
-      const cell = grid[y]?.[x];
-      if (cell && cell.char === ' ') put(grid, x, y, '·', 'dim');
-    }
-  }
+  // 不画轨道虚线：满屏小圆点没有语义，只会盖住代表标签、抢走注意力。
+  // 圆桌形态由席位本身的排布给出。
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
-  // 默认不画任何边：48 席的连线很容易糊成网。只有选中某个席位时，
-  // 才把 总理 → 代表 → Worker 这条祖先链画出来，其余席位保持 dim。
+  // 交互连线：总理与正在交互的代表之间连一条线。
+  // 选中某席位时，画出 总理 → 该席位（及其委派链）的通路；未选中时
+  // 只给活跃席位画一条朝内的短茎，读者仍能看出"谁在向总理汇报"。
   const selectedNodeEarly = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   const chain = new Set<string>();
   if (selectedNodeEarly) {
@@ -370,30 +352,35 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   }
   const edgeMask: (number | undefined)[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => 0 as number | undefined));
   if (selectedNodeEarly) {
+    // 选中态：从总理座盒左右外侧出线，绝不与 "◉  总理" 字样重叠。
     for (const node of layout.nodes) {
       if (!chain.has(node.id)) continue;
       const parent = node.task?.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined;
-      stamp(grid, edgeMask, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, 'accent');
+      const start = parent ? { x: parent.x, y: parent.y } : { x: node.x >= main.x ? main.x + 5 : main.x - 2, y: main.y };
+      stamp(grid, edgeMask, start.x, start.y, node.x, node.y, 'accent');
     }
     renderConnections(grid, edgeMask, 'accent');
   }
-  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '总理', 'accent');
+  // 先铺线再把总理座写上去：文字永远压在最上层，不会被连接符覆盖。
+  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text');
+  put(grid, main.x + 1, main.y, ' 总理', 'accent');
   const hits: GraphHit[] = [main];
   for (const node of layout.nodes) {
     const selectedNode = selected === node.index;
-    const empty = node.id.startsWith('seat:');
     const approval = node.task?.state === 'NEEDS_HUMAN';
-    // 选中时非本链席位退为 dim，让"谁属于这条链"一眼可见。
+    // 选中时只让本链席位提亮；其余席位保留自己的状态色（排队、待审批仍要看得见），
+    // 只是不再抢眼——状态信息不能被选中态掩盖。
     const onChain = chain.size === 0 || chain.has(node.id);
-    const color = empty ? 'muted' : !onChain ? 'dim' : node.task ? stateColor(node.task, node.index) : 'idle';
+    const color = node.task ? stateColor(node.task, node.index) : 'idle';
     const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || '');
-    const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■';
+    const marker = selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■';
     const shake = approval ? Math.floor(now / 400) % 2 : 0;
     put(grid, node.x - 1 + shake, node.y, marker, color);
     if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚠', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
-    // 有任务的席位显示名字（选中席位任何布局都显示）；用可见宽度居中，CJK 不偏移。
-    const labelled = selectedNode || (node.task && layout.tracks.length <= 1 ? node : undefined);
-    if (labelled) put(grid, node.x - Math.floor(visibleWidth(plain(node.label)) / 2), node.y + 1, truncateToWidth(plain(node.label), 10), color);
+    // 每个席位都显示名字：没有任务时也能看清这 48 席是谁。
+    // 空闲代表的文字用 dim，有任务的用状态色，选中时整行提亮。
+    const nameColor = selectedNode ? 'accent' : color;
+    put(grid, node.x - Math.floor(visibleWidth(plain(node.label)) / 2), node.y + 1, truncateToWidth(plain(node.label), 10), nameColor);
     hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id });
   }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
@@ -401,8 +388,8 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   if (detail) bubble(grid, selectedNode || { id: 'main', label: '总理', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
   const lines = grid.map(row => colorize(row, theme));
   const info = selected === -1 ? '总理 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
-  lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 层同心环`, safeWidth)));
+  lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount === 1 ? '一个议会环' : layout.ringCount + ' 个分组环'}`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  ⚠ 待审批 · 选中看链路 · Tab 列表 · F10 返回 · 拖动/缩放', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · ■ 代表  ⚠ 待审批 · 选中看链路 · Tab 列表 · F10 返回 · 拖动/缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }
