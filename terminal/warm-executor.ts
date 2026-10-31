@@ -56,7 +56,7 @@ export class WarmExecutor {
    ...(toolAllow.length ? ['--tools', toolAllow.join(',')] : ['--no-tools']),
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
-   '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources.${mcpServers.length ? ` Approved MCP servers for this task only: ${mcpServers.join(', ')}.` : ''} Assigned role: ${profile.role}.`];
+   '--append-system-prompt', `You are a delegated read-only worker in Kepos. Never access credentials; never modify files or run mutating commands; work only on the assigned task and return verifiable findings with sources. Do not claim or guess your own model identity; defer to your assigned role. Approved MCP servers: ${mcpServers.length ? mcpServers.join(', ') : 'none'}. Assigned role: ${profile.role}.`];
   // Sandbox scope travels via environment variables: Pi's CLI rejects unknown options,
   // so the read-guard configuration must never ride on argv.
   const env = workerEnv(process.env, process.pid, { provider: profile.provider, model: profile.model,

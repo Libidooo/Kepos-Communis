@@ -49,3 +49,8 @@ conpty-result.json
 
 # Brand artwork is kept out of the source release until the visual identity is finalized.
 /docs/assets/
+
+# Locally generated install packages, build reports and ad-hoc probes.
+/deliverables/
+/close-window-checker.*
+
