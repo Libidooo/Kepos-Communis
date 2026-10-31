@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { renderGraph, renderCouncilList, councilTasks } from '../dist/terminal/graph-view.js';
 import { Desk } from '../dist/terminal/desk.js';
 import { visibleWidth } from '@earendil-works/pi-tui';
+import { stripVTControlCharacters } from 'node:util';
 import { fileURLToPath } from 'node:url';
 
 const theme = { fg: (_color, value) => value };
@@ -14,8 +15,7 @@ test('idle seats stay unconnected; selecting a seat draws the line to 总理', (
   const empty = renderGraph({ agents, tasks: [] }, 100, 32, -1, 1, theme);
   // 只渲染真实代表：1 个总理座 + 已知代表，不再补 48 个空席。
   assert.equal(empty.hits.length, 1 + agents.length);
-  assert.ok(empty.lines.slice(0, 32).join('').includes('■'));
-  assert.ok(!empty.lines.slice(0, 32).join('').includes('○'), 'no placeholder seat circles');
+  assert.ok(empty.lines.slice(0, 32).join('').includes('◌'), 'idle seats use ◌');
   assert.equal(/[─│╱╲┼]/.test(withoutBox(empty)), false);
   // 交互发生（选中某个代表）时才连线；未选中保持圆桌干净。
   const idle = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, -1, 1, theme);
@@ -102,6 +102,34 @@ test('layout keeps every seat on its own cell even with a full council', () => {
   const view = renderGraph({ agents: crew, tasks }, 140, 40, -1, 1, theme);
   const keys = new Set(view.hits.map(hit => hit.x + ',' + hit.y));
   assert.equal(keys.size, view.hits.length, 'no two seats share a cell');
+});
+
+// 回归：truncateToWidth 在截断处插入 \x1b[0m，而环图逐字符建格会把 ESC 当字符写进画面，
+// 于是 "[0m...[0m" 直接显示出来（48 席里所有长角色名都中招）。网格文本必须不含转义序列。
+test('long seat labels never leak escape sequences into the character grid', () => {
+  // 模拟真实主题：每个字符都被 SGR 包裹，泄漏的 ESC 会变成独立一格、后面的 [0m 成为可见文本。
+  const colored = { fg: (color, value) => `\x1b[38;5;${['accent', 'text', 'dim', 'muted'].includes(color) ? 250 : 240}m${value}\x1b[0m` };
+  const visibleText = line => stripVTControlCharacters(line);
+  const names = ['政策咨询评议官', '利益相关者分析官', '政策影响评估官', '可复现性审查官', '发表准备审查官', '隐私与数据官', '知识产权官', '学术编辑'];
+  const crew = names.map((name, i) => ({ id: String(i), name }));
+  const tasks = crew.map((agent, i) => ({ id: 'w' + i, agent: agent.name, state: 'RUNNING', tool: 'read', checkpoint: '已读取配置文件并完成比对' }));
+  for (const width of [100, 120, 160]) {
+    const view = renderGraph({ agents: crew, tasks }, width, 36, -1, 1, colored);
+    const visible = visibleText(view.lines.join('\n'));
+    assert.equal(/\[0m/.test(visible), false, `width ${width}: literal reset leaked`);
+    assert.equal(/\[39m|\[38;/.test(visible), false, `width ${width}: literal SGR leaked`);
+  }
+  // 侧栏详情里的进展/工具/输出同样走网格，长文本截断后也不能出现残片。
+  const view = renderGraph({ agents: crew, tasks }, 160, 36, 0, 1, colored);
+  assert.ok(view.lines.every(line => !/\[0m/.test(visibleText(line))));
+});
+
+test('seat labels truncate by visible width, not by escape-laden strings', () => {
+  const crew = [{ id: '0', name: '政策咨询评议官' }];
+  const view = renderGraph({ agents: crew, tasks: [] }, 120, 32, -1, 1, theme);
+  const text = view.lines.join('');
+  assert.ok(text.includes('政策'), 'label keeps its head');
+  assert.equal(text.includes('评议官'), false, 'label is truncated to the seat budget');
 });
 
 test('council task filters pick active, pending and match keywords', () => {
@@ -241,14 +269,17 @@ test('human approval uses a bright hammer and a bounded two-frame tremble', () =
 
 test('seat states distinguish idle, queued, review, success, failure and cancellation', () => {
   const view = task => renderGraph({ agents, tasks: task ? [task] : [] }, 100, 24, -1, 1, theme).lines.join('');
-  assert.ok(view().includes('\x1b[38;2;116;139;129m■'));
-  assert.ok(view({ id: 'queued', agent: 'A', state: 'QUEUED' }).includes('\x1b[38;2;157;126;76m■'));
+  // 符号携带状态：就绪 ◌、排队 ◔、完成 ●、失败 ⊘、取消 ○；
+  // 待审批与运行都用呼吸圆，靠黄色 + 席位中央的 ! 区分。
+  assert.ok(view().includes('◌'), 'idle seat uses ◌');
+  assert.ok(view({ id: 'queued', agent: 'A', state: 'QUEUED' }).includes('◔'), 'queued seat uses ◔');
+  assert.ok(view({ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN' }).includes('!'), 'pending seat carries !');
+  assert.ok(view({ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN' }).includes('◉') || view({ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN' }).includes('◎'), 'pending seat stays in the live breathing shape');
   assert.ok(view({ id: 'running', agent: 'A', state: 'RUNNING', reviewDue: true }).includes('!'));
-  const colored = { fg: (color, value) => `[${color}]${value}` };
-  const state = value => renderGraph({ agents, tasks: [{ id: value, agent: 'A', state: value }] }, 100, 24, -1, 1, colored).lines.join('');
-  assert.ok(state('SUCCEEDED').includes('[success]■'));
-  assert.ok(state('FAILED').includes('[error]■'));
-  assert.ok(state('CANCELLED').includes('[dim]■'));
+  const state = value => renderGraph({ agents, tasks: [{ id: value, agent: 'A', state: value }] }, 100, 24, -1, 1, { fg: (_c, v) => v }).lines.join('');
+  assert.ok(state('SUCCEEDED').includes('●'), 'success uses ●');
+  assert.ok(state('FAILED').includes('⊘'), 'failure uses ⊘');
+  assert.ok(state('CANCELLED').includes('○'), 'cancelled uses ○');
 });
 
 test('real orbital-76 theme renders every running-task palette color without throwing', async () => {
@@ -300,7 +331,7 @@ test('streaming assistant text stays visible while the message mutates in place'
 
 test('running seats pulse between glyphs while queued stays static', () => {
   const run = now => renderGraph({ agents, tasks: [{ id: 'w', agent: 'A', state: 'RUNNING' }] }, 100, 24, -1, 1, theme, false, {}, now);
-  assert.notDeepEqual(run(0).lines, run(600).lines, 'running seat alternates ■/▪');
+  assert.notDeepEqual(run(0).lines, run(700).lines, 'running seat breathes ◉/◎');
   const queued = now => renderGraph({ agents, tasks: [{ id: 'q', agent: 'A', state: 'QUEUED' }] }, 100, 24, -1, 1, theme, false, {}, now);
   assert.deepEqual(queued(0).lines, queued(600).lines, 'queued seat is static');
 });

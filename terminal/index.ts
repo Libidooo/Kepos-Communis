@@ -27,7 +27,27 @@ import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel,
 import { dataRoot } from './paths.ts';
 export { fit, historyLines };
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
-const DEFAULT_COUNCIL_ROLE_COUNT = 10;
+const DEFAULT_COUNCIL_ROLE_COUNT = 48;
+// 48 席显式种子：覆盖治理、代码、法律合规、文书、学术、政策、工具操作与产品。
+// 顺序决定初始化时的席位顺序；initCrew 也只在空席位上补齐，已有代表 ID 不受影响。
+const COUNCIL_SEED: readonly CouncilRoleKey[] = [
+  // 治理与核心（6）
+  'deputy_chair', 'strategist', 'mediator', 'archivist', 'scribe', 'cartographer',
+  // 代码与工程（10）
+  'surveyor', 'engineer', 'software_architect', 'code_reviewer', 'test_strategist', 'qa_engineer',
+  'security_engineer', 'devops_engineer', 'performance_engineer', 'refactoring_planner',
+  // 法律合规（5）
+  'legal_counsel', 'contract_reviewer', 'compliance_officer', 'privacy_officer', 'ip_officer',
+  // 文书与发表（5）
+  'academic_editor', 'publication_readiness_auditor', 'submission_editor', 'policy_brief_editor', 'peer_response_officer',
+  // 学术研究（9）
+  'research_architect', 'literature_strategist', 'source_verifier', 'methodologist', 'statistical_reviewer',
+  'ethics_reviewer', 'peer_reviewer', 'devils_advocate', 'reproducibility_auditor',
+  // 政策（6）
+  'policy_researcher', 'policy_analyst', 'regulatory_monitor', 'impact_assessor', 'stakeholder_mapper', 'consultation_reviewer',
+  // 核验与工具操作（7）
+  'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'dependency_engineer', 'incident_investigator',
+];
 export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let tool='';let pulse=0;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
@@ -50,10 +70,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const applyApprovalPolicy=()=>{if(!baselineTools.length)return;try{pi.setActiveTools(currentPolicy()==='readonly'?restrictTools(baselineTools):baselineTools);}catch(error){desk&&(desk.notice='审批模式切换失败：'+clean(error));scheduleRepaint();}};
  function initializeCrew(ctx:any){
   if(ctx.mode!=='tui'||!ctx.model?.id||ctx.model.id==='unknown')return;
-  // Seed the ten council seats exactly once; afterwards deleted members stay deleted.
-  if(config.initialized)return;
-  const locale=councilLocale(process.env.KEPOS_LOCALE);const existingKeys=new Set(config.agents.map(agent=>agent.roleKey).filter(Boolean));const existingNames=new Set(config.agents.map(agent=>agent.name));let changed=false;
-  for(const role of COUNCIL_ROLES){if(config.agents.length>=DEFAULT_COUNCIL_ROLE_COUNT)break;if(existingKeys.has(role.key))continue;const name=roleName(role,locale);if(existingNames.has(name))continue;config.agents.push({id:randomUUID(),name,roleKey:role.key,role:rolePrompt(role,locale),model:ctx.model.id,provider:ctx.model.provider});existingKeys.add(role.key);existingNames.add(name);changed=true;}
+  // 按 48 席清单补齐空席：已有的代表（含用户手工配置的）一律保留 ID、名称与模型，
+  // 只在缺少该角色时新开席位。清空全部代表后才会重新播种。
+  const locale=councilLocale(process.env.KEPOS_LOCALE);const existingKeys=new Set(config.agents.map(agent=>agent.roleKey).filter((key):key is CouncilRoleKey=>!!key));const existingNames=new Set(config.agents.map(agent=>agent.name));let changed=false;
+  const seedOrder=COUNCIL_SEED.map(key=>councilRole(key)).filter((role):role is NonNullable<typeof role>=>!!role);
+  for(const role of [...seedOrder,...COUNCIL_ROLES.filter(role=>!COUNCIL_SEED.includes(role.key))]){
+   if(config.agents.length>=DEFAULT_COUNCIL_ROLE_COUNT)break;
+   if(existingKeys.has(role.key))continue;
+   const name=roleName(role,locale);if(existingNames.has(name))continue;
+   config.agents.push({id:randomUUID(),name,roleKey:role.key,role:rolePrompt(role,locale),model:ctx.model.id,provider:ctx.model.provider});
+   existingKeys.add(role.key);existingNames.add(name);changed=true;
+  }
   if(!config.initialized||changed){config.initialized=true;save();}
  }
  const createLinkedSession=(ctx:any,cwd:string,title:string)=>{const piPath=createSessionFile(cwd,title,sessionDir(ctx));const logical=keposSessionStore.createSession({cwd,title,piSessionFile:piPath});config.sessionLinks[piPath]=logical.logicalSessionId;save();return piPath;};
@@ -489,6 +516,15 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  if(action.kind==='editcrew'){const choice=await ui.select('编辑成员',config.agents.map(a=>a.name));const crew=config.agents.find(a=>a.name===choice);if(crew)await crewForm(local,crew.id);return;}
  if(action.kind==='delegate'){await delegateForm(local);return;}
   if(action.kind==='cancel-selected'){const task=pool.tasks.find(item=>item.id===action.id&&item.parentSessionId===ctx.sessionManager.getSessionId());if(!task){ui.notify('该席位当前没有可销毁的子 Worker；等待审批的门禁请用 F2 处理','warning');return;}if(terminalStates.has(task.status)){ui.notify(task.agent+' 的任务已结束（'+task.status+'），无需取消','info');return;}if(await ui.confirm('销毁这个子 Worker？',task.agent+' · '+task.title.slice(0,100))){pool.cancel(task.id);ui.notify('已请求终止 '+task.agent);}return;}
+ if(action.kind==='message-agent'){
+  // 书案直达：给代表留言。任务在跑就转发进它的会话；已结束就按原配置开新一轮。
+  const crew=config.agents.find(a=>a.id===action.id)||config.agents.find(a=>a.name===action.id);
+  if(!crew){ui.notify('找不到该代表；可能已被移除或重命名','warning');return;}
+  if(desk){desk.editor.setText('');desk.savedDraftBeforeCommand='';}
+  const sourceSession=ctx.sessionManager.getSessionFile()||ctx.sessionManager.getSessionId();
+  void pool.run(crew,action.text,ctx.cwd,sourceSession,DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId()).then(t=>{ui.notify(`${t.agent}：${t.status}。F10 书案查看产出`,'info');}).catch(error=>{ui.notify('派发失败：'+clean(error),'error');if(desk){desk.editor.setText(action.text);desk.savedDraftBeforeCommand=action.text;}});
+  ui.notify(`正在唤醒 ${crew.name}（${crew.model}）…`);return;
+ }
  if(action.kind==='cancel'){const tasks=pool.tasks.filter(t=>t.parentSessionId===ctx.sessionManager.getSessionId()&&!terminalStates.has(t.status));if(!tasks.length){ui.notify('当前会话没有运行中的子任务');return;}const labels=tasks.map(t=>t.agent+' / '+t.id);const selected=await ui.select('中止子任务',labels);const task=tasks[labels.indexOf(selected)];if(task&&await ui.confirm('中止任务？',task.title))pool.cancel(task.id);return;}
  if(action.kind==='model'){if(blocked(ctx))throw Error('请等待当前任务结束再切换模型');const list=await models(ctx);const currentModel=ctx.model?.id&&ctx.model.id!=='unknown'?`${ctx.model?.provider||'—'} / ${ctx.model.id}`:'尚未登录';
   const relays=readRelays(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));

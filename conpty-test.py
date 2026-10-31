@@ -122,7 +122,7 @@ try:
   # 修复后的进程级 hardKill 必须清掉预热子进程——不允许任何 node 残留。
   # 注意：ClosePseudoConsole 之后本进程堆不可信（实测 0xc0000374），所以关闭是最后
   # 一个 ctypes 调用；随后的断言写入 checker 文件、在全新解释器进程里执行。
-  start=len(output());write('/orbital-warm\r');wait_for('预热执行器已就绪',15,start);time.sleep(1)
+  start=len(output());write('/kepos-warm\r');wait_for('预热执行器已就绪',15,start);time.sleep(1)
   cmd_pid=pi.dwProcessId
   def kepos_nodes():
    ps=("$cmd="+str(cmd_pid)+";"
@@ -236,7 +236,7 @@ try:
  # Real supervisor -> two independent child Agents -> supervisor result loop.
  time.sleep(.6)
  marker_a='SUBA-'+str(int(time.time()));marker_b='SUBB-'+str(int(time.time()))
- write('请必须调用 orbital_delegate 工具，并行给审查A和审查B各一个任务，seconds 都设为60：审查A只回复 '+marker_a+'，审查B只回复 '+marker_b+'。收到两个结果后汇总，不要自己伪造标记。\r')
+ write('请必须调用 kepos_delegate 工具，并行给审查A和审查B各一个任务，seconds 都设为60：审查A只回复 '+marker_a+'，审查B只回复 '+marker_b+'。收到两个结果后汇总，不要自己伪造标记。\r')
  task_file=os.path.join(workspace,'tasks','tasks.json');until=time.time()+120;tasks=[]
  while time.time()<until:
   try:tasks=worker_tasks()

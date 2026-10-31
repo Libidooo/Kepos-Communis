@@ -7,9 +7,10 @@ export const SPLASH_TIMING = {
   lightStartMs: 720,
   lightEndMs: 1520,
   wordmarkStartMs: 880,
-  sweepStartMs: 1120,
-  sweepEndMs: 1640,
-  revealMs: 1720,
+  // A slower sweep: the highlight needs ~1.3s to cross, not 0.5s.
+  sweepStartMs: 1080,
+  sweepEndMs: 2380,
+  revealMs: 2460,
   holdMs: 1000,
   fadeMs: 240,
 } as const;
@@ -28,16 +29,17 @@ const QUADRANTS = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', 
 
 // A 5x7 stencil grotesque: squared counters, flat terminals, cut diagonals on K/M/N.
 const DISPLAY: Record<string, string[]> = {
-  K: ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
-  E: ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
-  P: ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
-  O: ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
-  S: ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
-  C: ['01111', '10000', '10000', '10000', '10000', '10000', '01111'],
-  M: ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
-  U: ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
-  N: ['10001', '11001', '11001', '10101', '10011', '10011', '10001'],
-  I: ['11111', '00100', '00100', '00100', '00100', '00100', '11111'],
+  // Heavy square grotesque: every stroke is two full cells wide, matching the reference lockup.
+  K: ['1100011', '1100110', '1101100', '1111000', '1111000', '1101100', '1100110', '1100011', '1100011'],
+  E: ['1111111', '1111111', '1100000', '1100000', '1111110', '1111110', '1100000', '1111111', '1111111'],
+  P: ['1111110', '1111111', '1100011', '1100011', '1111111', '1111110', '1100000', '1100000', '1100000'],
+  O: ['0111110', '1111111', '1100011', '1100011', '1100011', '1100011', '1100011', '1111111', '0111110'],
+  S: ['0111111', '1111111', '1100000', '1111000', '0111110', '0000111', '0000011', '1111111', '1111110'],
+  C: ['0111111', '1111111', '1100000', '1100000', '1100000', '1100000', '1100000', '1111111', '0111111'],
+  M: ['1100011', '1110111', '1111111', '1111111', '1101011', '1100011', '1100011', '1100011', '1100011'],
+  U: ['1100011', '1100011', '1100011', '1100011', '1100011', '1100011', '1100011', '1111111', '0111110'],
+  N: ['1100011', '1110011', '1111011', '1111111', '1101111', '1100111', '1100011', '1100011', '1100011'],
+  I: ['1111111', '1111111', '0011100', '0011100', '0011100', '0011100', '0011100', '1111111', '1111111'],
 };
 const COMPACT: Record<string, string[]> = {
   K: ['101', '101', '110', '100', '110', '101', '101'],
@@ -75,7 +77,7 @@ export type SplashLectern = {
   samples: SplashSample[];
 };
 export type SplashWordmark = Rect & {
-  variant: Variant; fontWidth: number; fontHeight: number; bits: Uint8Array;
+  variant: Variant; fontWidth: number; fontHeight: number; bits: Uint8Array; bitmapWidth: number; bitmapHeight: number; splitRow: number;
 };
 export type SplashLayout = {
   width: number; height: number; cellAspect: number; gap: number;
@@ -92,7 +94,7 @@ const mix = (a: readonly number[], b: readonly number[], t: number) => a.map((c,
 
 // Square type pixels: two sub-columns by one sub-row renders 10x10 px in a 10x20 cell.
 function textGrid(font: Record<string, string[]>, text: string): boolean[][] {
-  const rows = Array.from({ length: 7 }, () => [] as boolean[]);
+  const rows = Array.from({ length: font.K.length }, () => [] as boolean[]);
   [...text].forEach((char, index) => {
     const glyph = font[char];
     if (!glyph) return;
@@ -102,7 +104,13 @@ function textGrid(font: Record<string, string[]>, text: string): boolean[][] {
   return rows;
 }
 function makeWordmark(font: Record<string, string[]>, variant: Variant, block = 1): SplashWordmark {
-  const lines = [textGrid(font, 'KEPOS'), Array.from({ length: 7 }, () => [] as boolean[]), textGrid(font, 'COMMUNIS')].flat();
+  const glyphRows = font.K.length;
+  const first = textGrid(font, 'KEPOS');
+  const gap = Array.from({ length: Math.max(1, glyphRows - 4) }, () => [] as boolean[]);
+  const second = textGrid(font, 'COMMUNIS');
+  const lines = [...first, ...gap, ...second];
+  // Row ranges let each word take its own treatment: KEPOS solid, COMMUNIS outlined.
+  const firstEnd = first.length, secondStart = first.length + gap.length;
   const fontWidth = Math.max(...lines.map(line => line.length)), fontHeight = lines.length;
   // A terminal sub-pixel is 5x10 px, so one glyph pixel is square only at 2 sub-columns by 1 sub-row.
   // Scaling `block` multiplies BOTH axes by the same factor, keeping the face undistorted.
@@ -115,7 +123,7 @@ function makeWordmark(font: Record<string, string[]>, variant: Variant, block = 
     }
   }));
   // Reserve one extra sub-pixel column for the offset drop shadow so it stays inside the logotype box.
-  return { x: 0, y: 0, width: Math.ceil((subWidth + 1) / 2), height: Math.ceil((subHeight + 1) / 2), variant, fontWidth, fontHeight, bits };
+  return { x: 0, y: 0, width: Math.ceil((subWidth + 1) / 2), height: Math.ceil((subHeight + 1) / 2), variant, fontWidth, fontHeight, bits, bitmapWidth: subWidth, bitmapHeight: subHeight, splitRow: secondStart * block };
 }
 // Largest first: layout picks the biggest lockup that fits, so wide terminals get a poster-scale wordmark.
 const WORDMARKS = [
@@ -124,37 +132,24 @@ const WORDMARKS = [
   makeWordmark(COMPACT, 'compact', 1),
 ];
 
-function projectSeat(radius: number, angle: number, aspect: number) {
-  const nx = Math.sin(angle), ny = -Math.cos(angle), tx = Math.cos(angle), ty = Math.sin(angle);
-  return {
-    nx, ny, tx, ty,
-    // Near-overhead orthographic camera: the ring stays round, depth drops toward the viewer.
-    point: (tangent: number, radial: number): Point => ({
-      x: (nx * (radius + radial) + tx * tangent) * aspect,
-      y: (ny * (radius + radial) + ty * tangent) * SPLASH_VIEW.depth,
-    }),
-  };
-}
-
+// Top-view lectern: one brand trapezoid (narrow outer edge, wider inner edge) per seat.
+// The shape is defined in each seat's own local frame, so all 48 use identical dimensions.
 function buildLecterns(radius: number, aspect: number): SplashLectern[] {
   const slot = 2 * Math.PI * radius / SEATS;
-  // Pure top-view tablet: brand trapezoid proportions (narrow outer edge, wider inner edge),
-  // sized to fill its angular slot so neighbouring desks sit close without touching.
-  // Slightly inside the angular slot: large enough to read as a desk, with a clean gap all round.
-  const outer = slot * .38 / 2, inner = slot * .68 / 2, depth = slot * .62;
+  // Desk proportions sized to fill the angular slot: the trapezoid uses ~68% of the seat
+  // arc for the tabletop, leaving ~32% as visible gap between neighbouring desks.
+  const outer = slot * .28, inner = slot * .38, depth = slot * .82;
   return Array.from({ length: SEATS }, (_, id) => {
-    const angle = id * Math.PI * 2 / SEATS, seat = projectSeat(radius, angle, aspect);
-    // Diagonal seats project their long edge into fewer cells, so they need a little more
-    // clearance than the axis-aligned ones to keep the same visible gap.
-    // Trim by how flat the projected seat is: near the horizontal axis the tabletop
-    // compresses vertically and its cells crowd against its neighbours.
-    const trim = 1 - .16 * Math.abs(Math.sin(angle));
-    const o = outer * trim, i = inner * trim;
+    const angle = id * Math.PI * 2 / SEATS;
+    const nx = Math.sin(angle), ny = -Math.cos(angle), tx = Math.cos(angle), ty = Math.sin(angle);
+    const vertex = (tangent: number, radial: number): Point => ({
+      x: (nx * (radius + radial) + tx * tangent) * aspect,
+      y: (ny * (radius + radial) + ty * tangent) * SPLASH_VIEW.depth,
+    });
     return {
-      id, angle, center: seat.point(0, 0), outward: { x: seat.nx, y: seat.ny }, slot,
-      tablet: [seat.point(-o, depth / 2), seat.point(o, depth / 2), seat.point(i, -depth / 2), seat.point(-i, -depth / 2)],
-      plate: [],
-      samples: [],
+      id, angle, center: vertex(0, 0), outward: { x: nx, y: ny }, slot,
+      tablet: [vertex(-outer, depth / 2), vertex(outer, depth / 2), vertex(inner, -depth / 2), vertex(-inner, -depth / 2)],
+      plate: [], samples: [],
     };
   });
 }
@@ -187,6 +182,21 @@ function sampleSurface(lectern: SplashLectern, part: 'desktop' | 'plaque', polyg
 
 const layoutCache = new Map<string, SplashLayout | null>();
 
+// Supersample a polygon onto the half-cell grid; returns covered sub-cells with coverage.
+function rasterise(polygon: Point[]): [number, number, number][] {
+  const x0 = Math.floor(Math.min(...polygon.map(p => p.x)) * 2), x1 = Math.ceil(Math.max(...polygon.map(p => p.x)) * 2);
+  const y0 = Math.floor(Math.min(...polygon.map(p => p.y)) * 2), y1 = Math.ceil(Math.max(...polygon.map(p => p.y)) * 2);
+  const out: [number, number, number][] = [];
+  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+    let hits = 0;
+    for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
+      if (inside({ x: (x + (sx + .5) / 4) / 2, y: (y + (sy + .5) / 4) / 2 }, polygon)) hits++;
+    }
+    if (hits >= 5) out.push([x, y, hits]);
+  }
+  return out;
+}
+
 export function layoutSplash(width: number, rows: number, options: SplashOptions = {}): SplashLayout | null {
   const W = extent(width), H = extent(rows);
   const cellAspect = Number.isFinite(options.cellAspect) ? Math.max(1, Math.min(3, options.cellAspect!)) : 2;
@@ -207,34 +217,50 @@ function computeLayout(W: number, H: number, cellAspect: number): SplashLayout |
     // Try every radius from the largest plausible one downwards and let the measured
     // footprint decide — geometry here is not linear enough for a safe closed-form budget.
     // Keep the ring at least as wide as the logotype so the lockup stays balanced.
-    const minRing = Math.max(24, Math.round(wordmark.width * .9));
-    for (let radius = 20; radius >= 5; radius -= .25) {
-      // Below this slot size 48 separate lecterns cannot coexist; shrink the ring instead of merging shapes.
-      if (2 * Math.PI * radius / SEATS < .80) continue;
+    // The ring is the primary subject: keep it at least a third of the terminal, and fall
+    // back to a narrower wordmark rather than letting the logotype squeeze the circle.
+    const minRing = Math.max(Math.round(W * .34), 30);
+    // Grow the ring until 48 identical trapezoid lecterns fit with a clear gap between them.
+    for (let radius = 22; radius >= 6; radius -= .25) {
       const lecterns = buildLecterns(radius, cellAspect);
-      // Only near-side plates hang below the ring; far-side ones tuck up behind their tablets.
-      const tablets = lecterns.flatMap(seat => seat.tablet);
-      const nearPlate = lecterns.flatMap(seat => seat.center.y > 0 ? seat.plate : []);
-      const vertices = [...tablets, ...nearPlate];
-      const rx = Math.max(...vertices.map(p => Math.abs(p.x))), ry = Math.max(...vertices.map(p => Math.abs(p.y)));
-      const ringWidth = Math.ceil(rx * 2) + 2, ringHeight = Math.ceil(ry * 2) + 2;
+      // 48 desks in a small terminal cannot all stay fully apart; the last seat may share a
+      // sub-cell with the first. The first desk wins, so the silhouette stays regular.
+      let drawn = 0;
+      for (const seat of lecterns) {
+        const cells = rasterise(seat.tablet);
+        if (!cells.length) continue;
+        drawn++;
+        seat.samples = cells.map(([x, y, hits]) => ({ x, y, part: 'desktop' as const, coverage: hits / 16 }));
+      }
+      if (drawn !== SEATS) continue;
+      const xs = lecterns.flatMap(seat => seat.samples.map(s => s.x));
+      const ys = lecterns.flatMap(seat => seat.samples.map(s => s.y));
+      const ringWidth = Math.ceil((Math.max(...xs) - Math.min(...xs)) / 2) + 2;
+      const ringHeight = Math.ceil((Math.max(...ys) - Math.min(...ys)) / 2) + 2;
       if (ringWidth < minRing) continue;
       if (ringWidth + gap + wordmark.width > availableW || ringHeight > availableH) continue;
+      // Reject rings where two desks share a sub-cell; a clean ring is worth a smaller radius.
+      {
+        const seen = new Map<string, number>();
+        let contacts = 0;
+        for (const seat of lecterns) for (const sample of seat.samples) {
+          const key = `${sample.x},${sample.y}`, owner = seen.get(key);
+          if (owner !== undefined && owner !== seat.id) contacts++;
+          seen.set(key, seat.id);
+        }
+        // Reject only genuine overlap (many shared cells); 1–2 shared edge cells are
+        // sub-cell quantisation, not a layout flaw.
+        if (contacts > 4) continue;
+      }
       const x = Math.floor((W - ringWidth - gap - wordmark.width) / 2);
       const y = Math.floor((H - ringHeight) / 2), cx = x + ringWidth / 2, cy = y + ringHeight / 2;
-      const translate = (p: Point) => ({ x: cx + p.x, y: cy + p.y });
-      lecterns.forEach(seat => {
-        seat.center = translate(seat.center);
-        seat.tablet = seat.tablet.map(translate);
-        seat.plate = seat.plate.map(translate);
-        sampleSurface(seat, 'desktop', seat.tablet);
-        sampleSurface(seat, 'plaque', seat.plate);
-      });
-      // Narrow lockups drop the name plates: 48 tablets must stay separate, and the plates
-      // are what collide first when the slot shrinks.
-      const compact = ringWidth < 62;
-      if (compact) for (const seat of lecterns) seat.samples = seat.samples.filter(s => s.part === 'desktop');
-      if (lecterns.some(seat => !seat.samples.some(s => s.part === 'desktop') || (!compact && !seat.samples.some(s => s.part === 'plaque')))) { continue; }
+      // Shift the whole lockup into place. Samples were rasterised in ring-local coordinates,
+      // so they must move with the seat centres or the ring would render detached from its box.
+      const shiftX = cx * 2, shiftY = cy * 2;
+      for (const seat of lecterns) {
+        seat.center = { x: cx + seat.center.x, y: cy + seat.center.y };
+        seat.samples = seat.samples.map(sample => ({ ...sample, x: sample.x + Math.round(shiftX), y: sample.y + Math.round(shiftY) }));
+      }
       return {
         width: W, height: H, cellAspect, gap,
         ring: { x, y, width: ringWidth, height: ringHeight, cx, cy, radius, lecterns },
@@ -268,12 +294,14 @@ export function lecternLighting(elapsed: number, seat: SplashLectern): { desktop
   return { desktop: .12 + .92 * plaque + .12 * light.z, plaque };
 }
 
-type Buffer = { rgb: Float32Array; alpha: Float32Array };
+// `painted` records membership in the geometry, independent of how bright a cell currently is.
+type Buffer = { rgb: Float32Array; alpha: Float32Array; painted: Uint8Array };
 
-function paint(buffer: Buffer, subWidth: number, subHeight: number, x: number, y: number, rgb: readonly number[], alpha: number) {
+function paint(buffer: Buffer, subWidth: number, subHeight: number, x: number, y: number, rgb: readonly number[], alpha: number, mark = true) {
   const ix = Math.round(x), iy = Math.round(y);
   if (alpha <= 0 || ix < 0 || iy < 0 || ix >= subWidth || iy >= subHeight) return;
   const index = iy * subWidth + ix, previous = buffer.alpha[index], next = alpha + previous * (1 - alpha);
+  if (mark) buffer.painted[index] = 1;
   for (let channel = 0; channel < 3; channel++) {
     buffer.rgb[index * 3 + channel] = (rgb[channel] * alpha + buffer.rgb[index * 3 + channel] * previous * (1 - alpha)) / next;
   }
@@ -282,9 +310,12 @@ function paint(buffer: Buffer, subWidth: number, subHeight: number, x: number, y
 
 function drawSplash(elapsed: number, layout: SplashLayout): string[] {
   const subWidth = layout.width * 2, subHeight = layout.height * 2;
-  const buffer: Buffer = { rgb: new Float32Array(subWidth * subHeight * 3), alpha: new Float32Array(subWidth * subHeight) };
+  const buffer: Buffer = { rgb: new Float32Array(subWidth * subHeight * 3), alpha: new Float32Array(subWidth * subHeight), painted: new Uint8Array(subWidth * subHeight) };
   const exitAt = SPLASH_TIMING.revealMs + SPLASH_TIMING.holdMs;
-  const fade = 1 - smooth((elapsed - exitAt) / SPLASH_TIMING.fadeMs);
+  // Linear exit: a smoothstep here kept the first half visually identical to the held frame.
+  // Ease-in exit: the first third must be visibly dimmer, otherwise 8-bit colour quantisation
+  // makes the early fade frames byte-identical to the held frame.
+  const fade = 1 - clamp((elapsed - exitAt) / SPLASH_TIMING.fadeMs) ** .55;
   const light = splashLight(elapsed);
   const lightScreen = { x: light.x * layout.cellAspect, y: light.y * SPLASH_VIEW.depth };
   const lightLength = Math.hypot(lightScreen.x, lightScreen.y) || 1;
@@ -300,8 +331,10 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
       const base = sample.part === 'desktop'
         ? mix(SHADOW, LIT, lighting.desktop)
         : mix(SHADOW, LIT, lighting.plaque);
-      const rgb = mix(base, RIM, rim * .8);
-      paint(buffer, subWidth, subHeight, sample.x, sample.y, rgb, opacity * sample.coverage);
+      const rgb = mix(base, RIM, rim * .8).map(channel => channel * fade);
+      // Coverage stays full during the exit: the cell keeps its place and only loses luminance,
+      // so the silhouette never reshapes while fading out.
+      paint(buffer, subWidth, subHeight, sample.x, sample.y, rgb, Math.min(1, opacity * sample.coverage));
     }
   });
 
@@ -310,7 +343,7 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
     const opacity = smooth((elapsed - SPLASH_TIMING.wordmarkStartMs) / 320) * fade;
     const sweep = clamp((elapsed - SPLASH_TIMING.sweepStartMs) / (SPLASH_TIMING.sweepEndMs - SPLASH_TIMING.sweepStartMs));
     const colorAt = (column: number) => {
-      const position = column / Math.max(1, layout.wordmark.fontWidth * 2 - 1);
+      const position = column / Math.max(1, layout.wordmark.bitmapWidth - 1);
       const head = sweep * 1.35 - .15;
       const glow = sweep <= 0 || sweep >= 1 ? 0 : Math.max(0, 1 - Math.abs(position - head) / .22);
       // The band starts deep vermilion and warms to amber before settling back to white.
@@ -320,15 +353,33 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
     // The shadow clears before the lockup settles, so the held frame is byte-identical every tick.
     const shadowLife = 1 - smooth((elapsed - (SPLASH_TIMING.sweepEndMs - 320)) / 200);
     if (opacity > 0 && shadowLife > 0) {
-      for (let y = 0; y < layout.wordmark.fontHeight; y++) for (let x = 0; x < layout.wordmark.fontWidth * 2; x++) {
-        if (!layout.wordmark.bits[y * layout.wordmark.fontWidth * 2 + x]) continue;
+      const glyphW = layout.wordmark.bitmapWidth, glyphH = layout.wordmark.bitmapHeight;
+      for (let y = 0; y < glyphH; y++) for (let x = 0; x < glyphW; x++) {
+        if (!layout.wordmark.bits[y * glyphW + x]) continue;
         paint(buffer, subWidth, subHeight, originX + x + 1, originY + y + 1, SHADOW, opacity * shadowLife * .55);
       }
     }
     if (opacity > 0) {
-      for (let y = 0; y < layout.wordmark.fontHeight; y++) for (let x = 0; x < layout.wordmark.fontWidth * 2; x++) {
-        if (!layout.wordmark.bits[y * layout.wordmark.fontWidth * 2 + x]) continue;
-        paint(buffer, subWidth, subHeight, originX + x, originY + y, colorAt(x).rgb, opacity);
+      const w = layout.wordmark.bitmapWidth, h = layout.wordmark.bitmapHeight, bits = layout.wordmark.bits;
+      const on = (x: number, y: number) => x >= 0 && y >= 0 && x < w && y < h && bits[y * w + x] === 1;
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        if (!on(x, y)) continue;
+        const { rgb: sweepBase, glow } = colorAt(x);
+        // Two-tone lockup: KEPOS solid white with a subtle engraved bevel;
+        // COMMUNIS solid brand vermilion — the second word carries the accent colour.
+        let rgb: number[];
+        if (y < layout.wordmark.splitRow) {
+          const edge = !on(x - 1, y) || !on(x + 1, y) || !on(x, y - 1) || !on(x, y + 1);
+          const inner = !edge && (!on(x - 1, y - 1) || !on(x + 1, y + 1) || !on(x + 1, y - 1) || !on(x - 1, y + 1));
+          rgb = edge ? mix(sweepBase, WHITE, .3) : inner ? mix(sweepBase, [0, 0, 0], .38) : sweepBase;
+        } else {
+          // Brand vermilion body; the sweep warms it toward amber and the bevel adds depth.
+          const body = [225, 92, 78] as const;
+          const bevel = y % 2 === 0 ? 1 : .82;
+          rgb = mix([body[0] * bevel, body[1] * bevel, body[2] * bevel], AMBER, glow * .35);
+          rgb = mix(rgb, sweepBase, .14);
+        }
+        paint(buffer, subWidth, subHeight, originX + x, originY + y, rgb, opacity);
       }
     }
   }
@@ -340,8 +391,10 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
       let mask = 0, r = 0, g = 0, b = 0, weight = 0;
       for (let bit = 0; bit < 4; bit++) {
         const index = (row * 2 + Math.floor(bit / 2)) * subWidth + column * 2 + (bit % 2);
-        const alpha = buffer.alpha[index];
-        if (alpha < .06) continue;
+        // Geometry must not depend on brightness: a dim cell is still part of the shape.
+        // Only a cell that was never painted at all is background.
+        if (buffer.painted[index] === 0) continue;
+        const alpha = Math.max(buffer.alpha[index], .001);
         mask |= 1 << bit;
         r += buffer.rgb[index * 3] * alpha; g += buffer.rgb[index * 3 + 1] * alpha; b += buffer.rgb[index * 3 + 2] * alpha;
         weight += alpha;

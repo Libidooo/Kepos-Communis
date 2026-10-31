@@ -38,7 +38,7 @@ export class Desk {
  readonly renderMetrics=new TimingWindow();
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;private liveBaseCache:string[]=[];private liveBaseCacheKey='';
  taskScope:'session'|'all'='session';
- missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;councilDesk=false;councilDeskTaskId:string|null=null;graph?:{snapshot:()=>GraphViewSnapshot};
+ missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;councilDesk=false;councilDeskTaskId:string|null=null;deskOffset=0;deskX=0;deskWidth=0;deskOutputTotal=0;deskOutputVisible=0;deskWrapKey='';deskWrapCache:string[]|null=null;graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
@@ -119,27 +119,105 @@ export class Desk {
   const message=clean(error instanceof Error?error.message:error);this.notice='界面渲染出错：'+message;
   return [fit('Kepos 界面渲染出错，已退回议案：'+message,Math.max(1,width)),fit('按任意键重绘；问题持续时请报告此行。',Math.max(1,width))];
  }finally{this.renderMetrics.observe(performance.now()-begin);}}
- // 书案预算条：双色，空余段 dim，避免 0% 被读成满格。
- budgetBar(task:any){const pct=Math.max(0,Math.min(100,Math.round(((task.ended||Date.now())-task.started)/Math.max(1,(task.limit||300)*1000)*100)));const filled=Math.max(0,Math.min(10,Math.round(pct/10)));return this.theme.fg(task.stalled?'warning':'accent','▓'.repeat(filled))+this.theme.fg('dim','░'.repeat(10-filled))+' '+pct+'%';}
- helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 详情 · Ctrl+X 取消选中任务','议会输入：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本议案输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
+ // 书案预算条：双色，空余段 dim，避免 0% 被读成满格。终态无 ended 的旧记录冻结在上限，绝不拿当前时间继续累计。
+ budgetBar(task:any){const done=terminalStates.has(task.status||'');const end=task.ended||(done?task.started+Math.max(1,task.limit||300)*1000:Date.now());const pct=Math.max(0,Math.min(100,Math.round((end-task.started)/Math.max(1,(task.limit||300)*1000)*100)));const filled=Math.max(0,Math.min(10,Math.round(pct/10)));return this.theme.fg(task.stalled?'warning':'accent','▓'.repeat(filled))+this.theme.fg('dim','░'.repeat(10-filled))+' '+pct+'%';}
+ // 模型绑定：一律读议案配置（分派时冻结的 task.model，缺席时回退代表配置），代表自述不作为来源。
+ boundModel(task:any){const agents:any[]=this.config.agents||[];const agent=task?(agents.find(a=>a.id===task.agentId)||agents.find(a=>a.name===task.agent)):undefined;return clean(task?.model||agent?.model||'—');}
+ // 书案与议案同源：优先读 pool 全量任务，跨会话走 monitor evidence，快照（审批行）只作兜底。
+ // 环图快照的 output 曾被砍到 160 字符，议会因此看不到真实产出——数据必须与 F3 同一来源。
+ private deskTask(snapshot:GraphViewSnapshot):any{
+  const taskId=this.councilDeskTaskId;
+  const live=(this.pool.tasks as any[]).find(t=>t.id===taskId);
+  if(live)return live;
+  const global=this.monitorData().tasks.find((t:any)=>t.id===taskId);
+  if(global){const evidence=this.monitor?.evidence(global.id);return evidence||global;}
+  return snapshot.tasks.find((t:any)=>t.id===taskId);
+ }
+ // 书案内嵌输入：选中即输入，Enter 直达该代表（运行中转发；已结束按原配置开新一轮）。
+ deskSend(){
+  const text=this.editor.getExpandedText().trim();if(!text){this.refresh();return;}
+  const hit=this.graphHits.find(item=>item.index===this.graphSelected);
+  const taskId=hit?.taskId??this.councilDeskTaskId;
+  const task=this.pool.tasks.find(t=>t.id===taskId)||this.monitorData().tasks.find((t:any)=>t.id===taskId);
+  const agentKey=task?.agentId||task?.agent||(hit?.id?.startsWith('agent:')?hit.id.slice(6):undefined);
+  const parent=this.ctx.sessionManager.getSessionId();
+  const handle=taskId?this.pool.liveHandle?.(taskId,parent):undefined;
+  if(handle){
+   void this.pool.sendMessage(handle,parent,text).then((outcome:any)=>{
+    if(outcome.delivered){this.editor.setText('');this.savedDraftBeforeCommand='';this.notice=`已送达 ${outcome.agent||task?.agent||taskId}${outcome.queued?'（排队中）':''}`;}
+    else this.notice='转发失败：'+(outcome.error||'未知原因')+'（原稿保留）';
+    this.refresh();
+   });
+   this.refresh();return;
+  }
+  if(agentKey){this.finish({kind:'message-agent',id:String(agentKey),text});return;}
+  this.notice='该席位没有可用的代表，无法送达';this.refresh();
+ }
+ // 右侧书案面板：不跳页，嵌在议会右侧；输入框嵌在面板底部，模型读议案配置绑定。
+ private deskPanel(snapshot:GraphViewSnapshot,width:number,height:number,editorLines:string[]):string[]{
+  const w=Math.max(30,width),inner=Math.max(8,w-4);
+  const task=this.deskTask(snapshot);
+  const agentName=task?.agent||this.councilDeskTaskId?.slice(0,8)||'—';
+  // 乱码防线：进展/工具/状态可能混入 ANSI 残片和控制符（含换行），统一压成单行纯文本。
+  const plainText=(value:any)=>stripVTControlCharacters(String(value??'')).replace(/\x1b\[[0-9;]*[A-Za-z]/g,' ').replace(/[\x00-\x1f\x7f-\x9f]+/g,' ').trim();
+  const F=(color:string,s:string)=>this.theme.fg(color,s);
+  const row=(content:string,color='text')=>F('borderAccent','│ ')+F(color,fit(content,inner))+F('borderAccent',' │');
+  const lines:string[]=[];
+  const titlePrefix=`╭─ 书案 · ${plainText(agentName)} `;
+  lines.push(F('borderAccent',titlePrefix+'─'.repeat(Math.max(1,w-visibleWidth(titlePrefix)-1))+'╮'));
+  if(!task){
+   lines.push(row('该席位暂无书案 · 分派后此处实时更新','dim'));
+   lines.push(row('模型 — · 议案绑定','dim'));
+  }else{
+   lines.push(row(`状态 ${stateMark(task)} ${plainText(task.status||task.state||'—')}${task.reviewDue?' · ⚠ 需复核':''}`,safeStateColor(stateColor(task,0))));
+   lines.push(row(`模型 ${this.boundModel(task)} · 议案绑定`));
+   if(task.tool)lines.push(row(`工具 ${plainText(task.tool)}`,'dim'));
+   if(task.checkpoint)lines.push(row(`进展 ${plainText(task.checkpoint)}`,'dim'));
+   if(task.error)for(const l of wrapTextWithAnsi('错误：'+plainText(task.error),inner).slice(0,2))lines.push(row(l,'error'));
+  }
+  // 产出区高度 = 面板高 - 头部 - 分隔线 - 输入框 - 底框；放不下就整体让给输入框。
+  const cap=Math.max(0,height-lines.length-editorLines.length-2);
+  if(cap>0){
+   lines.push(F('borderAccent','├'+'─'.repeat(w-2)+'┤'));
+   const fingerprint=task?`${task.id}|${String(task.output||'').length}|${inner}|${String(task.output||'').slice(-40)}`:'';
+   if(fingerprint!==this.deskWrapKey){this.deskWrapKey=fingerprint;this.deskWrapCache=task?String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(plainText(s)||' ',inner)).slice(-400):[];}
+   const out=this.deskWrapCache||[];
+   this.deskOutputTotal=out.length;this.deskOutputVisible=cap;
+   const maxOffset=Math.max(0,out.length-cap);
+   this.deskOffset=Math.max(0,Math.min(this.deskOffset,maxOffset));
+   const end=out.length-this.deskOffset;
+   const shown=out.slice(Math.max(0,end-cap),end);
+   for(const l of shown)lines.push(row(l));
+   while(lines.length<height-editorLines.length-1)lines.push(row(''));
+  }else{this.deskOutputTotal=0;this.deskOutputVisible=0;}
+  for(const l of editorLines)lines.push(F('borderAccent','│ ')+fit(l,inner)+F('borderAccent',' │'));
+  const hint=this.deskOffset>0?` ↑ 已上滚 ${this.deskOffset}/${Math.max(0,this.deskOutputTotal-this.deskOutputVisible)} 行 · 滚轮下滚回底 `:' Enter 直达该代表 · Esc 关书案 ';
+  const hintPrefix='╰─ ';
+  lines.push(F('borderAccent',hintPrefix)+F('dim',hint)+F('borderAccent','─'.repeat(Math.max(1,w-visibleWidth(hintPrefix)-visibleWidth(hint)-1))+'╯'));
+  return lines.slice(0,height);
+ }
+ helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 打开右侧书案（不跳页） · Esc 关书案 · Ctrl+X 取消选中任务','书案：选中即可直接输入，Enter 送达该代表（任务已结束则按原配置开新一轮）；滚轮滚动产出','议会输入（未开书案）：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本议案输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
  private graphSnapshot():GraphViewSnapshot{return this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};}
  private renderGraphFrame(width:number,rows:number):string[]{
   this.graphWidth=width;
-  this.editor.focused=this.focused&&this.graphFocus==='input';
-  const input=this.editor.render(Math.max(8,width-2));
+  // 书案内嵌输入：选中即可输入，无需 F6 换焦点。
+  this.editor.focused=this.focused&&(this.councilDesk||this.graphFocus==='input');
+  // 书案在右：≥100 列时环图让出右侧面板宽，不再整屏跳转；输入框嵌在书案面板底部。
+  const deskW=this.councilDesk?Math.max(34,Math.min(56,Math.floor(width*0.38))):0;
+  const input=this.editor.render(deskW?Math.max(10,deskW-8):Math.max(8,width-2));
   const snapshot=this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};
   const active=countActive(snapshot.tasks);const attention=countPending(snapshot.tasks);
   if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
   this.pendingSeen=attention;
   const councilMode=this.councilDesk?'书案':this.graphFocus==='ring'?'席位':this.graphFocus==='list'?'列表':'输入';
-  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 回议会':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
-  if(this.councilDesk){
-   // 书案视图：全屏上下文 + 工具调用 + 独立输入。
+  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案 · 输入后 Enter 直达':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  if(this.councilDesk&&width<100){
+   // 窄屏放不下右侧面板：退回整屏书案（历史回退路径）。
    const task=snapshot.tasks.find((t:any)=>t.id===this.councilDeskTaskId);
    const agentName=task?.agent||this.councilDeskTaskId?.slice(0,8)||'—';
    const lines:string[]=[];
    lines.push(this.theme.fg('accent',fit(`── ${agentName} 书案 ──`,width)));
-   lines.push(this.theme.fg('dim',fit(`状态 ${task?.status||task?.state||'—'} · 模型 ${task?.model||'—'} · 工具 ${task?.tool||'—'}`,width)));
+   lines.push(this.theme.fg('dim',fit(`状态 ${task?.status||task?.state||'—'} · 模型 ${this.boundModel(task)}（议案绑定） · 工具 ${task?.tool||'—'}`,width)));
    if(task?.error)lines.push(this.theme.fg('error',fit('错误：'+clean(task.error),width)));
    if(task?.checkpoint)lines.push(this.theme.fg('muted',fit('检查点：'+clean(task.checkpoint),width)));
    if(task?.output){lines.push('');for(const l of String(task.output).split('\n').slice(-20))lines.push(fit(l,width));}
@@ -147,7 +225,7 @@ export class Desk {
   }
   if(this.help){this.graphHits=[];const help=this.helpLines();const avail=Math.max(1,rows-input.length-3);this.inputY=1+avail;
    return [header,...help.slice(0,avail),...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
-  const graphHeight=Math.max(8,rows-input.length-4);
+  const graphHeight=deskW?Math.max(8,rows-5):Math.max(8,rows-input.length-4);
   // 窄屏放不下 sidebar：列表+详情占满，Tab 主动回环图。
   if(width<120&&this.councilList&&this.graphFocus!=='ring'){
    const filtered=councilTasks(snapshot,this.councilFilter,this.councilQuery);
@@ -155,15 +233,26 @@ export class Desk {
    const list=renderCouncilList(filtered,width,graphHeight,this.councilIndex,this.theme);
    this.graphHits=[];this.inputY=1+list.rows.length;
    return [header,...list.rows,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);}
-  const council:CouncilView={list:this.councilList,filter:this.councilFilter,query:this.councilQuery,index:this.councilIndex,focus:this.graphFocus};
+  const council:CouncilView={list:this.councilList,filter:this.councilFilter,query:this.councilQuery,index:this.councilIndex,focus:this.graphFocus,desk:this.councilDesk};
+  // 书案在右：环图让出右侧面板宽，且书案打开时环图内部 sidebar 让位。
+  const graphArea=Math.max(24,width-deskW-(deskW?1:0));
   // motion 关闭时冻结时钟：审批锤等动效静态化，符号语义不变。
-  const graph=renderGraph(snapshot,width,graphHeight,this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets,this.config.motion===false?0:Date.now(),council);
+  const graph=renderGraph(snapshot,graphArea,graphHeight,this.graphSelected,this.graphZoom,this.theme,this.graphDetail,this.graphOffsets,this.config.motion===false?0:Date.now(),council);
   this.graphHits=graph.hits;
   // 稳定选中：以稳定节点 id 对准，快照里节点增删时选中不漂移。
   if(this.graphSelectedId){const at=this.graphHits.findIndex(item=>item.id===this.graphSelectedId);if(at>=0)this.graphSelected=at-1;else this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;}
   else this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;
   this.inputY=1+graph.lines.length;
-  return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),this.theme.fg('muted',fit(this.notice,width))].slice(0,rows);
+  const noticeLine=this.theme.fg('muted',fit(this.notice,width));
+  if(deskW){
+   this.deskX=graphArea+1;this.deskWidth=deskW;
+   const deskLines=this.deskPanel(snapshot,deskW,graph.lines.length,input);
+   const merged:string[]=[];for(let i=0;i<deskLines.length;i++)merged.push(fit(graph.lines[i]||'',graphArea)+' '+deskLines[i]);
+   // 书案模式下不渲染底部输入框：输入框已嵌入书案面板。
+   return [header,...merged,noticeLine].slice(0,rows);
+  }
+  this.deskWidth=0;
+  return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),noticeLine].slice(0,rows);
  }
  private renderFrame(width:number):string[]{
  this.width=width;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);if(this.graphView)return this.renderGraphFrame(width,rows);
@@ -186,7 +275,7 @@ export class Desk {
  if(this.help)history=this.helpLines();
  if(this.taskView&&!this.help){const tasks=this.panelTasks();this.taskIndex=Math.max(0,Math.min(this.taskIndex,Math.max(0,tasks.length-1)));let task=tasks[Math.min(this.taskIndex,Math.max(0,tasks.length-1))];
  if(task&&this.taskScope==='all'&&this.monitor){if(!this.evidenceCache||this.evidenceCache.id!==task.id||this.evidenceCache.ended!==task.ended||(!task.ended&&Date.now()-this.evidenceAt>1000)){this.evidenceAt=Date.now();this.evidenceCache={id:task.id,ended:task.ended,output:task.output,value:this.monitor.evidence(task.id)};}task=this.evidenceCache.value||task;}
- history=task?[`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+tasks.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${Math.round(((task.ended||Date.now())-task.started)/1000)}s / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheRead>0?' · 缓存命中'+Math.round(task.usage.cacheRead/Math.max(1,task.usage.cacheRead+task.usage.input)*100)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[this.taskScope==='all'?'全局任务 · 暂无子 Agent 任务':'本会话暂无子 Agent 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
+ history=task?[`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+tasks.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheRead>0?' · 缓存命中'+Math.round(task.usage.cacheRead/Math.max(1,task.usage.cacheRead+task.usage.input)*100)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[this.taskScope==='all'?'全局任务 · 暂无子 Agent 任务':'本会话暂无子 Agent 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
  if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>[`${plan.state} · ${plan.completed}/${plan.total} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''])];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');}
  this.displayLines=history;
  // 框线面板：body 含顶底两行框，内容行 bodyHeight-2；标题嵌入顶框，焦点面板用 borderAccent。
@@ -250,14 +339,16 @@ export class Desk {
  if(matchesKey(data,Key.f7)||matchesKey(data,'ctrl+shift+c')){void this.copyAnswer();return;}
  // 议会列表过滤输入：仅在该模式捕获键入，避免抢聊天输入。
  if(this.graphView&&this.councilSearch){if(matchesKey(data,Key.escape)){this.councilSearch=false;this.refresh();return;}if(matchesKey(data,Key.backspace)||data==='\x7f'||data==='\b'){this.councilQuery=this.councilQuery.slice(0,-1);this.councilIndex=0;this.refresh();return;}if(data.length===1&&data>=' '){this.councilQuery+=data;this.councilIndex=0;}this.refresh();return;}
- if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.graphFocus='ring';this.councilList=false;this.councilSearch=false;this.focus='input';this.readStart=null;this.refresh();return;}
+ if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.graphFocus='ring';this.councilList=false;this.councilSearch=false;this.councilDesk=false;this.councilDeskTaskId=null;this.deskOffset=0;this.deskWrapKey='';this.focus='input';this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'f11')){this.maximize=!this.maximize;this.notice=this.maximize?'专注阅读：中栏最大化 · F11 或 Esc 恢复':'已恢复面板';this.refresh();return;}
  if(matchesKey(data,Key.escape)&&this.focus==='input'&&this.editor.isShowingAutocomplete()){this.editor.handleInput(data);this.refresh();return;}
- if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){if(this.graphDetail){this.graphDetail=false;this.refresh();return;}if(this.graphFocus==='input'){this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位焦点 · ↑↓ 选择 · Enter 详情 · F6 切面板';this.refresh();return;}if(this.graphFocus==='list'){this.graphFocus='ring';this.notice='议会席位焦点 · Tab 回列表';this.refresh();return;}if(this.councilList){this.councilList=false;this.notice='已关闭任务列表 · Tab 重新打开';this.refresh();return;}this.graphView=false;this.setFocus('input');this.notice='已回到议案';this.refresh();return;}if(this.maximize){this.maximize=false;this.notice='已恢复面板';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到议案';}else this.notice='已在议案；输入 /pi 进入 Pi 命令行';this.refresh();return;}
+ if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){if(this.councilDesk){this.councilDesk=false;this.councilDeskTaskId=null;this.deskOffset=0;this.deskWrapKey='';this.notice='书案已关闭 · Enter 席位重新打开';this.refresh();return;}if(this.graphDetail){this.graphDetail=false;this.refresh();return;}if(this.graphFocus==='input'){this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位焦点 · ↑↓ 选择 · Enter 书案 · F6 切面板';this.refresh();return;}if(this.graphFocus==='list'){this.graphFocus='ring';this.notice='议会席位焦点 · Tab 回列表';this.refresh();return;}if(this.councilList){this.councilList=false;this.notice='已关闭任务列表 · Tab 重新打开';this.refresh();return;}this.graphView=false;this.setFocus('input');this.notice='已回到议案';this.refresh();return;}if(this.maximize){this.maximize=false;this.notice='已恢复面板';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到议案';}else this.notice='已在议案；输入 /pi 进入 Pi 命令行';this.refresh();return;}
  if(matchesKey(data,'ctrl+c')){const selected=this.selectedText();if(selected){void this.copyText(selected);return;}this.notice='进入 Pi 命令行请使用 /pi；中止任务请按 Ctrl+X。';this.refresh();return;}
  if(matchesKey(data,'ctrl+x')&&this.graphView){const hit=this.graphHits.find(item=>item.index===this.graphSelected);if(hit?.taskId)this.finish({kind:'cancel-selected',id:hit.taskId});else{this.notice='选中席位没有可取消的任务 · 审批请用 F2 · Enter 查看详情';this.refresh();}return;}
  if(matchesKey(data,'ctrl+x')){this.finish({kind:'abort'});return;}
  // Tab 在席位图与任务列表间切换；F8 循环列表筛选并直达待处理。放在议案同名键之前。
+ // 书案打开时右侧被占用：先关书案再切列表，避免出现不可见的列表焦点。
+ if(this.graphView&&this.councilDesk&&(matchesKey(data,Key.tab)||matchesKey(data,Key.f8))){this.councilDesk=false;this.councilDeskTaskId=null;this.deskOffset=0;this.deskWrapKey='';this.notice='书案已关闭';}
  if(this.graphView&&matchesKey(data,Key.tab)){this.councilList=!this.councilList;this.graphFocus=this.councilList?'list':'ring';this.editor.focused=false;this.notice=this.councilList?'议会任务列表 · Tab 回环图':'议会席位图 · Tab 开列表';this.refresh();return;}
  if(this.graphView&&matchesKey(data,Key.f8)){this.councilList=true;this.graphFocus='list';this.councilFilter=this.councilFilter==='active'?'pending':this.councilFilter==='pending'?'all':'active';this.councilIndex=0;this.editor.focused=false;this.notice='议会列表 · 筛选：'+(this.councilFilter==='active'?'活跃':this.councilFilter==='pending'?'待处理':'全部')+' · / 过滤 · Enter 详情';this.refresh();return;}
  if(matchesKey(data,Key.f1)){this.help=!this.help;this.readStart=null;this.refresh();return;}
@@ -268,12 +359,12 @@ export class Desk {
  if(matchesKey(data,Key.f9)){this.missionView=!this.missionView;this.taskView=false;this.help=false;this.monitorAt=0;this.readStart=0;this.refresh();return;}
  if(matchesKey(data,Key.f5)){this.expandedTools=!this.expandedTools;this.historyCacheKey='';this.notice=this.expandedTools?'工具完整输出已展开':'工具输出已折叠（保留头尾）';this.refresh();return;}
  if(matchesKey(data,Key.f4)){this.finish({kind:'model'});return;}
- if(matchesKey(data,Key.f6)){if(this.graphView){if(this.graphFocus==='ring'){this.graphFocus='list';this.councilList=true;this.editor.focused=false;this.councilIndex=Math.max(0,Math.min(this.councilIndex,Math.max(0,councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1)));this.notice='议会任务列表 · ↑↓ 选择 · Enter 详情 · / 过滤';}
+ if(matchesKey(data,Key.f6)){if(this.graphView&&this.councilDesk){this.graphFocus=this.graphFocus==='input'?'ring':'input';this.editor.focused=this.focused&&this.graphFocus!=='ring';this.notice=this.graphFocus==='input'?'书案输入 · Enter 直达该代表':'议会席位 · ↑↓ 选择 · Esc 关书案';this.refresh();return;}if(this.graphView){if(this.graphFocus==='ring'){this.graphFocus='list';this.councilList=true;this.editor.focused=false;this.councilIndex=Math.max(0,Math.min(this.councilIndex,Math.max(0,councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1)));this.notice='议会任务列表 · ↑↓ 选择 · Enter 详情 · / 过滤';}
    else if(this.graphFocus==='list'){this.graphFocus='input';this.editor.focused=this.focused;this.notice='议会输入 · Enter 发送给主 Agent · Esc 回席位';}
    else{this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位 · ↑↓ 选择 · Enter 详情 · Ctrl+X 取消任务';}
    this.refresh();return;}this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.down)){const last=Math.max(0,this.graphHits.filter(hit=>hit.kind!=='main').length-1);this.graphSelected=Math.min(last,this.graphSelected+1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.up)){this.graphSelected=Math.max(-1,this.graphSelected-1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;if(this.councilDesk){this.councilDeskTaskId=this.graphHits[this.graphSelected+1]?.taskId??null;this.deskOffset=0;this.deskWrapKey='';}this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.down)){const last=Math.max(0,this.graphHits.filter(hit=>hit.kind!=='main').length-1);this.graphSelected=Math.min(last,this.graphSelected+1);this.graphSelectedId=this.graphHits[this.graphSelected+1]?.id??null;this.graphDetail=false;if(this.councilDesk){this.councilDeskTaskId=this.graphHits[this.graphSelected+1]?.taskId??null;this.deskOffset=0;this.deskWrapKey='';}this.refresh();return;}
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.up)){this.councilIndex=Math.max(0,this.councilIndex-1);this.refresh();return;}
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.down)){this.councilIndex=Math.min(councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1,this.councilIndex+1);this.refresh();return;}
  if(this.graphView&&this.graphFocus==='list'&&data==='/'&&!this.councilSearch){this.councilSearch=true;this.notice='列表过滤：输入关键词 · Esc 结束';this.refresh();return;}
@@ -281,7 +372,12 @@ export class Desk {
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.enter)){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const hit=task?this.graphHits.find(item=>item.taskId===task.id):undefined;if(hit){this.graphSelected=hit.index;this.graphSelectedId=hit.id;this.graphDetail=true;this.refresh();}else{this.notice='当前画面没有这个坐席 · 窄屏请 Tab 回环图';this.refresh();}return;}
  if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.panelTasks().findIndex(item=>item.id===task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
  // 议会内 Enter 只按焦点行事：席位焦点开详情（草稿不发送），输入焦点才发送。
- if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);if(hit?.taskId){this.councilDesk=true;this.councilDeskTaskId=hit.taskId;this.graphDetail=false;this.refresh();}else this.graphDetail=true;this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);if(hit?.taskId){this.councilDesk=true;this.councilDeskTaskId=hit.taskId;this.deskOffset=0;this.deskWrapKey='';this.graphDetail=false;this.councilList=false;this.graphFocus='input';this.editor.focused=this.focused;this.refresh();}else this.graphDetail=true;this.refresh();return;}
+ // 书案 Enter：直接发给该代表（运行中转发；已结束按原配置开新一轮）。补全菜单打开时先让编辑器选词。
+ if(this.graphView&&this.councilDesk&&matchesKey(data,Key.enter)){
+  if(this.editor.isShowingAutocomplete()){this.editor.handleInput(data);this.refresh();return;}
+  this.deskSend();return;
+ }
  if(this.graphView&&this.graphFocus==='input'&&matchesKey(data,Key.enter)){
   // 选中运行中的席位时，消息直达该代表（Pi 把流式中的新消息排队）；未选中则发给主 Agent。
   const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);
@@ -300,12 +396,12 @@ export class Desk {
   }
   this.send();return;
  }
- if(this.graphView&&this.graphFocus==='ring'&&(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown))){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(matchesKey(data,Key.pageUp)?0.1:-0.1)));this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='ring'&&(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown))){this.graphZoom=Math.max(.85,Math.min(1.6,this.graphZoom+(matchesKey(data,Key.pageUp)?0.1:-0.1)));this.refresh();return;}
  if(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown)){const lines=this.displayLines.length?this.displayLines:this.history(Math.max(8,this.centerWidth-4));this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(matchesKey(data,Key.pageUp)?-Math.max(1,this.bodyHeight-2):Math.max(1,this.bodyHeight-2)));if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'ctrl+end')){this.readStart=null;this.refresh();return;}
  if(this.taskView&&matchesKey(data,'ctrl+right')){this.taskIndex++;this.readStart=null;this.refresh();return;}
  if(this.taskView&&matchesKey(data,'ctrl+left')){this.taskIndex=Math.max(0,this.taskIndex-1);this.readStart=null;this.refresh();return;}
- if(this.graphView?this.graphFocus==='input':this.focus==='input'){this.editor.focused=this.focused;this.editor.handleInput(data);return;}
+ if(this.graphView?(this.councilDesk||this.graphFocus==='input'):this.focus==='input'){this.editor.focused=this.focused;this.editor.handleInput(data);return;}
  if(matchesKey(data,Key.up)){if(this.focus==='projects')this.selected=Math.max(0,this.selected-1);else this.crewIndex=Math.max(0,this.crewIndex-1);this.readStart=null;}
  if(matchesKey(data,Key.down)){if(this.focus==='projects')this.selected=Math.min(this.rows().length-1,this.selected+1);else this.crewIndex=Math.min(this.config.agents.length-1,this.crewIndex+1);this.readStart=null;}
  if(matchesKey(data,Key.enter)){if(this.focus==='crew'){const agent=this.config.agents[this.crewIndex];const tasks=this.sessionTasks();let last=-1;tasks.forEach((t,i)=>{if(t.agent===agent?.name)last=i;});if(last>=0){this.taskView=true;this.taskIndex=last;this.readStart=null;this.refresh();return;}this.finish({kind:'crew',id:agent?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch(error){this.notice='配置保存失败：'+clean(error);}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
@@ -313,11 +409,15 @@ export class Desk {
  }
  handleMouse(e:any){if(e.shift)return;
  if(this.graphView&&this.councilList&&this.graphWidth>=120&&e.x>=this.graphWidth-38){this.councilIndex=Math.max(0,this.councilIndex+Math.sign(e.wheelDelta||0));this.refresh();return{handled:true};}
- if(this.graphView&&e.type==='wheel'){this.graphZoom=Math.max(.7,Math.min(1.6,this.graphZoom+(e.wheelDelta>0?.1:-.1)));this.refresh();return{handled:true};}
+ // 书案区滚轮：滚动产出（上滚看历史，下滚回底部），不触发环图缩放。
+ if(this.graphView&&this.councilDesk&&this.deskWidth&&e.x>=this.deskX&&e.type==='wheel'){this.deskOffset=Math.max(0,this.deskOffset+(e.wheelDelta>0?3:-3));this.refresh();return{handled:true};}
+ if(this.graphView&&e.type==='wheel'){this.graphZoom=Math.max(.85,Math.min(1.6,this.graphZoom+(e.wheelDelta>0?.1:-.1)));this.refresh();return{handled:true};}
  if(this.graphView&&this.graphDrag&&(e.type==='drag'||e.type==='release')){const deltaX=e.x-this.graphDrag.lastX,deltaY=(e.y-1)-this.graphDrag.lastY;const offset=this.graphOffsets[this.graphDrag.id]||{x:0,y:0};this.graphOffsets[this.graphDrag.id]={x:offset.x+deltaX,y:offset.y+deltaY};this.graphDrag.lastX=e.x;this.graphDrag.lastY=e.y-1;if(e.type==='release')this.graphDrag=undefined;this.refresh();return{handled:true,focus:true};}
  if(this.graphView&&e.y>=this.inputY&&e.type==='press'){this.graphFocus='input';this.setFocus('input');return{handled:true,focus:true};}
  if(this.graphView&&this.councilList&&this.graphWidth>=120&&e.x>=this.graphWidth-38&&e.type==='press'){this.graphFocus='list';this.editor.focused=false;this.refresh();return{handled:true,focus:true};}
- if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphFocus='ring';this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphSelectedId=hit.id;this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y-1};this.refresh();return{handled:true,focus:true,capture:e.type==='press'};}}
+ if(this.graphView&&(e.type==='click'||e.type==='press')){const hit=this.graphHits.find(item=>Math.abs(item.x-e.x)<=2&&Math.abs(item.y-(e.y-1))<=1);if(hit){this.graphFocus='ring';this.graphSelected=hit.kind==='main'?-1:hit.index;this.graphSelectedId=hit.id;if(this.councilDesk){this.councilDeskTaskId=hit.taskId??null;this.deskOffset=0;this.deskWrapKey='';this.graphDetail=false;this.graphFocus='input';this.editor.focused=this.focused;}else this.graphDetail=e.clickCount>=2;if(e.type==='press'&&hit.kind!=='main')this.graphDrag={id:hit.id,lastX:e.x,lastY:e.y-1};this.refresh();return{handled:true,focus:true,capture:e.type==='press'};}}
+ // 点书案面板即聚焦输入：输入后 Enter 直达该代表。
+ if(this.graphView&&this.councilDesk&&this.deskWidth&&e.x>=this.deskX&&e.type==='press'){this.graphFocus='input';this.setFocus('input');this.refresh();return{handled:true,focus:true};}
  const centerX=(this.leftWidth?this.leftWidth+3:0)+2;const inTranscript=e.y>=3&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+Math.max(1,this.centerWidth-4)&&this.focus!=='crew';
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-3,col:e.x-centerX},end:{row:e.y-3,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-3,e.y-3)),col:Math.max(0,Math.min(Math.max(1,this.centerWidth-4),e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}

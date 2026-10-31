@@ -8,7 +8,7 @@ export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask
 export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number; taskId?: string };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
 export type CouncilFilter = 'active' | 'pending' | 'all';
-export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number; focus?: 'ring' | 'list' | 'input' };
+export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number; focus?: 'ring' | 'list' | 'input'; desk?: boolean };
 type Cell = { char: string; color?: string };
 type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number };
 // 活跃=正在执行；NEEDS_HUMAN 归入“待处理”。终态残留的复核/停滞标记不再报警。
@@ -33,8 +33,27 @@ export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter,
 }
 // 先剥完整 ANSI 序列再剥控制符：任务标题里的 [0m 残片曾以字面量漏进界面。
 const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).replace(/\x1b\[[0-9;]*[A-Za-z]/g, ' ').replace(/[\x00-\x1f\x7f-\x9f]+/g, ' ');
+// 写进字符网格的文本必须用这个截断器：pi-tui 的 truncateToWidth 在真正截断处会插入
+// \x1b[0m，而 put() 是逐字符建格的——ESC 会占掉一格，剩下的 "[0m" 就成了可见乱码
+// （48 席里所有 6 字以上的角色名都会中招）。这里按可见宽度手裁，绝不产生转义序列。
+const cut = (value: unknown, width: number): string => {
+  const text = plain(value);
+  if (width <= 0) return '';
+  if (visibleWidth(text) <= width) return text;
+  const ellipsis = width >= 2 ? '…' : '';
+  const budget = width - visibleWidth(ellipsis);
+  let result = '';
+  let used = 0;
+  for (const char of text) {
+    const charWidth = Math.max(1, visibleWidth(char));
+    if (used + charWidth > budget) break;
+    result += char;
+    used += charWidth;
+  }
+  return result + ellipsis;
+};
 // htop 式对齐列：状态/代表名定宽补齐，标题吃剩余宽度。
-const padCell = (value: string, width: number) => { const text = truncateToWidth(plain(value), width); return text + ' '.repeat(Math.max(0, width - visibleWidth(text))); };
+const padCell = (value: string, width: number) => { const text = cut(value, width); return text + ' '.repeat(Math.max(0, width - visibleWidth(text))); };
 
 // teal/blue/mauve exist only as kepos-dark vars; Pi's theme.fg rejects them, so emit them directly.
 const directColors: Record<string, string> = { approval: '1;38;2;255;223;84', queue: '38;2;157;126;76', idle: '38;2;116;139;129', teal: '38;2;142;181;173', blue: '38;2;153;172;187', mauve: '38;2;181;160;173' };
@@ -49,7 +68,23 @@ export const stateColor = (task: GraphViewTask | undefined, index: number) => {
   // 运行中没有专用状态色：用分组色表达“属于哪一组”，状态由符号与中文表达。
   return groupColor(task, index);
 };
-// 分组色：连线与运行中坐席用它表达关系；避免与状态语义色混用。
+// 名字跟随席位状态色：配色是敲定的语义，符号与名字同色，不要拆成两档明度。
+export const stateNameColor = stateColor;
+// 席位符号：字符携带状态，不加额外文字。
+// 就绪 ◌ 最虚；待审批沿用敲定语义——黄色运行态 + 席位中间的 !（见下方渲染）。
+// 其余按实心程度递减：运行 ◉/◎ 呼吸，排队 ◔，完成 ●，失败 ⊘，取消 ○。
+// 只有运行中的席位在两帧之间变化，动效只用来指认"正在发生的事"。
+export const seatGlyph = (task: GraphViewTask | undefined, selected: boolean, now: number): string => {
+  if (selected) return '▣';
+  if (!task) return '◌';
+  const state = taskState(task);
+  if (state === 'FAILED') return '⊘';
+  if (state === 'SUCCEEDED') return '●';
+  if (['CANCELLED', 'INTERRUPTED', 'TIMED_OUT'].includes(state || '')) return '○';
+  if (state === 'QUEUED' || state === 'STARTING') return '◔';
+  // NEEDS_HUMAN 与 RUNNING 一样是"活的"：都走呼吸，颜色与 ! 区分二者。
+  return Math.floor(now / 700) % 2 ? '◉' : '◎';
+};
 export const groupColor = (task: GraphViewTask | undefined, _index = 0) => {
   if (!task) return 'muted';
   const group = task.groupKey || task.parentWorkerId || task.agent;
@@ -70,23 +105,27 @@ const junctionChar = (mask: number): string => {
   return table[mask] || '·';
 };
 
-/** 在网格上记录一条正交线段（先竖后横），返回终点该补的入边。 */
+/** 沿一个轴推进，把双向位掩码记到每一个经过的格子上（含终点反向位）。 */
+function stampAxis(mask: (number | undefined)[][], color: string, from: number, to: number, fixed: number, vertical: boolean, forward: number, backward: number) {
+  const step = to > from ? 1 : -1;
+  for (let p = from; p !== to; p += step) {
+    const y = vertical ? p : fixed, x = vertical ? fixed : p;
+    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | forward;
+    const nextY = vertical ? p + step : fixed, nextX = vertical ? fixed : p + step;
+    if (mask[nextY]?.[nextX] !== undefined) mask[nextY][nextX] = (mask[nextY][nextX] ?? 0) | backward;
+  }
+}
+
+/** 在网格上记录一条正交线段（先竖后横），让相邻格共享入/出边。 */
 function stamp(grid: Cell[][], mask: (number | undefined)[][], x0: number, y0: number, x1: number, y1: number, color: string) {
   // 先沿 y 走到目标行，再横向对齐：起点只带一个方向，不会长成 └ ┘ 这类转角。
-  let x = x0, y = y0;
-  while (y !== y1) {
-    const bit = y1 > y ? S : N;
-    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | bit;
-    if (grid[y]?.[x]) grid[y][x].color = grid[y][x].color || color;
-    y += y1 > y ? 1 : -1;
-    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | (bit === S ? N : S);
-  }
-  while (x !== x1) {
-    const bit = x1 > x ? E : W;
-    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | bit;
-    if (grid[y]?.[x]) grid[y][x].color = grid[y][x].color || color;
-    x += x1 > x ? 1 : -1;
-    if (mask[y]?.[x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | (bit === E ? W : E);
+  stampAxis(mask, color, y0, y1, x0, true, y1 > y0 ? S : N, y1 > y0 ? N : S);
+  stampAxis(mask, color, x0, x1, y1, false, x1 > x0 ? E : W, x1 > x0 ? W : E);
+  // 线段经过的格子记下归属色，渲染时按 cell.color 输出。
+  for (let y = Math.min(y0, y1); y <= Math.max(y0, y1); y++) {
+    for (let x = Math.min(x0, x1); x <= Math.max(x0, x1); x++) {
+      if (grid[y]?.[x] && !grid[y][x].color) grid[y][x].color = color;
+    }
   }
 }
 
@@ -119,8 +158,11 @@ function line(grid: Cell[][], x0: number, y0: number, x1: number, y1: number, co
 }
 
 function put(grid: Cell[][], x: number, y: number, text: string, color?: string) {
+  // 唯一网格入口必须自净：任何调用者漏传了转义序列或控制符，都在这里被剥掉，
+  // 绝不能把 ESC 当成一个可见字符格写进画面。
   let column = x;
-  for (const char of text) {
+  for (const char of plain(text)) {
+    // 全角字符占两格，第二格留空由 colorize 跳过，宽度账才对得上。
     const width = Math.max(1, visibleWidth(char));
     if (grid[y]?.[column]) grid[y][column] = { char, color };
     for (let offset = 1; offset < width; offset++) if (grid[y]?.[column + offset]) grid[y][column + offset] = { char: '', color };
@@ -151,7 +193,7 @@ function bubble(grid: Cell[][], node: VisualNode, width: number, height: number)
   ];
   put(grid, x, y, '╭' + '─'.repeat(boxWidth - 2) + '╮', 'accent');
   rows.forEach((row, index) => {
-    const content = truncateToWidth(plain(row), inner);
+    const content = cut(row, inner);
     put(grid, x, y + index + 1, '│ ' + content + ' '.repeat(Math.max(0, inner - visibleWidth(content))) + ' │', index === 0 ? 'accent' : 'text');
   });
   put(grid, x, y + 7, '╰' + '─'.repeat(boxWidth - 2) + '╯', 'accent');
@@ -160,7 +202,8 @@ function bubble(grid: Cell[][], node: VisualNode, width: number, height: number)
 // 右侧常驻面板：框线容器 + 计数、可筛选任务列表、选中详情。列表负责寻找，详情负责判断和行动。
 // 议会简要：右上角动态高度卡片，只框住实际内容，不再拖一整列空框。
 function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNode | undefined, width: number, height: number, now: number, council?: CouncilView) {
-  if (width < 120) return;
+  // 书案打开时右侧被书案面板占据，议会简要让位。
+  if (width < 120 || council?.desk) return;
   const x = width - 38, labelX = x + 2, labelWidth = 32, right = width - 1;
   const focused = council?.focus === 'list';
   const frameColor = focused ? 'borderAccent' : 'borderMuted';
@@ -181,7 +224,7 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     const start = Math.max(0, Math.min(council.index - Math.floor(visible / 2), Math.max(0, filtered.length - visible)));
     for (let i = start; i < Math.min(filtered.length, start + visible); i++) {
       const task = filtered[i];
-      rows.push({ text: `${i === council.index ? '›' : ' '}${stateMark(task)} ${padCell(task.status || task.state || '—', 8)} ${padCell(task.agent, 8)} ${truncateToWidth(plain(task.title || ''), labelWidth - 20)}`, color: i === council.index ? 'accent' : stateColor(task, i) });
+      rows.push({ text: `${i === council.index ? '›' : ' '}${stateMark(task)} ${padCell(task.status || task.state || '—', 8)} ${padCell(task.agent, 8)} ${cut(task.title || '', labelWidth - 20)}`, color: i === council.index ? 'accent' : stateColor(task, i) });
     }
     if (filtered.length > visible) rows.push({ text: `  ${Math.min(filtered.length, start + visible)}/${filtered.length} · ↑↓ 选择`, color: 'dim' });
     rows.push('div');
@@ -191,9 +234,9 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
   if (task) {
     const elapsed = task.started ? Math.max(0, Math.round((now - task.started) / 1000)) + 's' : '—';
     rows.push({ text: `状态 ${task.status || task.state || '—'} · ${elapsed}`, color: stateColor(task, selected!.index) });
-    if (task.tool) rows.push({ text: `工具 ${truncateToWidth(plain(task.tool), labelWidth - 3)}`, color: 'dim' });
-    if (task.checkpoint) rows.push({ text: `进展 ${truncateToWidth(plain(task.checkpoint), labelWidth - 3)}`, color: 'dim' });
-    rows.push({ text: `输出 ${truncateToWidth(plain(task.output || '等待结果'), labelWidth - 3)}`, color: 'text' });
+    if (task.tool) rows.push({ text: `工具 ${cut(task.tool, labelWidth - 3)}`, color: 'dim' });
+    if (task.checkpoint) rows.push({ text: `进展 ${cut(task.checkpoint, labelWidth - 3)}`, color: 'dim' });
+    rows.push({ text: `输出 ${cut(task.output || '等待结果', labelWidth - 3)}`, color: 'text' });
     rows.push({ text: 'Enter 详情 · Ctrl+X 取消 · v 完整输出', color: 'dim' });
   } else {
     rows.push({ text: selected ? '尚无书案' : '总理 · Enter 输入目标', color: 'dim' });
@@ -216,7 +259,7 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     const y = index + 1;
     if (y >= cardH - 1) return;
     if (row === 'div') { put(grid, x, y, '├', frameColor); for (let cx = x + 1; cx < right; cx++) put(grid, cx, y, '─', frameColor); put(grid, right, y, '┤', frameColor); return; }
-    put(grid, labelX, y, truncateToWidth(plain(row.text), labelWidth), row.color);
+    put(grid, labelX, y, cut(row.text, labelWidth), row.color);
   });
 }
 
@@ -244,11 +287,11 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
     tasks.filter(task => !task.parentWorkerId).map(task => [task.agent, task]),
   );
   const realNodes: VisualNode[] = agents.map(agent => {
+    // 终态任务仍挂在代表上用于显示状态色，但 groupKey 保持 'default'，
+    // 这样任务结束后代表回到代表席，不再占着临时分组环。
     const latest = latestByAgent.get(agent.name);
-    const task = latest && isTaskCurrent(latest) ? latest : undefined;
-    // 终态任务仍挂在代表上，用于显示状态色，但不参与分组（groupKey 保持 'default'）。
-    const display = latest;
-    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: display, groupKey: task ? (task.groupKey || 'default') : 'default', index: 0, x: 0, y: 0 };
+    const active = latest && isTaskCurrent(latest) ? latest : undefined;
+    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: latest, groupKey: active?.groupKey || 'default', index: 0, x: 0, y: 0 };
   });
   for (const task of tasks) {
     const agent = byAgent.get(task.agent);
@@ -269,36 +312,60 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
 // 议会形态：默认一个 48 席大圆环。活跃任务变多时按分组聚成若干小环，
 // 每组的第一席（代理总代）朝向总理所在的中心，其余席位绕它排开。
 // 这是既定的产品形态——不要改成同心环或泳道。
-function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets) {
-  const active = nodes.filter(node => node.task).length;
-  const ringCount = active > 12 ? Math.max(2, Math.ceil(nodes.length / 12)) : 1;
-  const groups: VisualNode[][] = [];
-  if (ringCount === 1) groups.push(nodes);
-  else {
-    // 按 groupKey 聚组，每组最多 12 席。
-    const map = new Map<string, VisualNode[]>();
-    for (const node of nodes) { const list = map.get(node.groupKey) || []; list.push(node); map.set(node.groupKey, list); }
-    for (const list of map.values()) for (let index = 0; index < list.length; index += 12) groups.push(list.slice(index, index + 12));
-  }
-  const canvasWidth = width >= 120 ? width - 38 : width;
+function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets, reserveSidebar = false) {
+  const activeCount = nodes.filter(node => node.task).length;
+  const ringCount = activeCount > 12 ? Math.max(2, Math.ceil(nodes.length / 12)) : 1;
+  // 单环就是全体；多环按 groupKey 聚组，每组最多 12 席。
+  const groups: VisualNode[][] = ringCount === 1 ? [nodes] : (() => {
+    const byGroup = new Map<string, VisualNode[]>();
+    for (const node of nodes) {
+      const list = byGroup.get(node.groupKey) ?? [];
+      list.push(node);
+      byGroup.set(node.groupKey, list);
+    }
+    return [...byGroup.values()].flatMap(list =>
+      Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => list.slice(i * 12, i * 12 + 12)),
+    );
+  })();
+  const canvasWidth = width >= 120 && reserveSidebar ? width - 38 : width;
   const center = { x: Math.floor(canvasWidth / 2), y: Math.floor(height / 2) };
   const tracks: { cx: number; cy: number; rx: number; ry: number }[] = [];
   // 小环的环绕轨道：随 zoom 一起缩放，和环本身保持一致。
-  const orbit = ringCount === 1 ? 0 : Math.min(canvasWidth * .22, 18) * zoom;
-  const orbitY = ringCount === 1 ? 0 : Math.min(height * .24, 7) * zoom;
+  // 多环时要给小环本身留出直径，否则相邻两环会压到一起、把标签挤到总理座上。
+  const orbit = ringCount === 1 ? 0 : Math.min(canvasWidth * .26, 22) * zoom;
+  const orbitY = ringCount === 1 ? 0 : Math.min(height * .30, 10) * zoom;
   groups.forEach((group, ringIndex) => {
     const ringCenter = ringCount === 1 ? center : {
       x: Math.round(center.x + Math.cos((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * orbit),
       y: Math.round(center.y + Math.sin((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * orbitY),
     };
     // 半径按席位数量决定：席位少时用小圆，席位多时再撑满画布。
-    // zoom 作用于整个环布局（含小环自身半径），否则缩放只会拉开环间距、环本身不动。
+    // 终端单元格约为 1:2（宽:高），所以椭圆天然是扁的；这里先定纵横比，
+    // 再按 Ramanujan 周长反解尺寸，保证每席分到的弧长够放下一个名字（约 6 列）。
     const need = Math.max(1, group.length);
-    const baseRx = Math.min(canvasWidth / 2 - 5, Math.max(8, (need * 6) / (Math.PI * 2) + 6));
-    const baseRy = Math.min(height / 2 - 3, Math.max(3, (need * 2.2) / (Math.PI * 2) + 2));
-    // 单环与分组小环共用同一套缩放，保证放大/缩小是整体一致的。
-    // 下限只守住"不压到总理座"（盒子约 12 列宽），留出 2 格呼吸。
-    const radiusX = Math.max(9, Math.round(baseRx * zoom));
+    const spreadX = canvasWidth / 2 - 5, spreadY = height / 2 - 3;
+    // 纵横比：终端单元格约 1:2，椭圆天然偏扁。这里按画布可用空间给出更饱满的比例，
+    // 让圆环在视觉上接近正圆，不至于压成一条横线。
+    const ratio = Math.max(0.55, Math.min(0.95, spreadY / Math.max(1, spreadX)));
+    // 目标周长；按椭圆周长公式反解长半轴 a（b = a * ratio）。
+    const targetPerimeter = need * 7;
+    let baseRx = (targetPerimeter / Math.PI) / (1 + ratio);
+    let baseRy = baseRx * ratio;
+    for (let pass = 0; pass < 2; pass++) {
+      const b = baseRx * ratio;
+      const perimeter = Math.PI * (3 * (baseRx + b) - Math.sqrt((3 * baseRx + b) * (baseRx + 3 * b)));
+      if (perimeter <= 0) break;
+      const scale = targetPerimeter / perimeter;
+      baseRx *= scale;
+      baseRy = baseRx * ratio;
+    }
+    // 多环时小环半径不能超过环绕轨道的一半，否则相邻分组会互相压住。
+    const sizeCapX = ringCount === 1 ? spreadX : Math.max(6, orbit * 0.52);
+    const sizeCapY = ringCount === 1 ? spreadY : Math.max(3, orbitY * 0.52);
+    baseRx = Math.min(sizeCapX, Math.max(9, baseRx));
+    baseRy = Math.min(sizeCapY, Math.max(4, baseRy));
+    // zoom 直接相乘。下限只防止压到总理座（"◉  总理" 横向约 6 格）。
+    const radiusX = Math.max(7, Math.round(baseRx * zoom));
     const radiusY = Math.max(3, Math.round(baseRy * zoom));
     tracks.push({ cx: ringCenter.x, cy: ringCenter.y, rx: radiusX, ry: radiusY });
     // 小环的第一席（代理总代）落在朝总理的一侧，其余席位绕它排开。
@@ -335,10 +402,8 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
 export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}, now = Date.now(), council?: CouncilView): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
   const safeWidth = Math.max(24, width), safeHeight = Math.max(8, height);
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
-  const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
+  const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets, !council?.desk);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
-  // 不画轨道虚线：满屏小圆点没有语义，只会盖住代表标签、抢走注意力。
-  // 圆桌形态由席位本身的排布给出。
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
   // 交互连线：总理与正在交互的代表之间连一条线。
   // 选中某席位时，画出 总理 → 该席位（及其委派链）的通路；未选中时
@@ -368,19 +433,36 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   for (const node of layout.nodes) {
     const selectedNode = selected === node.index;
     const approval = node.task?.state === 'NEEDS_HUMAN';
-    // 选中时只让本链席位提亮；其余席位保留自己的状态色（排队、待审批仍要看得见），
-    // 只是不再抢眼——状态信息不能被选中态掩盖。
-    const onChain = chain.size === 0 || chain.has(node.id);
     const color = node.task ? stateColor(node.task, node.index) : 'idle';
-    const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || '');
-    const marker = selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■';
+    // 符号本身表达状态（见 seatGlyph），颜色只负责语义分组与轻重。
+    const marker = seatGlyph(node.task, selectedNode, now);
     const shake = approval ? Math.floor(now / 400) % 2 : 0;
     put(grid, node.x - 1 + shake, node.y, marker, color);
-    if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚠', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
-    // 每个席位都显示名字：没有任务时也能看清这 48 席是谁。
-    // 空闲代表的文字用 dim，有任务的用状态色，选中时整行提亮。
-    const nameColor = selectedNode ? 'accent' : color;
-    put(grid, node.x - Math.floor(visibleWidth(plain(node.label)) / 2), node.y + 1, truncateToWidth(plain(node.label), 10), nameColor);
+    // 待审批：黄色运行态 + 席位中央的感叹号（沿用敲定语义，不改成静态符号）。
+    if (approval) put(grid, node.x, node.y, '!', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
+    // 名字比符号降一阶明度；未分配的席位退到背景。
+    // 标签不能侵入总理座区，否则最小缩放下会糊在一起。
+    const nameColor = selectedNode ? 'accent' : stateNameColor(node.task, node.index);
+    const label = cut(node.label, 10);
+    const labelY = node.y + 1;
+    let labelX = node.x - Math.floor(visibleWidth(label) / 2);
+    // 只有与总理座同一行才需要避让；推不出空间就让标签让位。
+    if (labelY === main.y) {
+      const boxLeft = main.x - 3, boxRight = main.x + 7;
+      const overlaps = labelX <= boxRight && labelX + visibleWidth(label) >= boxLeft;
+      if (overlaps) {
+        // 位于总理右侧的席位向右让，左侧的向左让。
+        labelX = node.x >= main.x
+          ? boxRight + 1
+          : boxLeft - visibleWidth(label);
+        // 让位后可能出界，按剩余空间截断。
+        if (labelX < 0 || labelX >= safeWidth) continue;
+        put(grid, labelX, labelY, cut(label, safeWidth - labelX), nameColor);
+        hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id });
+        continue;
+      }
+    }
+    put(grid, labelX, labelY, label, nameColor);
     hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id });
   }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
