@@ -27,7 +27,7 @@ export function commandRisk(command: string): Risk | null {
   // messages, grep patterns) or after a pipe is not an approval attempt.
   if (/\bkepos\b[^|;&]*\bapprove\b/.test(lower)) return 'gate';
   if (lower.includes('orbital.sqlite')) return 'data';
-  const touchesKeposHome = lower.includes('.kepos') || lower.includes('kepos_home') || lower.includes('orbital_home');
+  const touchesKeposHome = lower.includes('.kepos') || lower.includes('kepos_home') || lower.includes('kepos_home');
   if (touchesKeposHome && (WRITE_HINTS.some(hint => lower.includes(hint)) || lower.includes('sqlite3'))) return 'data';
   return null;
 }

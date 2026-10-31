@@ -37,6 +37,6 @@ test('file paths inside the Kepos data directory are flagged, project files are 
 });
 
 test('readonly supervision keeps read tools and delegates but drops mutating tools',()=>{
- const kept=restrictTools(['read','bash','powershell','edit','write','grep','find','ls','orbital_delegate','orbital_events']);
- assert.deepEqual(kept,['read','grep','find','ls','orbital_delegate','orbital_events']);
+ const kept=restrictTools(['read','bash','powershell','edit','write','grep','find','ls','kepos_delegate','kepos_events']);
+ assert.deepEqual(kept,['read','grep','find','ls','kepos_delegate','kepos_events']);
 });

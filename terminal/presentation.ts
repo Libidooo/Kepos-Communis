@@ -16,4 +16,4 @@ export function boundedJson(value:unknown,max=12000):string{
  return encode(low);
 }
 
-export function boundedText(value:unknown,max=6000):string{const text=String(value??'');if(text.length<=max)return text;const head=Math.floor(max*0.75),tail=Math.max(0,max-head);return text.slice(0,head)+'\n… [摘要截断；完整证据按 taskId / orbital_worker result 读取] …\n'+text.slice(-tail);}
+export function boundedText(value:unknown,max=6000):string{const text=String(value??'');if(text.length<=max)return text;const head=Math.floor(max*0.75),tail=Math.max(0,max-head);return text.slice(0,head)+'\n… [摘要截断；完整证据按 taskId / kepos_worker result 读取] …\n'+text.slice(-tail);}

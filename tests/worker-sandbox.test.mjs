@@ -8,7 +8,7 @@ import {workerEnv} from '../dist/terminal/warm-executor.js';
 
 const project=join(mkdtempSync(join(tmpdir(),'kepos-sandbox-')),'project');
 const home=mkdtempSync(join(tmpdir(),'kepos-sandbox-home-'));
-const data=join(home,'data','orbital');
+const data=join(home,'data','kepos');
 const base={mode:'project',cwd:project,allow:[],deny:[data],home};
 
 test('project scope confines reads to the task directory plus allow-list',()=>{
