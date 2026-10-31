@@ -1,6 +1,6 @@
 {
   "$schema": "https://pi.dev/schemas/theme.schema.json",
-  "name": "orbital-76",
+  "name": "kepos-dark",
   "appearance": "dark",
   "vars": {
     "paper": "#D2CABB",
@@ -12,7 +12,9 @@
     "rust": "#CD9585",
     "blue": "#99ACBB",
     "mauve": "#B5A0AD",
-    "line": "#536562"
+    "line": "#536562",
+    "brand": "#B52F3B",
+    "warmwhite": "#F5F0E7"
   },
   "colors": {
     "accent": "amber",

@@ -10,13 +10,13 @@ export async function doctorCommand(paths: AppPaths, json = false): Promise<void
   const sdk = await import('@earendil-works/pi-coding-agent');
   const result = {
     product: 'Kepos Communis', version: packageVersion(), node: process.versions.node,
-    sdk: sdk.VERSION, architecture: 'sdk', ...paths, theme: 'orbital-76',
-    themeBundled: existsSync(join(packageRoot, 'themes/orbital-76.json')), project: process.cwd(),
+    sdk: sdk.VERSION, architecture: 'sdk', ...paths, theme: 'kepos-dark',
+    themeBundled: existsSync(join(packageRoot, 'themes/kepos-dark.json')), project: process.cwd(),
   };
   if (json) {
     console.log(JSON.stringify(result, null, 2));
     return;
   }
-  const theme = result.themeBundled ? 'orbital-76 ready' : 'missing';
+  const theme = result.themeBundled ? 'kepos-dark ready' : 'missing';
   console.log(`Kepos ${result.version} · Node ${result.node} · Pi SDK ${result.sdk}\nProject: ${result.project}\nHome: ${paths.home}\nTheme: ${theme}`);
 }

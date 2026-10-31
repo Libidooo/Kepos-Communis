@@ -21,14 +21,14 @@ export function activatePaths(paths: AppPaths) {
 }
 export function preparePaths(paths: AppPaths) {
  for (const directory of [paths.agentDir, paths.dataDir, paths.sessionDir, paths.themeDir]) mkdirSync(directory, { recursive: true });
- const themeSource = join(packageRoot, 'themes', 'orbital-76.json');
- const themeTarget = join(paths.themeDir, 'orbital-76.json');
+ const themeSource = join(packageRoot, 'themes', 'kepos-dark.json');
+ const themeTarget = join(paths.themeDir, 'kepos-dark.json');
  if (existsSync(themeSource) && !existsSync(themeTarget)) {
   try { copyFileSync(themeSource, themeTarget, 1); } catch (error: any) { if (error.code !== 'EEXIST') throw error; }
  }
  const settings = join(paths.agentDir, 'settings.json');
  if (!existsSync(settings)) {
-  try { writeFileSync(settings, JSON.stringify({ theme: 'orbital-76', quietStartup: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
+  try { writeFileSync(settings, JSON.stringify({ theme: 'kepos-dark', quietStartup: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }
   catch (error: any) { if (error.code !== 'EEXIST') throw error; }
  }
 }

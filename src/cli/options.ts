@@ -88,7 +88,7 @@ Options:
   --model <id>            Initial model; use --provider to disambiguate
   --continue              Continue the latest project session
   --session <file>        Open a saved session
-  --theme <name>          Pi-compatible theme (default: orbital-76)
+  --theme <name>          Pi-compatible theme (default: kepos-dark)
   --thinking <level>      off, minimal, low, medium, high, xhigh, max
   --method <type>         login method: oauth or api_key
   --json                  Machine-readable status

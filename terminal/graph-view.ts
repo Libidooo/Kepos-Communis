@@ -36,7 +36,7 @@ const plain = (value: unknown) => stripVTControlCharacters(String(value ?? '')).
 // htop 式对齐列：状态/代表名定宽补齐，标题吃剩余宽度。
 const padCell = (value: string, width: number) => { const text = truncateToWidth(plain(value), width); return text + ' '.repeat(Math.max(0, width - visibleWidth(text))); };
 
-// teal/blue/mauve exist only as orbital-76 vars; Pi's theme.fg rejects them, so emit them directly.
+// teal/blue/mauve exist only as kepos-dark vars; Pi's theme.fg rejects them, so emit them directly.
 const directColors: Record<string, string> = { approval: '1;38;2;255;223;84', queue: '38;2;157;126;76', idle: '38;2;116;139;129', teal: '38;2;142;181;173', blue: '38;2;153;172;187', mauve: '38;2;181;160;173' };
 const palette = ['teal', 'blue', 'mauve', 'accent'];
 export const stateColor = (task: GraphViewTask | undefined, index: number) => {
@@ -57,7 +57,51 @@ export const groupColor = (task: GraphViewTask | undefined, _index = 0) => {
   return palette[hash % palette.length];
 };
 
+// 连线使用方向位掩码：每个格子记录哪几边有连线，渲染时再选 ├ ┤ ┬ ┴ ┼ 或直线。
+// 旧实现遇到交叉直接塞 ┼ 并覆盖颜色，两条不同分组的线相交后归属就丢了。
+const N = 1, S = 2, W = 4, E = 8;
+const junctionChar = (mask: number): string => {
+  const table: Record<number, string> = {
+    [N | S]: '│', [W | E]: '─',
+    [N | E]: '└', [N | W]: '┘', [S | E]: '┌', [S | W]: '┐',
+    [N | S | E]: '├', [N | S | W]: '┤', [N | W | E]: '┴', [S | W | E]: '┬',
+    [N | S | W | E]: '┼',
+  };
+  return table[mask] || '·';
+};
+
+/** 在网格上记录一条线段的方向位，返回终点该补的入边。 */
+function stamp(grid: Cell[][], mask: (number | undefined)[][], x0: number, y0: number, x1: number, y1: number, color: string) {
+  let x = x0, y = y0;
+  while (x !== x1 || y !== y1) {
+    let bits = 0;
+    if (x1 > x) bits |= E; else if (x1 < x) bits |= W;
+    if (y1 > y) bits |= S; else if (y1 < y) bits |= N;
+    const row = mask[y];
+    if (row && row[x] !== undefined) row[x] = (row[x] ?? 0) | bits;
+    if (grid[y]?.[x]) grid[y][x].color = grid[y][x].color || color;
+    if (x !== x1) x += x1 > x ? 1 : -1;
+    else y += y1 > y ? 1 : -1;
+    // 记录反方向，避免终点缺少入边。
+    const opposite = bits & E ? W : bits & W ? E : bits & S ? N : bits & N ? S : 0;
+    if (mask[y] && mask[y][x] !== undefined) mask[y][x] = (mask[y][x] ?? 0) | opposite;
+  }
+}
+
+function renderConnections(grid: Cell[][], mask: (number | undefined)[][], color: string) {
+  for (let y = 0; y < mask.length; y++) {
+    for (let x = 0; x < (mask[y]?.length ?? 0); x++) {
+      const bits = mask[y][x];
+      if (!bits) continue;
+      const cell = grid[y]?.[x];
+      if (!cell || cell.char !== ' ') continue;
+      grid[y][x] = { char: junctionChar(bits), color };
+    }
+  }
+}
+
 function line(grid: Cell[][], x0: number, y0: number, x1: number, y1: number, color: string) {
+  // 仅用于诊断和未来需要斜线的场景；当前连线走 stamp + 位掩码的正交路径。
   const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
   const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
   const stroke = dx > -dy * 2 ? '─' : -dy > dx * 2 ? '│' : sx === sy ? '╲' : '╱';
@@ -65,7 +109,6 @@ function line(grid: Cell[][], x0: number, y0: number, x1: number, y1: number, co
   for (;;) {
     const cell = grid[y]?.[x];
     if (cell?.char === ' ') grid[y][x] = { char: stroke, color };
-    else if (cell && '─│╱╲'.includes(cell.char) && cell.char !== stroke) grid[y][x] = { char: '┼', color };
     if (x === x1 && y === y1) break;
     const twice = 2 * error;
     if (twice >= dy) { error += dy; x += sx; }
@@ -225,24 +268,58 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   return nodes;
 }
 
-function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets) {
-  const active = nodes.filter(node => node.task).length;
-  const ringCount = active > 12 ? Math.max(2, Math.ceil(nodes.length / 12)) : 1;
-  const groups: VisualNode[][] = [];
-  if (ringCount === 1) groups.push(nodes);
-  else {
-    const map = new Map<string, VisualNode[]>();
-    for (const node of nodes) { const list = map.get(node.groupKey) || []; list.push(node); map.set(node.groupKey, list); }
-    for (const list of map.values()) for (let index = 0; index < list.length; index += 12) groups.push(list.slice(index, index + 12));
+// 同心环：按父子深度分层，边只跨相邻层。
+// 旧实现把多环画成互相拥挤的小圆，半径掉到 3–10 格，12 个节点在周长 ~48 格里只隔 4 格，
+// 连线全部收向中心，视觉上就是一团乱麻。层数由最深委派链决定，半径吃满画布。
+function nodeDepth(node: VisualNode, byWorker: Map<string, VisualNode>): number {
+  let depth = 0, current = node, guard = 0;
+  while (current?.task?.parentWorkerId && guard++ < 8) {
+    const parent = byWorker.get(current.task.parentWorkerId);
+    if (!parent) break;
+    depth++; current = parent;
   }
+  return depth;
+}
+
+function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets) {
   const canvasWidth = width >= 120 ? width - 38 : width;
   const center = { x: Math.floor(canvasWidth / 2), y: Math.floor(height / 2) };
-  groups.forEach((group, ringIndex) => {
-    const ringCenter = ringCount === 1 ? center : { x: Math.round(center.x + Math.cos((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * Math.min(canvasWidth * .23, 18 * zoom)), y: Math.round(center.y + Math.sin((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * Math.min(height * .25, 6 * zoom)) };
-    const radiusX = ringCount === 1 ? Math.max(10, Math.min(canvasWidth / 2 - 5, 40 * zoom)) : Math.max(4, Math.min(10, 3 + group.length * .55));
-    const radiusY = ringCount === 1 ? Math.max(3, Math.min(height / 2 - 3, 12 * zoom)) : Math.max(2, Math.min(5, 1.5 + group.length * .3));
-    group.forEach((node, index) => { const angle = (index / Math.max(1, group.length)) * Math.PI * 2 - Math.PI / 2; const offset = offsets[node.id] || { x: 0, y: 0 }; node.x = Math.round(ringCenter.x + Math.cos(angle) * radiusX + offset.x); node.y = Math.round(ringCenter.y + Math.sin(angle) * radiusY + offset.y); });
+  const byWorker = new Map(nodes.filter(node => node.task).map(node => [node.task!.id, node]));
+  // 有任务或本身是配置代表的节点上环；空席留在最外环补足 48 宫格。
+  const ringed = nodes.filter(node => node.task || !node.id.startsWith('seat:'));
+  const emptySeats = nodes.filter(node => node.id.startsWith('seat:'));
+  const depthOf = new Map<VisualNode, number>();
+  for (const node of ringed) depthOf.set(node, nodeDepth(node, byWorker));
+  const maxDepth = ringed.reduce((max, node) => Math.max(max, depthOf.get(node) ?? 0), 0);
+  const ringCount = Math.max(1, maxDepth + 1);
+  const buckets: VisualNode[][] = Array.from({ length: ringCount }, () => []);
+  for (const node of ringed) buckets[depthOf.get(node) ?? 0]!.push(node);
+  // 内环要给总理座盒留出半径，逐环向外铺开；随环数线性增长而不是塌缩。
+  const outerX = Math.max(12, Math.min(canvasWidth / 2 - 4, (canvasWidth / 2 - 4) * zoom));
+  const outerY = Math.max(4, Math.min(height / 2 - 3, (height / 2 - 3) * zoom));
+  const tracks: { cx: number; cy: number; rx: number; ry: number }[] = [];
+  buckets.forEach((group, depth) => {
+    const share = ringCount === 1 ? 1 : 0.52 + (depth / Math.max(1, ringCount - 1)) * 0.48;
+    const rx = Math.max(10, outerX * share), ry = Math.max(3, outerY * share);
+    tracks.push({ cx: center.x, cy: center.y, rx, ry });
+    group.forEach((node, index) => {
+      const angle = (index / Math.max(1, group.length)) * Math.PI * 2 - Math.PI / 2;
+      const offset = offsets[node.id] || { x: 0, y: 0 };
+      node.x = Math.round(center.x + Math.cos(angle) * rx + offset.x);
+      node.y = Math.round(center.y + Math.sin(angle) * ry + offset.y);
+    });
   });
+  // 空席铺最外一圈，不与已有席位争半径。
+  if (emptySeats.length) {
+    const rx = Math.max(12, outerX + 2), ry = Math.max(4, outerY + 1);
+    tracks.push({ cx: center.x, cy: center.y, rx, ry });
+    emptySeats.forEach((node, index) => {
+      const angle = (index / Math.max(1, emptySeats.length)) * Math.PI * 2 - Math.PI / 2;
+      const offset = offsets[node.id] || { x: 0, y: 0 };
+      node.x = Math.round(center.x + Math.cos(angle) * rx + offset.x);
+      node.y = Math.round(center.y + Math.sin(angle) * ry + offset.y);
+    });
+  }
   // 整数网格会让座位重合（48 任务多环时实测出现 2 组），后到者沿邻近空位挪开，保证可见可点。
   const occupied = new Set<string>();
   for (const node of nodes) {
@@ -260,9 +337,9 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
     }
     if (!placed) occupied.add(key);
   }
-  // 单环时记录椭圆轨道参数，供渲染层画虚线轨道，让"圆桌"读得出轮廓。
-  const track = ringCount === 1 ? { cx: center.x, cy: center.y, rx: Math.max(10, Math.min(canvasWidth / 2 - 5, 40 * zoom)), ry: Math.max(3, Math.min(height / 2 - 3, 12 * zoom)) } : undefined;
-  return { center, nodes, ringCount, track };
+  // 轨道虚线让"圆桌"读得出轮廓；单环时只留最外一条，多环时逐层可见。
+  const track = tracks.length ? tracks : undefined;
+  return { center, nodes, ringCount, tracks: track, track: tracks.length === 1 ? tracks[0] : undefined };
 }
 
 export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}, now = Date.now(), council?: CouncilView): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
@@ -270,8 +347,9 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets);
   const main = { id: 'main', kind: 'main' as const, index: -1, x: layout.center.x, y: layout.center.y };
-  if (layout.track) {
-    const { cx, cy, rx, ry } = layout.track;
+  // 每层画一圈轨道虚线；多环时逐层可见，读得出"同心"结构。
+  for (const track of layout.tracks) {
+    const { cx, cy, rx, ry } = track;
     const steps = Math.max(64, Math.round((rx + ry) * 2));
     for (let i = 0; i < steps; i++) {
       const angle = (i / steps) * Math.PI * 2;
@@ -281,25 +359,50 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     }
   }
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
-  // 连线只画有真实进展语义的席位：活跃 + 待审批；历史终态不再拉线。
-  const connectedStates = new Set([...TASK_ACTIVE_STATES, 'NEEDS_HUMAN']);
-  // 总理座盒：三行小盒取代单字符，右侧边作为连线锚点，避免连线穿过盒子。
-  const anchor = { x: main.x + 5, y: main.y };
-  for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
+  // 默认不画任何边：48 席的连线很容易糊成网。只有选中某个席位时，
+  // 才把 总理 → 代表 → Worker 这条祖先链画出来，其余席位保持 dim。
+  const selectedNodeEarly = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
+  const chain = new Set<string>();
+  if (selectedNodeEarly) {
+    let cursor: VisualNode | undefined = selectedNodeEarly;
+    let guard = 0;
+    while (cursor && guard++ < 8) { chain.add(cursor.id); cursor = cursor.task?.parentWorkerId ? byWorkerId.get(cursor.task.parentWorkerId) : undefined; }
+  }
+  const edgeMask: (number | undefined)[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => 0 as number | undefined));
+  if (selectedNodeEarly) {
+    for (const node of layout.nodes) {
+      if (!chain.has(node.id)) continue;
+      const parent = node.task?.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined;
+      stamp(grid, edgeMask, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, 'accent');
+    }
+    renderConnections(grid, edgeMask, 'accent');
+  }
   put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text'); put(grid, main.x + 2, main.y, '总理', 'accent');
   const hits: GraphHit[] = [main];
-  for (const node of layout.nodes) { const selectedNode = selected === node.index; const empty = node.id.startsWith('seat:'); const approval = node.task?.state === 'NEEDS_HUMAN'; const color = empty ? 'muted' : node.task ? stateColor(node.task, node.index) : 'idle'; const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || ''); const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■'; const shake = approval ? Math.floor(now / 400) % 2 : 0; put(grid, node.x - 1 + shake, node.y, marker, color); if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚠', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
-    // 有任务的席位在单环下显示名字（选中席位任何环都显示）；用可见宽度居中，CJK 不偏移。
-    const labelled = selectedNode || (node.task && layout.track ? node : undefined);
+  for (const node of layout.nodes) {
+    const selectedNode = selected === node.index;
+    const empty = node.id.startsWith('seat:');
+    const approval = node.task?.state === 'NEEDS_HUMAN';
+    // 选中时非本链席位退为 dim，让"谁属于这条链"一眼可见。
+    const onChain = chain.size === 0 || chain.has(node.id);
+    const color = empty ? 'muted' : !onChain ? 'dim' : node.task ? stateColor(node.task, node.index) : 'idle';
+    const pulsing = !!node.task && ['RUNNING', 'STARTING'].includes(node.task.state || '');
+    const marker = empty ? '○' : selectedNode ? '▣' : pulsing && Math.floor(now / 600) % 2 ? '▪' : '■';
+    const shake = approval ? Math.floor(now / 400) % 2 : 0;
+    put(grid, node.x - 1 + shake, node.y, marker, color);
+    if (approval) put(grid, node.x - 1 - shake, node.y - 1, '⚠', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
+    // 有任务的席位显示名字（选中席位任何布局都显示）；用可见宽度居中，CJK 不偏移。
+    const labelled = selectedNode || (node.task && layout.tracks.length <= 1 ? node : undefined);
     if (labelled) put(grid, node.x - Math.floor(visibleWidth(plain(node.label)) / 2), node.y + 1, truncateToWidth(plain(node.label), 10), color);
-    hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); }
+    hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id });
+  }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   sidebar(grid, snapshot, selectedNode, safeWidth, safeHeight, now, council);
   if (detail) bubble(grid, selectedNode || { id: 'main', label: '总理', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
   const lines = grid.map(row => colorize(row, theme));
   const info = selected === -1 ? '总理 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
-  lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 个环`, safeWidth)));
+  lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount} 层同心环`, safeWidth)));
   if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  ⚠ 待审批 · Tab 列表 · / 过滤 · F10 返回 · 点击/拖动 · 滚轮缩放', safeWidth)));
+  else lines.push(theme.fg('dim', truncateToWidth('议会 · ○ 空席  ■ 代表  ⚠ 待审批 · 选中看链路 · Tab 列表 · F10 返回 · 拖动/缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }
