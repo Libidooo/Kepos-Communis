@@ -2,6 +2,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from '@earendil-works/pi-c
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { visibleWidth } from '@earendil-works/pi-tui';
@@ -520,10 +521,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  }
  pi.registerCommand('kepos-warm',{description:'预热子 Agent 执行器（不调用模型；空闲60秒退出）',handler:async(args,ctx)=>{const crew=config.agents.find(a=>a.name===args.trim())||config.agents[0];if(!crew){ctx.ui.notify('先配置至少一个子 Agent','warning');return;}try{const result=await pool.prewarm(crew,ctx.cwd);ctx.ui.notify(`${crew.name} 执行器已就绪 · PID ${result.pid} · 未请求模型`,'info');}catch(error){ctx.ui.notify(clean(error),'error');}}});
-  pi.registerCommand('simon',{description:'开始 Kepos 监督式工作（兼容旧命令）',handler:async(args,ctx)=>{const prompt=args?.trim()||`请先说明当前项目目标、风险和下一步计划；如需并行工作，使用 kepos_delegate 分派最多 ${MAX_CONCURRENT_CHILDREN} 个只读任务，默认每项 ${DEFAULT_TASK_SECONDS/60} 分钟，并每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟用 kepos_events/kepos_tasks 复核；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的工作改用 kepos_plan 并等待人类批准。`;await pi.sendUserMessage(prompt);}});
+ pi.registerCommand('theme',{description:'切换深色/浅色主题（/reload 生效）',handler:async(_args,ctx)=>{
+  const settingsFile=join(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'),'settings.json');
+  let settings:any={};try{settings=JSON.parse(readFileSync(settingsFile,'utf8'));}catch{}
+  const next=settings.theme==='kepos-light'?'kepos-dark':'kepos-light';
+  settings.theme=next;
+  writeFileSync(settingsFile,JSON.stringify(settings,null,2)+'\n');
+  ctx.ui.notify(`主题已切换为 ${next}；/reload 生效。`,'info');
+ }});
+ pi.registerCommand('simon',{description:'开始 Kepos 监督式工作（兼容旧命令）',handler:async(args,ctx)=>{const prompt=args?.trim()||`请先说明当前项目目标、风险和下一步计划；如需并行工作，使用 kepos_delegate 分派最多 ${MAX_CONCURRENT_CHILDREN} 个只读任务，默认每项 ${DEFAULT_TASK_SECONDS/60} 分钟，并每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟用 kepos_events/kepos_tasks 复核；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的工作改用 kepos_plan 并等待人类批准。`;await pi.sendUserMessage(prompt);}});
  pi.registerCommand('simon-status',{description:'查看 Kepos、项目和子 Agent 状态（兼容旧命令）',handler:async(_args,ctx)=>{const tasks=pool.tasks.filter(t=>t.cwd===ctx.cwd&&t.parentSessionId===ctx.sessionManager.getSessionId());ctx.ui.notify(`Kepos Communis · ${ctx.model?.provider}/${ctx.model?.id}\n项目：${ctx.cwd}\n子 Agent：${tasks.filter(t=>!terminalStates.has(t.status)).length} 运行中 / ${tasks.length} 总计`,'info');}});
  pi.registerCommand('kepos',{description:'Kepos Communis · 打开议案',handler:async(_args,ctx)=>runDesk(ctx)});
-  pi.registerCommand('kepos',{description:'打开议案（三栏终端视图）：直接聊天、项目会话、真实子 Agent',handler:async(_args,ctx)=>runDesk(ctx)});
  pi.registerCommand('kepos-new',{description:'在当前项目创建对话',handler:async(_args,ctx)=>{if(blocked(ctx)){ctx.ui.notify('请先等待任务结束。','warning');return;}const name=await ctx.ui.input('新对话名称','');if(!name?.trim())return;const path=createLinkedSession(ctx,ctx.cwd,name.trim());await ctx.switchSession(path,{withSession:async fresh=>reopen(fresh)});}});
  pi.registerCommand('kepos-project',{description:'收录本地项目',handler:async(_args,ctx)=>{const input=await ctx.ui.input('项目绝对目录','');if(!input?.trim())return;try{const path=projectPath(input);if(!config.projects.includes(path))config.projects.push(path);save();}catch(e){ctx.ui.notify(clean(e),'error');}}});
  pi.registerCommand('kepos-agent',{description:'配置真实子 Agent',handler:async(_args,ctx)=>{try{await crewForm(ctx);}catch(e){ctx.ui.notify(clean(e),'error');}}});

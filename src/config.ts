@@ -26,6 +26,11 @@ export function preparePaths(paths: AppPaths) {
  if (existsSync(themeSource) && !existsSync(themeTarget)) {
   try { copyFileSync(themeSource, themeTarget, 1); } catch (error: any) { if (error.code !== 'EEXIST') throw error; }
  }
+ const themeLightSource = join(packageRoot, 'themes', 'kepos-light.json');
+ const themeLightTarget = join(paths.themeDir, 'kepos-light.json');
+ if (existsSync(themeLightSource) && !existsSync(themeLightTarget)) {
+  try { copyFileSync(themeLightSource, themeLightTarget, 1); } catch (error: any) { if (error.code !== 'EEXIST') throw error; }
+ }
  const settings = join(paths.agentDir, 'settings.json');
  if (!existsSync(settings)) {
   try { writeFileSync(settings, JSON.stringify({ theme: 'kepos-dark', quietStartup: true }, null, 2) + '\n', { flag: 'wx', mode: 0o600 }); }

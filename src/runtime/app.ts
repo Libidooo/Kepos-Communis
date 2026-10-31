@@ -60,8 +60,7 @@ export async function createWorkspace(options: WorkspaceOptions = {}): Promise<W
       cwd: targetCwd, agentDir: paths.agentDir, modelRuntime: auth.runtime,
       resourceLoaderOptions: {
         noExtensions: true,
-        additionalThemePaths: [join(paths.themeDir, 'kepos-dark.json')],
-        extensionFactories: [{ name: 'kepos', factory: pi => keposExtension(pi, host) }],
+        additionalThemePaths: [join(paths.themeDir, 'kepos-dark.json'), join(paths.themeDir, 'kepos-light.json')],        extensionFactories: [{ name: 'kepos', factory: pi => keposExtension(pi, host) }],
       },
     });
     const session = await createAgentSessionFromServices({
