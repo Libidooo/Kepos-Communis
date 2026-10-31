@@ -48,7 +48,7 @@ export class Desk {
  constructor(public tui:any,public theme:any,public ctx:any,public config:Config,public sessions:any[],public pool:WorkerPool,public submit:(text:string)=>void|Promise<void>,public done:(action?:Action)=>void,public commands:any[]=[],public clipboard:(text:string)=>Promise<void>=copyToClipboard,public onAction?:(action:Action)=>Promise<void>){
  this.sending=!ctx.isIdle();this.folded=new Set(config.folded);this.editor=new Editor(tui,{borderColor:(s:string)=>theme.fg('borderMuted',s),selectList:getSelectListTheme()},{paddingX:1});
  this.savedDraftBeforeCommand=config.drafts[this.sessionKey()]||'';this.editor.setText(this.savedDraftBeforeCommand);this.editor.focused=true;
- this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...localCommands,...commands.filter((c:any)=>!localCommands.some(l=>l.name===c.name)).map((c:any)=>({name:c.name,description:(c.source==='skill'?'[Skill] ':c.source==='prompt'?'[提示词] ':'[扩展命令] ')+(c.description||'')}))],ctx.cwd));
+ this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...localCommands,...commands.filter((c:any)=>!localCommands.some(l=>l.name===c.name)).map((c:any)=>({name:c.name,description:c.description||''}))],ctx.cwd));
  this.editor.onChange=()=>{const draft=this.editor.getExpandedText();if(draft&&!draft.startsWith('/'))this.savedDraftBeforeCommand=draft;config.drafts[this.sessionKey()]=this.editor.getExpandedText();clearTimeout(this.draftTimer);this.draftTimer=setTimeout(()=>{try{saveConfig(config)}catch(error){this.notice='草稿保存失败：'+clean(error);this.refresh();}},250);};
  this.editor.onSubmit=text=>this.send(text);
  }
@@ -184,7 +184,7 @@ export class Desk {
  const list=this.rows();this.selected=Math.max(0,Math.min(this.selected,list.length-1));const available=Math.max(1,contentRows-2);if(this.selected<this.rightOffset)this.rightOffset=this.selected;if(this.selected>=this.rightOffset+available)this.rightOffset=this.selected-available+1;
  const right=[this.theme.fg('dim','F2 新项目 · 新对话'),dividerRight,...list.slice(this.rightOffset,this.rightOffset+available).map((r:any,i)=>`${this.selected===this.rightOffset+i?'›':' '} ${r.kind==='project'?(this.folded.has(r.path)?'▸ ':'▾ '):r.path===this.ctx.sessionManager.getSessionFile()?'  ● ':'  ○ '}${clean(r.label)}`)];
  this.visibleCenter=[];const body:string[]=[];const frameColor=(focused:boolean)=>focused?'borderAccent':'borderMuted';
- // 侧栏铺 card 底色（orbital-76 的 toolSuccessBg 值等于 export.cardBg），中栏保持深底突出正文。
+ // 侧栏铺 card 底色（kepos-dark 的 toolSuccessBg 值等于 export.cardBg），中栏保持深底突出正文。
  const sideBg=(s:string)=>this.theme.bg?this.theme.bg('toolSuccessBg',s):s;
  // 焦点面板用双线框 + ◆ 标记，非焦点单线：视觉权重随焦点分级（btop 手法）。
  const frameLine=(w:number,title:string,top:boolean,focused:boolean)=>{const label=top?`${focused?'◆ ':'─ '}${title} `:'';const fill=Math.max(1,w-visibleWidth(label)-2);const c=frameColor(focused);const h=focused?'═':'─';
