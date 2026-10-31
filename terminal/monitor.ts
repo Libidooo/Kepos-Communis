@@ -1,7 +1,8 @@
 import type {OrbitalDatabase} from './database.ts';
+import {representativeRisk, type RepresentativeTaskHistory} from './representative-health.ts';
 export function taskSummaries(database:OrbitalDatabase,limit=100) {
  return database.prepare(`SELECT id,parent AS parentSessionId,state,
- json_extract(task,'$.agent') AS agent,json_extract(task,'$.cwd') AS cwd,
+ json_extract(task,'$.agent') AS agent,json_extract(task,'$.agentId') AS agentId,json_extract(task,'$.purpose') AS purpose,json_extract(task,'$.cwd') AS cwd,
  json_extract(task,'$.title') AS title,json_extract(task,'$.status') AS status,
  json_extract(task,'$.started') AS started,json_extract(task,'$.ended') AS ended,
  json_extract(task,'$.model') AS model,json_extract(task,'$.provider') AS provider,
@@ -54,13 +55,6 @@ export function planTree(jobs: { id: string; task: string; state: string; depend
 }
 
 /** Risk note for a configured member based on recent task outcomes; undefined when healthy. */
-export function agentRisk(tasks:{agent:string;state:string}[],name:string):string|undefined{
- const recent=tasks.filter(task=>task.agent===name).slice(-10);
- if(!recent.length)return undefined;
- const failed=recent.filter(task=>['FAILED','TIMED_OUT'].includes(task.state));
- let consecutive=0;
- for(const task of [...recent].reverse()){if(['FAILED','TIMED_OUT'].includes(task.state))consecutive++;else break;}
- if(consecutive>=3)return `⚠ 最近连续失败 ${consecutive} 次，建议先修改该成员配置再分派`;
- if(recent.length>=5&&failed.length/recent.length>=0.5)return `⚠ 近 ${recent.length} 次任务失败 ${failed.length} 次，成功率偏低；建议检查职责、模型或工具范围`;
- return undefined;
+export function agentRisk(tasks:readonly RepresentativeTaskHistory[],name:string,agentId?:string):string|undefined{
+ return representativeRisk(tasks,{id:agentId,name});
 }

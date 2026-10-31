@@ -244,6 +244,38 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
   if(params.taskId){const task=tasks.find(t=>t.id===params.taskId);if(!task)throw Error('当前会话没有该任务');const data={id:task.id,agent:task.agent,state:task.state,error:task.error,profileRevision:task.profileRevision,outputTruncated:task.outputTruncated,checkpointAt:task.checkpointAt,stalled:task.stalled||undefined,mcpServers:task.mcpServers,budgetTokens:task.budgetTokens,...outputPage(task.output,{cursor:params.cursor,maxChars:params.maxChars})};return{content:[{type:'text',text:JSON.stringify(data)}],details:data};}
   const data=tasks.slice(-12).map(t=>({id:t.id,agent:t.agent,state:t.state,task:t.title.slice(0,200),tool:t.tool||null}));return{content:[{type:'text',text:JSON.stringify(data)}],details:undefined};
  }});
+ // 模糊模型匹配：对 id/name/provider（含中转商自定义名）大小写不敏感子串匹配；resolved 供批量换模与单个分派共用。
+ async function resolveFuzzyModel(ctx:any,query:string):Promise<{matched:any[];available:any[]}>{
+  const available=await ctx.modelRegistry.getAvailable();
+  const needle=query.trim().toLowerCase();
+  if(!needle)return{matched:available,available};
+  const matched=available.filter((m:any)=>[m.id,m.name,m.provider].some(field=>String(field||'').toLowerCase().includes(needle)));
+  return{matched,available};
+ }
+ pi.registerTool({name:'orbital_models',label:'模型目录与批量换模',description:'列出可用模型（标注官方/中转来源）；或按模糊名称批量更换代表的模型。匹配规则：对模型 id、名称、供应商做大小写不敏感子串匹配；唯一命中自动应用，多个命中返回候选让你确认，无命中明确报错。只影响后续新派发，不触碰运行中任务。',parameters:Type.Object({action:Type.Union(['list','apply'].map(x=>Type.Literal(x))),query:Type.Optional(Type.String({description:'模糊匹配片段，如 relay 名、glm、claude'})),targets:Type.Optional(Type.Union([Type.Literal('all'),Type.Array(Type.String({description:'代表名或 ID'}))],{description:'要更换的代表：all=全部；缺省=仅列出候选'})),model:Type.Optional(Type.String({description:'apply 时的目标模型 id；须在候选中唯一'}))}),async execute(_id,params,_signal,_update,ctx){
+  const available=await ctx.modelRegistry.getAvailable();
+  const needle=String(params.query||'').trim().toLowerCase();
+  const matches=needle?available.filter((m:any)=>[m.id,m.name,m.provider].some(field=>String(field||'').toLowerCase().includes(needle))):available;
+  if(params.action==='list'||params.targets===undefined&&params.model===undefined){
+   const text=matches.length?matches.map((m:any)=>`${m.provider} / ${m.id}${m.name&&m.name!==m.id?` (${m.name})`:''}`).join('\n'):'无匹配模型。';
+   return{content:[{type:'text',text:text||'（空）'}],details:{count:matches.length}};
+  }
+  if(params.action==='apply'){
+   if(!params.model)throw Error('apply 需要 model（目标模型 id）');
+   const exact=available.find((m:any)=>m.id===params.model||`${m.provider}/${m.id}`===params.model);
+   if(!exact)throw Error(`可用模型中没有 "${params.model}"；先用 action=list 查看可用模型。`);
+   // 目标集合：all / 按名或 ID
+   const wanted=params.targets==='all'||params.targets===undefined||Array.isArray(params.targets)&&!params.targets.length
+    ?config.agents.slice()
+    :(Array.isArray(params.targets)?params.targets:[params.targets]).map((name:string)=>config.agents.find(a=>a.id===name||a.name===name)).filter(Boolean);
+   if(!wanted.length)throw Error('没有匹配的代表可更换。');
+   const before=wanted.map(a=>({name:a.name,from:`${a.provider}/${a.model}`}));
+   for(const agent of wanted){agent.provider=exact.provider;agent.model=exact.id;}
+   save();refreshSupervisionPrompt?.();
+   return{content:[{type:'text',text:`已为 ${wanted.length} 位代表更换模型 → ${exact.provider}/${exact.id}：\n${before.map(b=>'· '+b.name+'：'+b.from).join('\n')}\n新分派生效；运行中任务不变。`}],details:{changed:wanted.length,model:`${exact.provider}/${exact.id}`}};
+  }
+  throw Error('Unknown action');
+ }});
  pi.registerTool({name:'orbital_delegate',label:'分派子 Agent',description:`主 Agent 以 Council 角色分派 1–${MAX_CONCURRENT_CHILDREN} 个具体、只读的授权事项。默认时长 ${DEFAULT_TASK_SECONDS/60} 分钟；每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核。子 Agent 可使用 copyOf 复制一个正在运行任务的最小子任务，但只能一层，时限最多为父任务的一半。超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟必须改用 orbital_plan 并等待人类批准。`,parameters:Type.Object({tasks:Type.Array(Type.Object({agent:Type.Optional(Type.String({description:'已配置代表名称或 ID'})),roleKey:Type.Optional(Type.String({description:'Council 角色 key，例如 auditor、surveyor、verifier'})),name:Type.Optional(Type.String({description:'本次代表显示名称；中文请求用中文，英文请求用英文'})),role:Type.Optional(Type.String({description:'覆盖角色提示词；优先使用 roleKey 的标准职责'})),model:Type.Optional(Type.String({description:'本次任务模型 ID'})),provider:Type.Optional(Type.String({description:'本次任务 provider'})),tools:Type.Optional(Type.Array(Type.String({description:'只读工具名：read/grep/find/ls'}))),task:Type.String({description:'小而具体的授权事项与验收要求'}),copyOf:Type.Optional(Type.String({description:'正在运行的父任务 ID；复制委派只能一层，时间上限为父任务的一半'})),skills:Type.Optional(Type.Array(Type.String({description:'已安装且明确批准的 Skill 名称'}))),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')],{description:'读取范围：project 只读任务目录（默认，可用 readAllow 加白名单）；machine 除 Kepos 数据和凭据位置外都可读。保密任务用 project。'})),readAllow:Type.Optional(Type.Array(Type.String({description:'额外允许读取的绝对目录（readScope=project 时生效）'}))),budgetTokens:Type.Optional(Type.Integer({minimum:1000,description:'本任务 token 预算上限；到达即停止消耗并呈报人类'})),mcp:Type.Optional(Type.Union([Type.Boolean(),Type.Array(Type.String({description:'服务器名'}))],{description:'临时 MCP 授权（任务结束即收回）：true=授予全部已配置服务器；数组=仅列出的服务器。只能授予人类已在 mcp.json 配置的服务器'})),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS}))}),{minItems:1,maxItems:MAX_CONCURRENT_CHILDREN}),background:Type.Optional(Type.Boolean({description:'true：立即返回 Worker Handle，使用 orbital_worker 查询/等待/取消；false：等待全部完成'}))}),async execute(_id,params,signal,onUpdate,ctx){
   if(signal?.aborted)throw Error('Task cancelled');
   if(!params.tasks.length)throw Error('任务列表为空');
@@ -469,9 +501,13 @@ export default function orbital(pi: ExtensionAPI, host:KeposHost={}) {
  if(action.kind==='new'){if(blocked(ctx))throw Error('请等待任务结束再新建会话');const title=await ui.input('新对话名称','输入会话名称');if(!title?.trim())return;desk?.finish({kind:'switch',path:createLinkedSession(ctx,action.path||ctx.cwd,title.trim())});return;}
  }
  async function runDesk(ctx:ExtensionCommandContext){if(ctx.mode!=='tui'){ctx.ui.notify('此命令需要交互终端。','warning');return;}if(desk){ctx.ui.notify('议案已经打开。','info');return;}
- // 开机动画：每进程一次；任意键跳过，motion:false 或小屏直接快进。
- try{await playSplash(ctx,config);}catch{}
- while(true){let sessions:any[];try{const all=await SessionManager.listAll();const local=await SessionManager.listAll(ctx.sessionManager.getSessionDir());sessions=[...new Map([...all,...local].map(s=>[s.path,s])).values()];}catch(e){ctx.ui.notify(clean(e),'error');return;}
+ const loadSessions=async()=>{const [all,local]=await Promise.all([SessionManager.listAll(),SessionManager.listAll(ctx.sessionManager.getSessionDir())]);return [...new Map([...all,...local].map(s=>[s.path,s])).values()];};
+ // Prepare the first desk while the splash is visible, avoiding a loading gap between overlays.
+ let firstSessions:any[]|undefined;let initialError:unknown;let initialFailed=false;
+ const ready=loadSessions().then(sessions=>{firstSessions=sessions;},error=>{initialFailed=true;initialError=error;});
+ try{await playSplash(ctx,config,ready);}catch{}
+ await ready;if(initialFailed){ctx.ui.notify(clean(initialError),'error');return;}
+ while(true){let sessions:any[];try{sessions=firstSessions??await loadSessions();firstSessions=undefined;}catch(e){ctx.ui.notify(clean(e),'error');return;}
  let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,text=>pi.sendUserMessage(text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db())};
   desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;

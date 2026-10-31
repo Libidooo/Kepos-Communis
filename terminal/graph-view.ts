@@ -1,8 +1,9 @@
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { stripVTControlCharacters } from 'node:util';
+import { TASK_ACTIVE_STATES, isTaskActive, isTaskCurrent, isTaskPending, taskElapsedText, taskState, type TaskStateLike } from './task-state.ts';
 
 export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string };
-export type GraphViewTask = { id: string; agent: string; status?: string; state?: string; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; reviewDue?: boolean; error?: string; groupKey?: string; started?: number };
+export type GraphViewTask = TaskStateLike & { id: string; agent: string; agentId?: string; purpose?: 'delegation' | 'configuration'; internal?: boolean; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; error?: string; groupKey?: string };
 export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask[] };
 export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number; taskId?: string };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
@@ -10,15 +11,16 @@ export type CouncilFilter = 'active' | 'pending' | 'all';
 export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number; focus?: 'ring' | 'list' | 'input' };
 type Cell = { char: string; color?: string };
 type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number };
-// 活跃=正在执行；NEEDS_HUMAN 归入"待处理"。desk 议会头部与这里 sidebar 的计数必须同源。
-export const activeStates = new Set(['QUEUED', 'STARTING', 'RUNNING', 'CANCEL_REQUESTED']);
-const connectedStates = new Set([...activeStates, 'NEEDS_HUMAN']);
-export const countActive = (tasks: GraphViewTask[]) => tasks.filter(task => activeStates.has(task.state || '')).length;
-export const countPending = (tasks: GraphViewTask[]) => tasks.filter(task => task.state === 'NEEDS_HUMAN' || task.reviewDue).length;
+// 活跃=正在执行；NEEDS_HUMAN 归入“待处理”。终态残留的复核/停滞标记不再报警。
+export const activeStates = TASK_ACTIVE_STATES;
+export const countActive = (tasks: GraphViewTask[]) => tasks.filter(isTaskActive).length;
+export const countPending = (tasks: GraphViewTask[]) => tasks.filter(isTaskPending).length;
 const filterName = (filter: CouncilFilter) => filter === 'active' ? '活跃' : filter === 'pending' ? '待处理' : '全部';
-// 待审批符号用 ⚠（0e9aa53 调色板定的）：desk 徽章、列表标记与图保持同一符号语言；
-// 若某终端把它回退成大号 emoji，改符号时必须同步这里、desk.ts 徽章与 F1 帮助文案。
-export const stateMark = (task: GraphViewTask) => task.state === 'NEEDS_HUMAN' ? '⚠' : task.reviewDue ? '!' : task.state === 'FAILED' || task.status === '失败' ? '✕' : task.state === 'SUCCEEDED' || task.status === '完成' ? '✓' : activeStates.has(task.state || '') ? '▶' : '·';
+// 待审批符号与 desk 徽章、F1 帮助文案保持一致。
+export const stateMark = (task: GraphViewTask) => {
+  const state = taskState(task);
+  return state === 'FAILED' ? '✕' : state === 'SUCCEEDED' ? '✓' : state === 'NEEDS_HUMAN' ? '⚠' : isTaskPending(task) ? '!' : isTaskActive(task) ? '▶' : '·';
+};
 // 议会任务列表的统一筛选：图负责关系与态势，列表负责从问题找到具体任务。
 export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter, query: string): GraphViewTask[] {
   const q = query.trim();
@@ -279,6 +281,8 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     }
   }
   const byWorkerId = new Map(layout.nodes.filter(node => node.task).map(node => [node.task!.id, node]));
+  // 连线只画有真实进展语义的席位：活跃 + 待审批；历史终态不再拉线。
+  const connectedStates = new Set([...TASK_ACTIVE_STATES, 'NEEDS_HUMAN']);
   // 总理座盒：三行小盒取代单字符，右侧边作为连线锚点，避免连线穿过盒子。
   const anchor = { x: main.x + 5, y: main.y };
   for (const node of layout.nodes) { if (!node.task || (!connectedStates.has(node.task.state || '') && selected !== node.index)) continue; const parent = node.task.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined; line(grid, parent?.x ?? main.x, parent?.y ?? main.y, node.x, node.y, groupColor(node.task)); }
