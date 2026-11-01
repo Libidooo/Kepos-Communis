@@ -7,6 +7,8 @@ import { terminalStates, type WorkerPool } from './workers.ts';
 import { routeCommand, localCommands } from './command-routing.ts';
 import { TimingWindow } from './metrics.ts';
 import { PRODUCT_NAME, sessionUsage, usageText, formatTokens, meter } from './presentation.ts';
+import { loadAttachment, attachmentToPrompt, looksLikeFilePaths, isAttached } from './attachments.ts';
+import { dataRoot } from './paths.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, stateColor, stateMark, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
@@ -20,9 +22,25 @@ export function historyLines(entries:any[],width:number,expanded=false,theme?:an
  const I=(value:string)=>`\x1b[3m${value}\x1b[23m`;
  const lines:string[]=[];for(const entry of entries){if(entry.type==='compaction'||entry.type==='branch_summary'){lines.push(entry.type==='compaction'?'[上下文已压缩 / 以下为摘要]':'[分支背景摘要]',...wrapTextWithAnsi(clean(entry.summary),width),'');continue;}if(entry.type==='custom_message'&&entry.display===false)continue;if(entry.type!=='message'&&entry.type!=='custom_message')continue;const m=entry.message||{role:'custom',content:entry.content};if(m.role==='custom'&&m.display===false)continue;if(!['user','assistant','toolResult','custom'].includes(m.role))continue;
  // 发言者分级：用户 accent ›、助手 accent Kepos、工具 muted ▸、自定义 muted ·。
- lines.push(m.role==='user'?F('accent','›'):m.role==='assistant'?F('accent','Kepos'):m.role==='custom'?F('muted','·'):I(F('muted',`┊ ▸ ${clean(m.toolName)}`)));
+ // Each speaker gets its own colour AND glyph: the human, the 总理, a 代表 and tool noise must
+ // be distinguishable at a glance, not by reading the text.
+ const fromDelegate=m.role==='custom'&&String(entry.customType||'').startsWith('kepos-');
+ const delegateName=(String(typeof m.content==='string'?m.content:'').match(/「([^」]+)」/)||[])[1];
+ lines.push(
+  m.role==='user'?F('accent','› 你')
+  :m.role==='assistant'?F('accent','◆ 总理')
+  :fromDelegate?F('toolTitle',`◈ ${delegateName||'代表'}`)
+  :m.role==='custom'?F('muted','·')
+  :I(F('muted',`┊ ▸ ${clean(m.toolName)}`)));
  const blocks=typeof m.content==='string'?[{type:'text',text:m.content}]:m.content||[];
- for(const b of blocks){if(b.type==='text'&&theme?.bg&&['assistant','user'].includes(m.role)){const text=String(b.text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,'');const rendered=m.role==='assistant'?new Markdown(text,0,0,getMarkdownTheme(),{color:(s:string)=>theme.fg('text',s)}).render(width):wrapTextWithAnsi(text,width).map(line=>theme.bg('userMessageBg',theme.fg('userMessageText',fit(line,width))));lines.push(...rendered);}else if(b.type==='text'){const raw=String(b.text).split('\n');const selected=m.role==='toolResult'&&!expanded&&raw.length>12?[...raw.slice(0,5),`… 已折叠 ${raw.length-10} 行 · F5 展开工具输出`,...raw.slice(-5)]:raw;
+ for(const b of blocks){if(b.type==='text'&&fromDelegate&&b.text){const raw=String(b.text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,'');
+  // Delegate output is tinted and rule-marked so it never reads as the 总理 speaking.
+  for(const l of raw.split('\n'))lines.push(...wrapTextWithAnsi(l,Math.max(4,width-2)).map(w=>F('toolTitle','▏ '+w)));}
+  else if(b.type==='text'&&theme?.bg&&['assistant','user'].includes(m.role)){const text=String(b.text).replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,'');// The 总理 is the visual centre: its reply sits on its own card, distinct from the
+  // human's tinted block and from the delegates' rule-marked output.
+  const rendered=m.role==='assistant'
+   ?new Markdown(text,0,0,getMarkdownTheme(),{color:(s:string)=>theme.fg('text',s)}).render(width).map(line=>theme.bg('customMessageBg',line+' '.repeat(Math.max(0,width-visibleWidth(line)))))
+   :wrapTextWithAnsi(text,width).map(line=>theme.bg('userMessageBg',theme.fg('userMessageText',fit(line,width))));lines.push(...rendered);}else if(b.type==='text'){const raw=String(b.text).split('\n');const selected=m.role==='toolResult'&&!expanded&&raw.length>12?[...raw.slice(0,5),`… 已折叠 ${raw.length-10} 行 · F5 展开工具输出`,...raw.slice(-5)]:raw;
   // 工具产出：muted + 左侧 ▏ 竖线，与模型回答明确分层。
   for(const l of selected)lines.push(...wrapTextWithAnsi(l.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,''),Math.max(4,width-2)).map(w=>F('muted','▏ '+w)));}else if(b.type==='toolCall')lines.push(I(F('muted','┊ ▸ '+clean(b.name))));
   // 思考过程：dim + ▎ 竖线，与回答正文区分。
@@ -30,11 +48,65 @@ export function historyLines(entries:any[],width:number,expanded=false,theme?:an
  if(m.errorMessage)lines.push('错误：'+clean(m.errorMessage));lines.push('');}
  return lines.length?lines:['尚无消息。直接在下方输入，Enter 发送给主 Agent。'];
 }
+// 键位表：footer、F1 帮助、鼠标点击区三处都由这一份数据生成，不再各自手写。
+// `when` 决定该键在当前上下文是否可见；`footer` 标记是否进底栏。
+// 注意：这张表只管"显示"与"可点击"；按键行为仍在 handleInput 的 if 链里。
+type Scope = 'council' | 'councilDesk' | 'list' | 'task' | 'input' | 'projects' | 'crew';
+export type KeyHint = { key: string; label: string; help: string; when: Scope | 'always'; footer?: boolean };
+export const KEY_HINTS: readonly KeyHint[] = [
+ { key: 'f10', label: 'F10 议会', help: 'F10：打开 / 关闭 48 席议会', when: 'always', footer: true },
+ { key: 'f1', label: 'F1 帮助', help: 'F1：打开 / 关闭本帮助', when: 'always', footer: true },
+ { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式', when: 'always', footer: true },
+ { key: 'f3', label: 'F3 任务', help: 'F3：当前会话的任务与书案详情', when: 'always', footer: true },
+ { key: 'f8', label: 'F8 全局', help: 'F8：跨项目任务监控；议会内切换筛选', when: 'always', footer: true },
+ { key: 'f11', label: 'F11 专注', help: 'F11：专注阅读（中栏最大化）', when: 'always', footer: true },
+ { key: 'f4', label: 'F4 模型', help: 'F4：切换当前主 Agent 模型', when: 'always' },
+ { key: 'f5', label: 'F5 工具输出', help: 'F5：展开 / 折叠完整工具输出', when: 'always' },
+ { key: 'f6', label: 'F6 面板', help: 'F6：议案内在 输入 → 项目 → 代表席 间切换；议会内在 席位 → 列表 → 输入 间切换', when: 'always' },
+ { key: 'f7', label: 'F7 复制', help: 'F7 或 Ctrl+Shift+C：复制完整最新回答', when: 'always' },
+ { key: 'f9', label: 'F9 计划', help: 'F9：长程计划监控台', when: 'always' },
+ { key: 'ctrl+k', label: 'Ctrl+K 命令面板', help: 'Ctrl+K：命令面板', when: 'always' },
+ { key: 'ctrl+x', label: 'Ctrl+X 中止', help: 'Ctrl+X：议案中中止整轮；议会中取消选中任务', when: 'always', footer: true },
+ { key: 'escape', label: 'Esc 返回', help: 'Esc：逐层返回（书案 → 详情 → 列表 → 席位 → 议案）', when: 'always' },
+ { key: 'tab', label: 'Tab 列表', help: 'Tab：议会内切换席位图与任务列表', when: 'council', footer: true },
+ { key: 'slash', label: '/ 过滤', help: '议会列表内按 / 输入关键词过滤，Esc 结束', when: 'list', footer: true },
+ { key: 'v', label: 'v 完整产出', help: '议会列表内按 v 打开该任务的完整产出', when: 'list', footer: true },
+ { key: 'ctrl+left', label: 'Ctrl+← 上一任务', help: '任务视图内 Ctrl+← / Ctrl+→ 切换任务', when: 'task', footer: true },
+ { key: 'ctrl+right', label: 'Ctrl+→ 下一任务', help: '任务视图内 Ctrl+← / Ctrl+→ 切换任务', when: 'task', footer: true },
+ { key: 'pgup', label: 'PgUp/PgDn', help: 'PgUp/PgDn 或滚轮：滚动历史与产出；Ctrl+End 回到最新', when: 'always', footer: true },
+];
+// 底栏每个可见键都必须能点：footerHints 里的 key 必须在这张表里有条目。
+export const keyBytes: Record<string, string> = {
+ f1: '\x1bOP', f2: '\x1bOQ', f3: '\x1bOR', f4: '\x1bOS', f5: '\x1b[15~', f6: '\x1b[17~', f7: '\x1b[18~',
+ f8: '\x1b[19~', f9: '\x1b[20~', f10: '\x1b[21~', f11: '\x1b[23~', escape: '\x1b',
+ 'ctrl+x': '\x18', tab: '\t', slash: '/', v: 'v', pgup: '\x1b[5~',
+ 'ctrl+left': '\x1b[1;5D', 'ctrl+right': '\x1b[1;5C',
+};
+ // 拆分用户输入的多个路径：支持引号包裹的含空格路径，也支持一行一个。
+ function splitPaths(input:string):string[]{
+  const text=String(input||'').trim();
+  if(!text)return[];
+  const result:string[]=[];
+  // 先按引号抓取，再处理剩余的无引号片段。
+  const quoted=/["']([^"']+)["']/g;
+  let match:RegExpExecArray|null;
+  const leftovers=text.replace(quoted,(_all,inner)=>{result.push(inner);return' ';});
+  for(const piece of leftovers.split(/\s+/)){
+   const trimmed=piece.trim().replace(/,$/,'');
+   if(trimmed)result.push(trimmed);
+  }
+  return result.filter(Boolean);
+ }
 type Action={kind:string;path?:string;text?:string;id?:string;draft?:string};
 export class Desk {
- editor:Editor; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;
- // notice 统一走 setter 盖时间戳，渲染时超过 4 秒自动退出，让位给按键提示。
- get notice(){return this._notice;}set notice(value:string){this._notice=value;this.noticeAt=Date.now();}
+ editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
+ // notice 统一走 setter 盖时间戳。urgent 消息（失败 / 需人工 / 预算停止）粘住，
+ // 只有 Esc 或用户下一个动作才清掉；普通消息 4 秒后让位给按键提示。
+ // urgent 在场时普通通知一律丢弃：失败/门禁/预算必须被人看见，不能被"正在调用 X"顶掉。
+ get notice(){return this._notice;}
+ set notice(value:string){if(this._noticeUrgent)return;this._notice=value;this.noticeAt=Date.now();}
+ // 紧急通知：粘性，只有 Esc 或用户真正发出新消息才清除。
+ urgent(value:string){this._notice=value;this.noticeAt=Date.now();this._noticeUrgent=true;}
  readonly renderMetrics=new TimingWindow();
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;private liveBaseCache:string[]=[];private liveBaseCacheKey='';
  taskScope:'session'|'all'='session';
@@ -45,7 +117,7 @@ export class Desk {
  private evidenceCache:{id:string;ended:any;output:any;value:any}|undefined;
  private monitorData(){if(Date.now()-this.monitorAt>1000){this.monitorAt=Date.now();try{this.monitorTasksCache=this.monitor?.tasks()||this.pool.tasks;this.monitorPlansCache=this.monitor?.plans()||[];}catch(error){this.notice='监控读取暂不可用：'+clean(error);}}return{tasks:this.monitorTasksCache,plans:this.monitorPlansCache};}
  panelTasks(){return this.taskScope==='all'?this.monitorData().tasks:this.sessionTasks();}
- constructor(public tui:any,public theme:any,public ctx:any,public config:Config,public sessions:any[],public pool:WorkerPool,public submit:(text:string)=>void|Promise<void>,public done:(action?:Action)=>void,public commands:any[]=[],public clipboard:(text:string)=>Promise<void>=copyToClipboard,public onAction?:(action:Action)=>Promise<void>){
+ constructor(public tui:any,public theme:any,public ctx:any,public config:Config,public sessions:any[],public pool:WorkerPool,public submit:(text:string,images?:any[])=>void|Promise<void>,public done:(action?:Action)=>void,public commands:any[]=[],public clipboard:(text:string)=>Promise<void>=copyToClipboard,public onAction?:(action:Action)=>Promise<void>){
  this.sending=!ctx.isIdle();this.folded=new Set(config.folded);this.editor=new Editor(tui,{borderColor:(s:string)=>theme.fg('borderMuted',s),selectList:getSelectListTheme()},{paddingX:1});
  this.savedDraftBeforeCommand=config.drafts[this.sessionKey()]||'';this.editor.setText(this.savedDraftBeforeCommand);this.editor.focused=true;
  this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...localCommands,...commands.filter((c:any)=>!localCommands.some(l=>l.name===c.name)).map((c:any)=>({name:c.name,description:c.description||''}))],ctx.cwd));
@@ -54,6 +126,63 @@ export class Desk {
  }
  sessionTasks(){return this.pool.tasks.filter(t=>t.cwd===this.ctx.cwd&&t.parentSessionId===this.ctx.sessionManager.getSessionId());}
  sessionKey(){return this.ctx.sessionManager.getSessionFile()||this.ctx.sessionManager.getSessionId();}
+ // ── 附件 ──────────────────────────────────────────────────────────────
+ // 附件随会话保存（切走再切回还在），但发送后即清空——它属于"这一轮"而非长期上下文。
+ attachKey(){return 'attach:'+this.sessionKey();}
+ loadAttachments(){const saved=this.config.drafts[this.attachKey()];if(saved){try{this.attachments=JSON.parse(saved);}catch{this.attachments=[];}}}
+ saveAttachments(){this.config.drafts[this.attachKey()]=JSON.stringify(this.attachments);}
+ // 附件条：输入框上方一行，显示已附加项与移除提示。
+ attachmentBar(width:number):string[]{
+  if(!this.attachments.length)return[];
+  const names=this.attachments.map((a:any,index:number)=>`${index+1}.${a.name}`).join('  ');
+  const head='📎 '+names;
+  const tail='   /attach remove 清除';
+  const line=visibleWidth(head+tail)<=width?head+tail:head;
+  return [this.theme.fg('toolTitle',truncateToWidth(line,width))];
+ }
+ // 提交时把附件拼成 Pi 需要的形状：图片走 ImageContent，文档/文本注入正文。
+ composeSubmit(text:string):{payload:string;images:any[]}{
+  const images=this.attachments.filter((a:any)=>a.kind==='image').map((a:any)=>({type:'image',data:a.data,mimeType:a.mimeType}));
+  const docs=this.attachments.filter((a:any)=>a.kind!=='image');
+  if(!docs.length)return{payload:text,images};
+  const blocks=docs.map((a:any)=>attachmentToPrompt(a)).join('\n\n');
+  return{payload:(text?text+'\n\n':'')+blocks,images};
+ }
+ clearAttachments(){this.attachments=[];try{delete this.config.drafts[this.attachKey()];saveConfig(this.config);}catch{}}
+ // /attach 的处理：无参弹文件选择器，有参直接加载，ask 交给外层打开对话框。
+ async attachCommand(argument:string,ask:(title:string,placeholder:string)=>Promise<string|undefined>){
+  const arg=argument.trim();
+  if(arg==='remove'||arg==='clear'||arg==='清除'){this.clearAttachments();this.notice='已清除全部附件';this.refresh();return;}
+  const paths=arg?splitPaths(arg):[];
+  if(!paths.length){
+   const picked=await ask('附加文件 · 输入路径（docx/pdf/pptx/xlsx/epub/zip/图片/文本）',this.ctx.cwd);
+   if(!picked||!picked.trim())return;
+   paths.push(...splitPaths(picked));
+  }
+  if(!paths.length)return;
+  if(this.attachBusy)return;
+  this.attachBusy=true;this.notice='正在读取附件…';this.refresh();
+  try{
+   // 读取策略与子 Agent 一致：默认只允许项目目录，凭据位置一律拒绝。
+   const policy={mode:(this.config.workerReadScope==='machine'?'machine':'project') as any,cwd:this.ctx.cwd,allow:[],deny:[],home:process.env.HOME||process.env.USERPROFILE||''};
+   const added:string[]=[];const failed:string[]=[];
+   for(const path of paths){
+    const result=await loadAttachment(path,{policy,deny:[dataRoot],cwd:this.ctx.cwd});
+    if(isAttached(result)){
+     const attachment=result.attachment;
+     // 同一个文件重复附加只保留一份。
+     if(!this.attachments.some((a:any)=>a.path===attachment.path))this.attachments.push(attachment);
+     added.push(attachment.name);
+    }else failed.push(result.reason);
+   }
+   this.saveAttachments();
+   if(added.length&&failed.length)this.notice=`已附加 ${added.join('、')}；${failed.length} 项失败：${failed[0]}`;
+   else if(added.length)this.notice=`已附加 ${added.join('、')}（共 ${this.attachments.length} 项）`;
+   else this.urgent('附件读取失败：'+failed.join('；'));
+   this.refresh();
+  }catch(error){this.urgent('附件读取失败：'+clean(error));this.refresh();}
+  finally{this.attachBusy=false;}
+ }
  refresh(){if(!this.alive||this.renderPending)return;this.renderPending=true;clearTimeout(this.renderTimer);this.renderTimer=setTimeout(()=>{this.renderPending=false;if(this.alive)this.tui.requestRender();},50);}
  invalidate(){this.editor.invalidate();this.historyCacheKey='';this.liveBaseCacheKey='';this.metricsDirty=true;this.entriesDirty=true;this.rowCache=undefined;}
  setFocus(f:'input'|'projects'|'crew'){this.focus=f;this.editor.focused=this.focused&&f==='input';this.refresh();}
@@ -70,10 +199,15 @@ export class Desk {
   this.notice='已排队：当前回合结束后自动发送；Ctrl+X 中止。';this.refresh();return;}
  const route=routeCommand(text,this.commands);if(route.kind==='unknown'){this.editor.setText(text);this.notice='未知命令 /'+route.name+'，未发送给模型。输入 / 选择；发送字面斜线请用 //。';this.refresh();return;}
  if(route.kind==='native'||route.kind==='registered'&&route.source==='extension'){this.editor.setText(this.savedDraftBeforeCommand);this.finish({kind:route.kind==='native'?'native-command':'dispatch-command',text});return;}
- if(route.kind==='local'){this.editor.setText(route.name==='reload'||route.name==='pi'?this.savedDraftBeforeCommand:'');switch(route.name){case 'help':this.help=true;break;case 'copy':void this.copyAnswer();break;case 'tasks':this.taskView=true;this.readStart=null;break;case 'pi':this.finish({kind:'pi'});return;default:this.finish({kind:route.name});return;}this.refresh();return;}
+ if(route.kind==='local'){this.editor.setText(route.name==='reload'||route.name==='pi'?this.savedDraftBeforeCommand:'');switch(route.name){case 'help':this.help=true;break;case 'copy':void this.copyAnswer();break;case 'tasks':this.taskView=true;this.readStart=null;break;case 'attach':{const argument=text.trim().slice('/attach'.length).trim();this.finish({kind:'attach',text:argument});return;}case 'pi':this.finish({kind:'pi'});return;default:this.finish({kind:route.name});return;}this.refresh();return;}
  const payload=route.text;
- this.lastSubmitted=payload;this.requestStartedAt=Date.now();this.savedDraftBeforeCommand='';this.sawStart=false;this.sending=true;this.live={role:'user',content:payload,timestamp:Date.now()};this.readStart=null;this.editor.addToHistory(text);this.editor.setText('');this.notice='正在提交给主 Agent…';
- try{const result=this.submit(payload);if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.sending=false;this.live=undefined;if(!this.editor.getExpandedText())this.editor.setText(text);this.notice='提交失败（原稿已保留）：'+clean(error);this.refresh();});}catch(error){this.sending=false;this.live=undefined;this.editor.setText(text);this.notice='提交失败：'+clean(error);}
+ // 附件只在真正的 chat 分支附加：命令路由永不携带附件。
+ const composed=this.composeSubmit(payload);
+ const sentAttachments=this.attachments.length;
+ this.lastSubmitted=composed.payload;this.requestStartedAt=Date.now();this.savedDraftBeforeCommand='';this.sawStart=false;this.sending=true;this.live={role:'user',content:payload,timestamp:Date.now()};this.readStart=null;this.editor.addToHistory(text);this.editor.setText('');this._noticeUrgent=false;
+ if(sentAttachments)this.clearAttachments();
+ this.notice=sentAttachments?`正在提交给主 Agent…（含 ${sentAttachments} 项附件）`:'正在提交给主 Agent…';
+ try{const result=this.submit(composed.payload,composed.images);if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.sending=false;this.live=undefined;if(!this.editor.getExpandedText())this.editor.setText(text);this.notice='提交失败（原稿已保留）：'+clean(error);this.refresh();});}catch(error){this.sending=false;this.live=undefined;this.editor.setText(text);this.notice='提交失败：'+clean(error);}
  // A synchronous extension-command response might emit no agent lifecycle event.
  clearTimeout(this.completionTimer);this.completionTimer=setTimeout(()=>{if(this.alive&&this.ctx.isIdle()){this.sending=false;if(!this.sawStart){if(!this.editor.getExpandedText())this.editor.setText(text);this.live=undefined;this.notice='请求未启动，原稿已保留。输入 /pi 查看 Pi 命令行，或重试。';}this.refresh();}},1500);this.refresh();
  }
@@ -113,16 +247,51 @@ export class Desk {
  if(!preview&&this.live&&!(this.live.role==='custom'&&this.live.display===false)&&!entries.some(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp))){const base=this.historyCache[0]?.startsWith('尚无消息。')?[]:this.historyCache;return [...base,...historyLines([{type:'message',message:this.live}],width,this.expandedTools,this.theme)];}
  return this.historyCache;
  }
- render(width:number):string[]{const begin=performance.now();try{return this.renderFrame(width);}catch(error){
+ render(width:number):string[]{const begin=performance.now();try{return this.paintPage(this.renderFrame(width),width);}catch(error){
   // Pi does not guard overlay rendering; a thrown frame would end the whole process.
   if(this.graphView){this.graphView=false;this.graphDetail=false;}
   const message=clean(error instanceof Error?error.message:error);this.notice='界面渲染出错：'+message;
   return [fit('Kepos 界面渲染出错，已退回议案：'+message,Math.max(1,width)),fit('按任意键重绘；问题持续时请报告此行。',Math.max(1,width))];
  }finally{this.renderMetrics.observe(performance.now()-begin);}}
+ // 铺页面底色：Kepos 此前从不画背景，浅色主题只在深色终端底上把文字变深，
+ // 于是"浅色主题"看起来大面积发黑。让页面底色由主题决定，而不是由终端决定。
+ // 关键：行内每个 theme.bg() 都以 \x1b[49m（恢复终端默认背景）结尾，内层一闭合，
+ // 后面的空隙就掉回终端黑底。做法是取出页面底色的开序列，把行内所有 \x1b[49m
+ // 替换成它，再在行首补一次——每格都有明确背景，不依赖终端默认值。
+ private paintPage(lines:string[],width:number):string[]{
+  const theme=this.theme;if(!theme?.bg)return lines;
+  const probe=theme.bg('userMessageBg','\u0000');
+  const open=probe.slice(0,probe.indexOf('\u0000'));
+  if(!open)return lines;
+  const w=Math.max(1,width);
+  return lines.map(line=>{
+   const pad=' '.repeat(Math.max(0,w-visibleWidth(line)));
+   const restored=(line+pad).replace(/\x1b\[49m/g,open);
+   return open+restored;
+  });
+ }
  // 书案预算条：双色，空余段 dim，避免 0% 被读成满格。终态无 ended 的旧记录冻结在上限，绝不拿当前时间继续累计。
  budgetBar(task:any){const done=terminalStates.has(task.status||'');const end=task.ended||(done?task.started+Math.max(1,task.limit||300)*1000:Date.now());const pct=Math.max(0,Math.min(100,Math.round((end-task.started)/Math.max(1,(task.limit||300)*1000)*100)));const filled=Math.max(0,Math.min(10,Math.round(pct/10)));return this.theme.fg(task.stalled?'warning':'accent','▓'.repeat(filled))+this.theme.fg('dim','░'.repeat(10-filled))+' '+pct+'%';}
  // 模型绑定：一律读议案配置（分派时冻结的 task.model，缺席时回退代表配置），代表自述不作为来源。
  boundModel(task:any){const agents:any[]=this.config.agents||[];const agent=task?(agents.find(a=>a.id===task.agentId)||agents.find(a=>a.name===task.agent)):undefined;return clean(task?.model||agent?.model||'—');}
+ // 书案花费行：已用 token / 预算上限 + 估算费用 + 上下文缓存命中。
+ // 预算按单个任务计，任务结束即冻结——不会跨任务累计。
+ spendText(task:any){
+  const u=task?.usage;
+  if(!u||!(u.totalTokens||u.input||u.output))return '尚未产生用量';
+  const used=Number(u.totalTokens)||((Number(u.input)||0)+(Number(u.output)||0)+(Number(u.cacheRead)||0));
+  const cap=Number(task?.budgetTokens)||0;
+  const parts=[`${formatTokens(used)}${cap?` / ${formatTokens(cap)}`:''} tokens`];
+  if(cap){
+   const pct=Math.max(0,Math.min(100,Math.round(used/cap*100)));
+   parts.push(`${pct}%`);
+  }
+  const cost=Number(u.cost?.total);
+  if(cost>0)parts.push(`~$${cost.toFixed(4)}`);
+  const cache=Number(u.cacheRead)||0;
+  if(cache>0)parts.push(`缓存命中 ${Math.round(cache/Math.max(1,cache+(Number(u.input)||0))*100)}%`);
+  return parts.join(' · ');
+ }
  // 书案与议案同源：优先读 pool 全量任务，跨会话走 monitor evidence，快照（审批行）只作兜底。
  // 环图快照的 output 曾被砍到 160 字符，议会因此看不到真实产出——数据必须与 F3 同一来源。
  private deskTask(snapshot:GraphViewSnapshot):any{
@@ -171,6 +340,9 @@ export class Desk {
   }else{
    lines.push(row(`状态 ${stateMark(task)} ${plainText(task.status||task.state||'—')}${task.reviewDue?' · ⚠ 需复核':''}`,safeStateColor(stateColor(task,0))));
    lines.push(row(`模型 ${this.boundModel(task)} · 议案绑定`));
+   // 花费：本任务已用 token / 预算上限，外加估算费用。预算是单任务额度，
+   // 新任务从 0 重新计，所以这里读到的永远是"这一轮花了多少"。
+   lines.push(row(`花费 ${this.spendText(task)}`,`text`));
    if(task.tool)lines.push(row(`工具 ${plainText(task.tool)}`,'dim'));
    if(task.checkpoint)lines.push(row(`进展 ${plainText(task.checkpoint)}`,'dim'));
    if(task.error)for(const l of wrapTextWithAnsi('错误：'+plainText(task.error),inner).slice(0,2))lines.push(row(l,'error'));
@@ -196,7 +368,23 @@ export class Desk {
   lines.push(F('borderAccent',hintPrefix)+F('dim',hint)+F('borderAccent','─'.repeat(Math.max(1,w-visibleWidth(hintPrefix)-visibleWidth(hint)-1))+'╯'));
   return lines.slice(0,height);
  }
- helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 打开右侧书案（不跳页） · Esc 关书案 · Ctrl+X 取消选中任务','书案：选中即可直接输入，Enter 送达该代表（任务已结束则按原配置开新一轮）；滚轮滚动产出','议会输入（未开书案）：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','切换项目将切换真实工作目录','','本议案输入区仅支持文本。','/login 登录模型 · 附件请使用 /pi。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
+ // 当前上下文：决定哪些键位提示可见（footer 与 F1 帮助共用同一判定）。
+ ctxScope():Scope|'always'{
+  if(this.graphView){if(this.councilDesk)return 'councilDesk';return this.graphFocus==='list'?'list':'council';}
+  if(this.taskView||this.missionView)return 'task';
+  return this.focus==='projects'?'projects':this.focus==='crew'?'crew':'input';
+ }
+ hintVisible(hint:KeyHint):boolean{
+  const scope=this.ctxScope();
+  if(hint.when==='always')return true;
+  if(hint.when===scope)return true;
+  // 议会是父上下文：书案/列表里仍保留议会级基础提示（Tab 等）。
+  if(hint.when==='council')return scope==='councilDesk'||scope==='list';
+  return false;
+ }
+ // 底栏：只取标记了 footer 的键位，按上下文裁剪；点击区域与标签同一份来源。
+ footerHints(){return KEY_HINTS.filter(hint=>hint.footer&&this.hintVisible(hint));}
+ helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','/theme 切换主题（默认 / 深色 / 浅色，即时生效）','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 打开右侧书案（不跳页） · Esc 关书案 · Ctrl+X 取消选中任务','书案：选中即可直接输入，Enter 送达该代表（任务已结束则按原配置开新一轮）；滚轮滚动产出','议会输入（未开书案）：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 推选代理总代 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','代理总代是推选兼任职务（F2 → 推选代理总代），不占代表席位','切换项目将切换真实工作目录','','/attach 附加文件：docx / pdf / pptx / xlsx / epub / zip / 图片 / 文本','/attach <路径> 直接附加；粘贴文件路径也会自动识别。发送后附件自动清空。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
  private graphSnapshot():GraphViewSnapshot{return this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};}
  private renderGraphFrame(width:number,rows:number):string[]{
   this.graphWidth=width;
@@ -283,7 +471,9 @@ export class Desk {
  if(this.readStart===null)this.latestEntries=history.slice(-historyHeight);else{this.readStart=Math.max(0,Math.min(this.readStart,Math.max(0,history.length-historyHeight)));this.latestEntries=history.slice(this.readStart,this.readStart+historyHeight);}
  const crewVisibleCount=Math.max(1,Math.floor(Math.max(1,contentRows-5)/3));this.crewOffset=Math.max(0,Math.min(this.crewOffset,Math.max(0,this.config.agents.length-crewVisibleCount)));if(this.crewIndex<this.crewOffset)this.crewOffset=this.crewIndex;if(this.crewIndex>=this.crewOffset+crewVisibleCount)this.crewOffset=this.crewIndex-crewVisibleCount+1;const visibleCrew=this.config.agents.slice(this.crewOffset,this.crewOffset+crewVisibleCount);const dividerLeft=this.theme.fg('dim','┄'.repeat(Math.max(1,this.leftWidth-4)));const dividerRight=this.theme.fg('dim','┄'.repeat(Math.max(1,this.rightWidth-4)));const left=[this.theme.fg('accent',`● 议会 · ${this.sending?'工作中':'就绪'}`),this.theme.fg('dim',this.ctx.model?.id&&this.ctx.model.id!=='unknown'?(this.ctx.model?.provider?clean(this.ctx.model.provider)+'/':'')+clean(this.ctx.model.id):'尚未登录'),dividerLeft,...visibleCrew.flatMap((a,i)=>{const index=this.crewOffset+i;const task=[...this.sessionTasks()].reverse().find(t=>t.agent===a.name);const running=task&&!terminalStates.has(task.status||'');const color=task?safeStateColor(stateColor(task as any,0)):'muted';const mark=task?stateMark(task as any):'○';const picked=this.focus==='crew'&&this.crewIndex===index;return [this.theme.fg(picked?'accent':color,picked?'›':mark)+' '+clean(a.name)+(running&&task?.started?this.theme.fg('dim',` · ${Math.max(1,Math.round((Date.now()-task.started)/1000))}s`):''),this.theme.fg(task?color:'dim',`  ${task?.status||'未分派'}${task?.title?' · '+clean(task.title):''}`),this.theme.fg('toolTitle',`    ${clean((a.model||'').split('/').pop()||'未配置模型')}`)];}),...(this.config.agents.length>crewVisibleCount?[this.theme.fg('dim',`  代表 ${this.crewOffset+1}-${Math.min(this.config.agents.length,this.crewOffset+crewVisibleCount)} / ${this.config.agents.length}`)]:[]),this.theme.fg('dim','F2 添加/编辑/分派')];
  const list=this.rows();this.selected=Math.max(0,Math.min(this.selected,list.length-1));const available=Math.max(1,contentRows-2);if(this.selected<this.rightOffset)this.rightOffset=this.selected;if(this.selected>=this.rightOffset+available)this.rightOffset=this.selected-available+1;
- const right=[this.theme.fg('dim','F2 新项目 · 新对话'),dividerRight,...list.slice(this.rightOffset,this.rightOffset+available).map((r:any,i)=>`${this.selected===this.rightOffset+i?'›':' '} ${r.kind==='project'?(this.folded.has(r.path)?'▸ ':'▾ '):r.path===this.ctx.sessionManager.getSessionFile()?'  ● ':'  ○ '}${clean(r.label)}`)];
+ // Every row needs an explicit colour: the side panels are tinted, so a bare string inherits
+ // the terminal default and can vanish on a light background.
+ const right=[this.theme.fg('dim','F2 新项目 · 新对话'),dividerRight,...list.slice(this.rightOffset,this.rightOffset+available).map((r:any,i)=>{const selected=this.selected===this.rightOffset+i;const active=r.kind==='session'&&r.path===this.ctx.sessionManager.getSessionFile();const marker=r.kind==='project'?(this.folded.has(r.path)?'▸ ':'▾ '):active?'● ':'○ ';return this.theme.fg(selected?'accent':active?'success':'text',`${selected?'›':' '} ${marker}${clean(r.label)}`);})];
  this.visibleCenter=[];const body:string[]=[];const frameColor=(focused:boolean)=>focused?'borderAccent':'borderMuted';
  // 侧栏铺 card 底色（kepos-dark 的 toolSuccessBg 值等于 export.cardBg），中栏保持深底突出正文。
  const sideBg=(s:string)=>this.theme.bg?this.theme.bg('toolSuccessBg',s):s;
@@ -313,23 +503,32 @@ export class Desk {
   if(this.leftWidth)body.push(sideBg(panel(this.leftWidth,left[j]||'',this.focus==='crew'))+gap+panel(this.centerWidth,centerBody,this.focus==='input')+gap+sideBg(panel(this.rightWidth,right[j]||'',this.focus==='projects')));
   else if(this.rightWidth)body.push(panel(this.centerWidth,this.focus==='crew'?this.theme.fg(j===0?'accent':'muted',fit(left[j]||'',innerWidth)):centerBody,this.focus!=='projects')+gap+sideBg(panel(this.rightWidth,right[j]||'',this.focus==='projects')));
   else{const narrowContent=this.focus==='projects'?right[j]||'':this.focus==='crew'?left[j]||'':center;const narrowBody=hasScroll?fit(narrowContent,Math.max(1,width-6))+' '+scrollGlyph(j):narrowContent;body.push(panel(width,narrowBody,true));}}
- const input=inputLines.map(line=>this.theme.fg('borderMuted','│ ')+fit(line,Math.max(1,(this.leftWidth||this.rightWidth?this.centerWidth:width)-4))+this.theme.fg('borderMuted',' │')).map(line=>this.leftWidth?' '.repeat(this.leftWidth+3)+line+' '.repeat(this.rightWidth+3):this.rightWidth?line+' '.repeat(this.rightWidth+3):line);
- this.footerRegions=[];let footerText='';for(const [label,key] of [['F10 议会','f10'],['F1 帮助','f1'],['F2 操作','f2'],['F3 任务','f3'],['F8 全局','f8'],['F11 专注','f11']]){const start=visibleWidth(footerText);footerText+=label+'   ';this.footerRegions.push({start,end:visibleWidth(footerText),key});}footerText+=this.taskView?'Ctrl+←/→ 切换任务 · PgUp/PgDn 滚动':'PgUp/PgDn 历史 · Ctrl+X 中止';
+ // 附件条：有附件时压在输入框上方，随输入区同宽对齐，不打断主案阅读区。
+ const attachBar=this.attachmentBar(Math.max(8,(this.leftWidth||this.rightWidth?this.centerWidth:width)-4))
+  .map(line=>this.leftWidth?' '.repeat(this.leftWidth+3)+line+' '.repeat(this.rightWidth+3):this.rightWidth?line+' '.repeat(this.rightWidth+3):line);
+ const input=[...attachBar,...inputLines.map(line=>this.theme.fg('borderMuted','│ ')+fit(line,Math.max(1,(this.leftWidth||this.rightWidth?this.centerWidth:width)-4))+this.theme.fg('borderMuted',' │')).map(line=>this.leftWidth?' '.repeat(this.leftWidth+3)+line+' '.repeat(this.rightWidth+3):this.rightWidth?line+' '.repeat(this.rightWidth+3):line)];
+ // 底栏由键位表按上下文生成：标签与可点击区域同一份来源，不再手写第二遍。
+ this.footerRegions=[];let footerText='';
+ for(const hint of this.footerHints()){const start=visibleWidth(footerText);footerText+=hint.label+'   ';this.footerRegions.push({start,end:visibleWidth(footerText),key:hint.key});}
+ footerText+=this.taskView?'Ctrl+←/→ 切换任务':'Ctrl+X 中止';
  const status=this.missionView?'计划监控 · F9 返回 · F2 管理与审批':this.help?'帮助 / 阅读模式 · F1 关闭 · F6 切换面板':this.taskView?'任务详情 · F8 切换全局/会话 · Ctrl+←/→ 切任务 · PgUp/PgDn 滚动产出 · F3 返回会话':preview?'只读预览 · 发送目标见正文提示 · F6 返回当前对话输入':this.maximize?'专注阅读 · F11 或 Esc 恢复面板':this.readStart!==null?'阅读历史 · 已暂停跟随 · Ctrl+End 回最新':this.focus==='input'?'输入区 · Enter 发送 · F10 议会 · F6 管项目':this.focus==='projects'?'项目区 · Enter 折叠/切换 · '+clean((row as any)?.session?.cwd||row?.path||this.ctx.cwd):'代表席 · ↑↓ 选择 · Enter 任务/配置 · F2 分派任务';
  if(this.metricsDirty){this.metrics=sessionUsage(this.ctx.sessionManager.getEntries?.()||this.ctx.sessionManager.getBranch());this.metricsDirty=false;}const contextUsage=this.ctx.getContextUsage?.();
  // 底栏两行：状态+短用量一行；临时 notice（4 秒自动退出）与按键提示一行。完整用量移入 F1 帮助。
- if(this._notice&&Date.now()-this.noticeAt>4000)this._notice='';
+ if(this._notice&&!this._noticeUrgent&&Date.now()-this.noticeAt>4000)this._notice='';
  // 双色进度条：已用段 accent/warning，空余段 dim——0% 时整条呈暗色，不会误读成满格。
  const pctKnown=!!contextUsage&&contextUsage.percent!==null&&contextUsage.percent!==undefined&&Number.isFinite(contextUsage.percent);const pct=pctKnown?Math.max(0,Math.min(100,Math.round(contextUsage.percent))):0;const pctFilled=pctKnown?Math.max(0,Math.min(10,Math.round(pct/10))):0;
  const usageBar=pctKnown?this.theme.fg(contextUsage.percent>=80?'warning':'accent','▓'.repeat(pctFilled))+this.theme.fg('dim','░'.repeat(10-pctFilled)):'';
  const usageShort=`上下文 ${pctKnown?usageBar+' '+pct+'%':'—'}${this.metrics.estimatedCost>0?' · ~$'+this.metrics.estimatedCost.toFixed(2):''}`;
  const statusLine=truncateToWidth(status,Math.max(1,width-visibleWidth(usageShort)-2))+'  '+usageShort;
- const noticePart=this._notice?truncateToWidth(this._notice,Math.max(8,Math.floor(width/2)))+' · ':'';
+ // 紧急通知要留出 "⚠ " 前缀的位置，否则加前缀后整行会超出宽度预算被硬裁。
+ const noticeBudget=Math.max(8,Math.floor(width/2))-(this._noticeUrgent?2:0);
+ const noticePart=this._notice?truncateToWidth(this._notice,Math.max(6,noticeBudget))+' · ':'';
  // 模式芯片（vim 风）：一眼看清当前面板/视图，CineTTY 同款状态栏语汇。
  const modeText='-- '+(this.missionView?'计划':this.help?'帮助':this.taskView?'书案':preview?'预览':this.maximize?'专注':this.readStart!==null?'阅读':this.focus==='input'?'输入':this.focus==='projects'?'项目':'代表')+' --';
  const modeChip=this.theme.style?this.theme.style(modeText,{fg:'accent',bold:true}):this.theme.fg('accent',modeText);
  const row1=modeChip+' '+this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,Math.max(1,width-visibleWidth(modeText)-1)));
- const row2=(noticePart?this.theme.fg('muted',noticePart):'')+this.theme.fg('dim',fit(footerText,Math.max(1,width-visibleWidth(noticePart))));
+ const prefixWidth=this._noticeUrgent&&noticePart?2:0;
+ const row2=(noticePart?(this._noticeUrgent?this.theme.fg('warning','⚠ '+noticePart):this.theme.fg('muted',noticePart)):'')+this.theme.fg('dim',fit(footerText,Math.max(1,width-visibleWidth(noticePart)-prefixWidth)));
  return [...header,...body,...input,row1,row2];
  }
  async copyAnswer(){const entries=this.preview()?SessionManager.open(this.preview()!.path).getBranch():this.ctx.sessionManager.getBranch();const message=[...entries].reverse().find((e:any)=>e.type==='message'&&e.message?.role==='assistant'&&(typeof e.message.content==='string'?e.message.content:e.message.content?.some((b:any)=>b.type==='text')))?.message;const text=typeof message?.content==='string'?message.content:(message?.content||[]).filter((b:any)=>b.type==='text').map((b:any)=>b.text).join('\n');if(!text){this.notice='暂无可复制的 Kepos 回答';this.refresh();return;}await this.copyText(text);}
@@ -342,7 +541,10 @@ export class Desk {
  if(matchesKey(data,'f10')){this.graphView=!this.graphView;this.graphDetail=false;this.graphSelected=-1;this.graphZoom=1;this.graphFocus='ring';this.councilList=false;this.councilSearch=false;this.councilDesk=false;this.councilDeskTaskId=null;this.deskOffset=0;this.deskWrapKey='';this.focus='input';this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'f11')){this.maximize=!this.maximize;this.notice=this.maximize?'专注阅读：中栏最大化 · F11 或 Esc 恢复':'已恢复面板';this.refresh();return;}
  if(matchesKey(data,Key.escape)&&this.focus==='input'&&this.editor.isShowingAutocomplete()){this.editor.handleInput(data);this.refresh();return;}
- if(matchesKey(data,Key.escape)){if(this.actionBusy)return;if(this.graphView){if(this.councilDesk){this.councilDesk=false;this.councilDeskTaskId=null;this.deskOffset=0;this.deskWrapKey='';this.notice='书案已关闭 · Enter 席位重新打开';this.refresh();return;}if(this.graphDetail){this.graphDetail=false;this.refresh();return;}if(this.graphFocus==='input'){this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位焦点 · ↑↓ 选择 · Enter 书案 · F6 切面板';this.refresh();return;}if(this.graphFocus==='list'){this.graphFocus='ring';this.notice='议会席位焦点 · Tab 回列表';this.refresh();return;}if(this.councilList){this.councilList=false;this.notice='已关闭任务列表 · Tab 重新打开';this.refresh();return;}this.graphView=false;this.setFocus('input');this.notice='已回到议案';this.refresh();return;}if(this.maximize){this.maximize=false;this.notice='已恢复面板';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到议案';}else this.notice='已在议案；输入 /pi 进入 Pi 命令行';this.refresh();return;}
+ if(matchesKey(data,Key.escape)){if(this.actionBusy)return;
+  // 紧急通知优先吃掉这一次 Esc：先让你看清它，再按一次才继续逐层返回。
+  if(this._noticeUrgent){this._noticeUrgent=false;this._notice='';this.refresh();return;}
+  if(this.graphView){if(this.councilDesk){this.councilDesk=false;this.councilDeskTaskId=null;this.deskOffset=0;this.deskWrapKey='';this.notice='书案已关闭 · Enter 席位重新打开';this.refresh();return;}if(this.graphDetail){this.graphDetail=false;this.refresh();return;}if(this.graphFocus==='input'){this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位焦点 · ↑↓ 选择 · Enter 书案 · F6 切面板';this.refresh();return;}if(this.graphFocus==='list'){this.graphFocus='ring';this.notice='议会席位焦点 · Tab 回列表';this.refresh();return;}if(this.councilList){this.councilList=false;this.notice='已关闭任务列表 · Tab 重新打开';this.refresh();return;}this.graphView=false;this.setFocus('input');this.notice='已回到议案';this.refresh();return;}if(this.maximize){this.maximize=false;this.notice='已恢复面板';this.refresh();return;}if(this.help||this.missionView||this.taskView||this.focus!=='input'){this.help=false;this.missionView=false;this.taskView=false;this.readStart=null;this.setFocus('input');this.notice='已回到议案';}else this.notice='已在议案；输入 /pi 进入 Pi 命令行';this.refresh();return;}
  if(matchesKey(data,'ctrl+c')){const selected=this.selectedText();if(selected){void this.copyText(selected);return;}this.notice='进入 Pi 命令行请使用 /pi；中止任务请按 Ctrl+X。';this.refresh();return;}
  if(matchesKey(data,'ctrl+x')&&this.graphView){const hit=this.graphHits.find(item=>item.index===this.graphSelected);if(hit?.taskId)this.finish({kind:'cancel-selected',id:hit.taskId});else{this.notice='选中席位没有可取消的任务 · 审批请用 F2 · Enter 查看详情';this.refresh();}return;}
  if(matchesKey(data,'ctrl+x')){this.finish({kind:'abort'});return;}
@@ -401,6 +603,19 @@ export class Desk {
  if(matchesKey(data,'ctrl+end')){this.readStart=null;this.refresh();return;}
  if(this.taskView&&matchesKey(data,'ctrl+right')){this.taskIndex++;this.readStart=null;this.refresh();return;}
  if(this.taskView&&matchesKey(data,'ctrl+left')){this.taskIndex=Math.max(0,this.taskIndex-1);this.readStart=null;this.refresh();return;}
+ // 粘贴文件路径自动识别：终端把拖入/粘贴的文件路径作为 bracketed paste 送来。
+ // 只有当整段内容全是"存在的文件路径"时才转成附件——混入普通文字时保持文本，
+ // 否则会把正常输入吞掉。
+ if(this.focus==='input'&&!this.graphView&&!this.sending){
+  const pasted=/^\x1b\[200~([\s\S]*)\x1b\[201~$/.exec(data);
+  if(pasted){
+   const found=looksLikeFilePaths(pasted[1],this.ctx.cwd);
+   if(found&&found.length){
+    void this.attachCommand(found.map(path=>JSON.stringify(path)).join(' '),async()=>undefined);
+    return;
+   }
+  }
+ }
  if(this.graphView?(this.councilDesk||this.graphFocus==='input'):this.focus==='input'){this.editor.focused=this.focused;this.editor.handleInput(data);return;}
  if(matchesKey(data,Key.up)){if(this.focus==='projects')this.selected=Math.max(0,this.selected-1);else this.crewIndex=Math.max(0,this.crewIndex-1);this.readStart=null;}
  if(matchesKey(data,Key.down)){if(this.focus==='projects')this.selected=Math.min(this.rows().length-1,this.selected+1);else this.crewIndex=Math.min(this.config.agents.length-1,this.crewIndex+1);this.readStart=null;}
@@ -421,7 +636,7 @@ export class Desk {
  const centerX=(this.leftWidth?this.leftWidth+3:0)+2;const inTranscript=e.y>=3&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+Math.max(1,this.centerWidth-4)&&this.focus!=='crew';
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-3,col:e.x-centerX},end:{row:e.y-3,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-3,e.y-3)),col:Math.max(0,Math.min(Math.max(1,this.centerWidth-4),e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}
- if((e.type==='click'||e.type==='press')&&e.y===(this.tui.terminal.rows||30)-1){const region=this.footerRegions.find(r=>e.x>=r.start&&e.x<r.end);if(region){if(e.type==='press')return{handled:true};const keys:any={f10:'\x1b[21~',f1:'\x1bOP',f2:'\x1bOQ',f3:'\x1bOR',f4:'\x1bOS',f5:'\x1b[15~',f7:'\x1b[18~',f8:'\x1b[19~',f9:'\x1b[20~',f11:'\x1b[23~',escape:'\x1b'};this.handleInput(keys[region.key]);return{handled:true};}}
+ if((e.type==='click'||e.type==='press')&&e.y===(this.tui.terminal.rows||30)-1){const region=this.footerRegions.find(r=>e.x>=r.start&&e.x<r.end);if(region){if(e.type==='press')return{handled:true};const bytes=keyBytes[region.key];if(bytes)this.handleInput(bytes);return{handled:true};}}
  if(e.type==='wheel'&&this.leftWidth&&e.x<this.leftWidth){const visible=Math.max(1,Math.floor(Math.max(1,this.bodyHeight-7)/3));const maxOffset=Math.max(0,this.config.agents.length-visible);this.crewOffset=Math.max(0,Math.min(maxOffset,this.crewOffset+Math.sign(e.wheelDelta||0)));this.crewIndex=this.crewOffset;this.setFocus('crew');this.refresh();return{handled:true};}
  if(e.type==='wheel'){const lines=this.displayLines.length?this.displayLines:this.history(Math.max(8,this.centerWidth-4));this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(e.wheelDelta||0)*3);if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return{handled:true};}
  if(e.type!=='press'&&e.type!=='click')return;

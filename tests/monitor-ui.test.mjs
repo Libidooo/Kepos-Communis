@@ -4,7 +4,7 @@ import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const home=mkdtempSync(join(tmpdir(),'kepos-monitor-'));process.env.ORBITAL_HOME=join(home,'orbital');
-const {Desk}=await import('../dist/terminal/desk.js');
+const {Desk,KEY_HINTS,keyBytes}=await import('../dist/terminal/desk.js');
 const {OrbitalDatabase}=await import('../dist/terminal/database.js');
 const {taskSummaries,taskEvidence}=await import('../dist/terminal/monitor.js');
 const {initTheme}=await import('@earendil-works/pi-coding-agent');initTheme('dark');
@@ -108,15 +108,19 @@ test('three-column body is framed with embedded titles, welcome card and usage b
  desk.dispose();
 });
 
-test('side panels carry the card background while the transcript stays untinted',()=>{
+test('side panels carry the card background while the transcript keeps the page background',()=>{
  const bgTheme={fg:(c,v)=>v,bg:(c,v)=>`[${c}]${v}`};
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
  const desk=new Desk({terminal:{rows:35},requestRender(){}},bgTheme,ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
  const rows=desk.render(120);
  const top=rows.find(l=>l.includes('╭')&&l.includes('主案'));
- assert.equal((top.match(/\[toolSuccessBg\]/g)||[]).length,2,'left and right frames tinted, transcript clean');
+ // 侧栏是 card 面（toolSuccessBg），正文是页面底（userMessageBg）：两者不同才有纵深。
+ assert.equal((top.match(/\[toolSuccessBg\]/g)||[]).length,2,'left and right frames tinted as cards');
+ assert.ok(top.includes('[userMessageBg]'),'the frame row sits on the page background');
  const content=rows.find(l=>l.includes('│')&&l.includes('│',20));
  assert.equal((content.match(/\[toolSuccessBg\]/g)||[]).length,2,'content rows tint the side panels only');
+ // 整页铺页面底色：浅色主题靠它才是浅色，否则会沿用深色终端底而"大面积发黑"。
+ assert.ok(content.includes('[userMessageBg]'),'content rows sit on the page background');
  desk.dispose();
 });
 
@@ -158,4 +162,97 @@ test('transcript distinguishes user input, thinking and tool output',()=>{
  assert.ok(frame.includes('{userMessageBg}'),'user lines carry a tint');
  assert.ok(frame.includes('┊ ▸ read'),'tool call line marked');
  desk.dispose();
+});
+
+test('urgent notices stick until Esc or a new send, and render with the warning mark',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ desk.urgent('✕ 子 Agent Alice 失败：超时');
+ desk.notice='正在调用 bash';
+ assert.equal(desk.notice,'✕ 子 Agent Alice 失败：超时','ordinary notices cannot clobber an urgent one');
+ const row=desk.render(120).at(-1);
+ assert.ok(row.includes('⚠ ')&&row.includes('子 Agent Alice 失败'),'urgent carries the warning mark');
+ assert.ok(visibleWidth(row)<=120,'warning prefix stays inside the width budget');
+ desk.handleInput('\x1b'); // Esc 先吃掉紧急通知
+ assert.equal(desk.notice,'');
+ desk.notice='普通提示恢复';
+ assert.equal(desk.notice,'普通提示恢复','notice channel resumes after the urgent one is dismissed');
+ desk.dispose();
+});
+
+test('sending a message clears the urgent notice so the channel resumes',()=>{
+ let sent=0;
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>sent++,()=>{});
+ desk.urgent('✕ 上一轮失败');
+ desk.editor.setText('继续');
+ desk.send();
+ assert.equal(sent,1);
+ assert.equal(desk.notice,'正在提交给主 Agent…','send resets the notice channel');
+ desk.dispose();
+});
+
+test('footer hints are context filtered and every visible hint is clickable',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
+ for(const hint of KEY_HINTS)if(hint.footer)assert.ok(keyBytes[hint.key],'footer hint '+hint.key+' must be clickable');
+ assert.ok(desk.render(120).at(-1).includes('Ctrl+X 中止'),'abort stays discoverable in the footer');
+ desk.handleInput('\x1b[21~'); // F10 打开议会环
+ assert.ok(desk.footerHints().some(h=>h.key==='tab'),'council scope surfaces the list toggle');
+ desk.councilList=true;desk.graphFocus='list';
+ const list=desk.footerHints().map(h=>h.key);
+ assert.ok(list.includes('slash')&&list.includes('v'),'list scope surfaces filter hints');
+ desk.dispose();
+});
+
+test('side-panel rows always set a foreground colour so tinted panels stay readable', async () => {
+  // The panels sit on a tinted background; a row without an explicit foreground inherits the
+  // terminal default and can disappear on a light theme.
+  const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
+  const light = loadThemeFromPath(new URL('../themes/kepos-light.json', import.meta.url).pathname.replace(/^\//, ''), 'truecolor');
+  const ctx = { cwd: home, isIdle: () => true, model: { id: 'fixture' }, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => [], getEntries: () => [] } };
+  const sessions = [{ path: '/s1.jsonl', cwd: home, name: 'old chat' }];
+  const desk = new Desk({ terminal: { rows: 30 }, requestRender() {} }, light, ctx,
+    { projects: [], agents: [{ id: 'a', name: '审查员', model: 'gpt' }], drafts: {}, folded: [], sessionLinks: {} },
+    sessions, { tasks: [], children: new Map() }, () => {}, () => {});
+  for (const row of desk.render(120)) {
+    if (!row.includes('[48;2;')) continue;                        // only tinted (side) rows
+    const plain = row.replace(/\x1b\[[0-9;]*m/g, '').replace(/[─╭╮╰╯│╔╗╚╝═║ ]/g, '');
+    if (plain.length < 6) continue;                                // frames only
+    assert.ok(/38;2;\d+;\d+;\d+m/.test(row), `tinted row has text but no foreground: ${JSON.stringify(plain.slice(0, 40))}`);
+  }
+  desk.dispose();
+});
+
+test('human, 总理 and delegate messages are visually distinct in every theme', async () => {
+  const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
+  const { historyLines } = await import('../dist/terminal/desk.js');
+  const { fileURLToPath } = await import('node:url');
+  for (const themeName of ['kepos-light', 'kepos-dark', 'kepos-default']) {
+    const theme = loadThemeFromPath(fileURLToPath(new URL(`../themes/${themeName}.json`, import.meta.url)), 'truecolor');
+    const entries = [
+      { type: 'message', message: { role: 'user', content: 'HUMAN_LINE' } },
+      { type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: 'PM_LINE' }] } },
+      { type: 'custom_message', customType: 'kepos-task-result', display: true, content: '子 Agent「审查员」DELEGATE_LINE' },
+    ];
+    const out = historyLines(entries, 60, false, theme);
+    const find = keyword => out.find(line => line.includes(keyword));
+    const human = find('HUMAN_LINE'), pm = find('PM_LINE'), delegate = find('DELEGATE_LINE');
+    assert.ok(human && pm && delegate, `${themeName}: all three speakers render`);
+
+    // Each speaker carries a distinct background: the human's block, the 总理's card, and the
+    // delegate's rule-marked output (no fill). Identical fills mean no visual centre.
+    const bgOf = line => (line.match(/48;2;[\d;]+m/g) || [])[0] || 'none';
+    assert.equal(bgOf(delegate), 'none', `${themeName}: delegates use a rule, not a fill`);
+    assert.ok(bgOf(human) !== 'none', `${themeName}: the human has a block`);
+    assert.ok(bgOf(pm) !== 'none', `${themeName}: the 总理 has a card`);
+    assert.notEqual(bgOf(human), bgOf(pm), `${themeName}: 总理 must not share the human's fill`);
+
+    // Speaker labels differ in both wording and colour.
+    const speakerOf = keyword => out.find(line => line.includes(keyword) && !line.includes('_LINE')) || '';
+    assert.ok(out.some(line => line.includes('◆ 总理')), `${themeName}: 总理 label`);
+    assert.ok(out.some(line => line.includes('◈ 审查员')), `${themeName}: delegate label names the agent`);
+    assert.ok(out.some(line => line.includes('› 你')), `${themeName}: human label`);
+    void speakerOf;
+  }
 });

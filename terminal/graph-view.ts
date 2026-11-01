@@ -2,15 +2,15 @@ import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { stripVTControlCharacters } from 'node:util';
 import { TASK_ACTIVE_STATES, isTaskActive, isTaskCurrent, isTaskPending, taskElapsedText, taskState, type TaskStateLike } from './task-state.ts';
 
-export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string };
-export type GraphViewTask = TaskStateLike & { id: string; agent: string; agentId?: string; purpose?: 'delegation' | 'configuration'; internal?: boolean; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; error?: string; groupKey?: string };
+export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string; deputy?: boolean };
+export type GraphViewTask = TaskStateLike & { id: string; agent: string; agentId?: string; purpose?: 'delegation' | 'configuration'; internal?: boolean; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; error?: string; groupKey?: string; started?: number; ended?: number };
 export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask[] };
 export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number; taskId?: string };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
 export type CouncilFilter = 'active' | 'pending' | 'all';
 export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number; focus?: 'ring' | 'list' | 'input'; desk?: boolean };
-type Cell = { char: string; color?: string };
-type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number };
+type Cell = { char: string; color?: string; italic?: boolean; faint?: boolean; bold?: boolean };
+type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number; deputy?: boolean };
 // 活跃=正在执行；NEEDS_HUMAN 归入“待处理”。终态残留的复核/停滞标记不再报警。
 export const activeStates = TASK_ACTIVE_STATES;
 export const countActive = (tasks: GraphViewTask[]) => tasks.filter(isTaskActive).length;
@@ -55,9 +55,15 @@ const cut = (value: unknown, width: number): string => {
 // htop 式对齐列：状态/代表名定宽补齐，标题吃剩余宽度。
 const padCell = (value: string, width: number) => { const text = cut(value, width); return text + ' '.repeat(Math.max(0, width - visibleWidth(text))); };
 
-// teal/blue/mauve exist only as kepos-dark vars; Pi's theme.fg rejects them, so emit them directly.
-const directColors: Record<string, string> = { approval: '1;38;2;255;223;84', queue: '38;2;157;126;76', idle: '38;2;116;139;129', teal: '38;2;142;181;173', blue: '38;2;153;172;187', mauve: '38;2;181;160;173' };
-const palette = ['teal', 'blue', 'mauve', 'accent'];
+// 颜色一律走主题 token：Pi 的 theme.fg 只认主题 colors 里的 56 个固定键，
+// vars 里的原始色名（teal/blue/mauve）不是 token，直接传会抛错。
+// 分组调色板因此改用语义等价且色相互不相同的既有 token：
+//   toolTitle=teal, syntaxKeyword=blue, syntaxOperator=mauve, accent=amber。
+// 这样浅色主题下对比度由主题保证，/theme 切换即时跟随。
+const palette = ['toolTitle', 'syntaxKeyword', 'syntaxOperator', 'accent'] as const;
+// 旧状态色名映射到语义 token；approval 用 warning（待审批）、queue 用 accent。
+const tokenFor: Record<string, string> = { approval: 'warning', queue: 'accent', idle: 'dim' };
+export const themeToken = (color: string): string => tokenFor[color] || color;
 export const stateColor = (task: GraphViewTask | undefined, index: number) => {
   if (!task) return 'muted';
   if (task.state === 'NEEDS_HUMAN') return 'approval';
@@ -74,8 +80,10 @@ export const stateNameColor = stateColor;
 // 就绪 ◌ 最虚；待审批沿用敲定语义——黄色运行态 + 席位中间的 !（见下方渲染）。
 // 其余按实心程度递减：运行 ◉/◎ 呼吸，排队 ◔，完成 ●，失败 ⊘，取消 ○。
 // 只有运行中的席位在两帧之间变化，动效只用来指认"正在发生的事"。
+// 选中态用 ⬤（LARGE BLACK CIRCLE）：终端改不了字号，取"笔画更重、墨量更大"的字形
+// 来表达"选中比普通席位更大一号"，再叠加粗体，读起来就是"加粗并大一点"。
 export const seatGlyph = (task: GraphViewTask | undefined, selected: boolean, now: number): string => {
-  if (selected) return '▣';
+  if (selected) return '⬤';
   if (!task) return '◌';
   const state = taskState(task);
   if (state === 'FAILED') return '⊘';
@@ -141,31 +149,15 @@ function renderConnections(grid: Cell[][], mask: (number | undefined)[][], color
   }
 }
 
-function line(grid: Cell[][], x0: number, y0: number, x1: number, y1: number, color: string) {
-  // 仅用于诊断和未来需要斜线的场景；当前连线走 stamp + 位掩码的正交路径。
-  const dx = Math.abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-  const dy = -Math.abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-  const stroke = dx > -dy * 2 ? '─' : -dy > dx * 2 ? '│' : sx === sy ? '╲' : '╱';
-  let error = dx + dy, x = x0, y = y0;
-  for (;;) {
-    const cell = grid[y]?.[x];
-    if (cell?.char === ' ') grid[y][x] = { char: stroke, color };
-    if (x === x1 && y === y1) break;
-    const twice = 2 * error;
-    if (twice >= dy) { error += dy; x += sx; }
-    if (twice <= dx) { error += dx; y += sy; }
-  }
-}
-
-function put(grid: Cell[][], x: number, y: number, text: string, color?: string) {
+function put(grid: Cell[][], x: number, y: number, text: string, color?: string, style?: { italic?: boolean; faint?: boolean; bold?: boolean }) {
   // 唯一网格入口必须自净：任何调用者漏传了转义序列或控制符，都在这里被剥掉，
   // 绝不能把 ESC 当成一个可见字符格写进画面。
   let column = x;
   for (const char of plain(text)) {
     // 全角字符占两格，第二格留空由 colorize 跳过，宽度账才对得上。
     const width = Math.max(1, visibleWidth(char));
-    if (grid[y]?.[column]) grid[y][column] = { char, color };
-    for (let offset = 1; offset < width; offset++) if (grid[y]?.[column + offset]) grid[y][column + offset] = { char: '', color };
+    if (grid[y]?.[column]) grid[y][column] = { char, color, ...style };
+    for (let offset = 1; offset < width; offset++) if (grid[y]?.[column + offset]) grid[y][column + offset] = { char: '', color, ...style };
     column += width;
   }
 }
@@ -173,8 +165,13 @@ function colorize(row: Cell[], theme: any): string {
   return row.map(cell => {
     if (!cell.char) return '';
     if (cell.char === ' ') return ' ';
-    const direct = directColors[cell.color || ''];
-    return direct ? `\x1b[${direct}m${cell.char}\x1b[${cell.color === 'approval' ? 0 : 39}m` : theme.fg(cell.color || 'text', cell.char);
+    // 终端字体固定、字号不可改：字重与字形就是"加粗/加大"的实际手段。
+    // 席位圆环与总理圆环用 bold 加粗；斜体/半亮只用于说明性文字（席位名）。
+    let text = cell.char;
+    if (cell.bold) text = `\x1b[1m${text}\x1b[22m`;
+    if (cell.faint) text = `\x1b[2m${text}\x1b[22m`;
+    if (cell.italic) text = `\x1b[3m${text}\x1b[23m`;
+    return theme.fg(themeToken(cell.color || 'text'), text);
   }).join('');
 }
 
@@ -230,13 +227,17 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
     rows.push('div');
   }
   const task = selected?.task;
-  rows.push({ text: task ? `${plain(selected!.label)} 书案` : selected ? `选中 ${plain(selected.label)}` : '选中 总理', color: 'accent' });
+  rows.push({ text: task ? `${plain(selected!.label)} 书案` : selected ? `选中 ${plain(selected.label)}` : '选中 总理', color: 'borderAccent' });
   if (task) {
-    const elapsed = task.started ? Math.max(0, Math.round((now - task.started) / 1000)) + 's' : '—';
+    // 用统一的 elapsed 计算：终态按 ended 冻结，缺失时显示“耗时未记录”，
+    // 绝不用 now - started 让旧任务无限读秒（这里曾漏掉 ended，旧任务跑到 68258s）。
+    const elapsed = taskElapsedText(task, now);
     rows.push({ text: `状态 ${task.status || task.state || '—'} · ${elapsed}`, color: stateColor(task, selected!.index) });
+    // 细节字段统一降一档明度（工具/进展），输出保持正文级——它是阅读主体。
     if (task.tool) rows.push({ text: `工具 ${cut(task.tool, labelWidth - 3)}`, color: 'dim' });
     if (task.checkpoint) rows.push({ text: `进展 ${cut(task.checkpoint, labelWidth - 3)}`, color: 'dim' });
     rows.push({ text: `输出 ${cut(task.output || '等待结果', labelWidth - 3)}`, color: 'text' });
+    rows.push('div');
     rows.push({ text: 'Enter 详情 · Ctrl+X 取消 · v 完整输出', color: 'dim' });
   } else {
     rows.push({ text: selected ? '尚无书案' : '总理 · Enter 输入目标', color: 'dim' });
@@ -247,8 +248,15 @@ function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNo
   const cardH = Math.min(height, rows.length + 2);
   const title = '─ 议会简要 ';
   const titleWidth = visibleWidth(title);
-  const fill = Math.max(1, (right - x - 2) - titleWidth);
-  put(grid, x, 0, '╭' + title, focused ? 'accent' : 'borderAccent');
+  // 关键：卡片是浮在环图之上的不透明面板。环图席位先画，代表名会落在卡片矩形的
+  // 格子范围里；若不先清空，就会从卡片空行中透出来（截图中"档案○""软件架"穿进侧栏）。
+  // 因此必须先把整块矩形抹成空格，再画边框与内容。
+  for (let y = 0; y <= cardH - 1 && y < height; y++) {
+    for (let cx = x; cx <= right && cx < width; cx++) grid[y][cx] = { char: ' ' };
+  }
+  // 标题只用品牌色描边强调"这是焦点面板"，正文与计数仍用语义色；
+  // 不再整块用 accent（琥珀）——那会和选中席位、主案强调色互相抢眼。
+  put(grid, x, 0, '╭' + title, focused ? 'borderAccent' : 'borderMuted');
   for (let cx = x + titleWidth + 1; cx < right; cx++) put(grid, cx, 0, '─', frameColor);
   put(grid, right, 0, '╮', frameColor);
   for (let y = 1; y < cardH - 1; y++) { put(grid, x, y, '│', frameColor); put(grid, right, y, '│', frameColor); }
@@ -291,7 +299,7 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
     // 这样任务结束后代表回到代表席，不再占着临时分组环。
     const latest = latestByAgent.get(agent.name);
     const active = latest && isTaskCurrent(latest) ? latest : undefined;
-    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: latest, groupKey: active?.groupKey || 'default', index: 0, x: 0, y: 0 };
+    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: latest, groupKey: active?.groupKey || 'default', index: 0, x: 0, y: 0, deputy: agent.deputy === true };
   });
   for (const task of tasks) {
     const agent = byAgent.get(task.agent);
@@ -422,47 +430,130 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
       if (!chain.has(node.id)) continue;
       const parent = node.task?.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined;
       const start = parent ? { x: parent.x, y: parent.y } : { x: node.x >= main.x ? main.x + 5 : main.x - 2, y: main.y };
-      stamp(grid, edgeMask, start.x, start.y, node.x, node.y, 'accent');
+      stamp(grid, edgeMask, start.x, start.y, node.x, node.y, 'borderAccent');
     }
-    renderConnections(grid, edgeMask, 'accent');
+    renderConnections(grid, edgeMask, 'borderAccent');
   }
   // 先铺线再把总理座写上去：文字永远压在最上层，不会被连接符覆盖。
-  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'accent' : 'text');
+  // 选中态统一走品牌色（borderAccent），与主案焦点框同族；
+  // 琥珀 accent 留给"强调/活跃"，否则选中席位会和议会简要一起抢成黄色。
+  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'borderAccent' : 'text', { bold: true });
   put(grid, main.x + 1, main.y, ' 总理', 'accent');
   const hits: GraphHit[] = [main];
+  // 字符占用登记：席位符号与标签分属不同行/列，密集环里后画的符号会压掉先画的
+  // 标签文字（截图里"性○能工程官"就是符号盖住了名字）。画之前先查这张表，
+  // 已有内容的位置不再写入，保证名字始终可读。
+  const taken: boolean[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => false));
+  const claim = (x: number, y: number, len: number) => { for (let i = 0; i < len; i++) if (taken[y]?.[x + i] !== undefined) taken[y][x + i] = true; };
+  const free = (x: number, y: number, len: number) => {
+    for (let i = 0; i < len; i++) if (taken[y]?.[x + i] !== false) return false;
+    return true;
+  };
+  // 标签避让要考虑上下相邻行：符号画在 node.y、标签在 node.y+1，
+  // 若只查标签自己那一行，标签就会紧贴符号画成「性能工程官◎利益相关者」。
+  // 因此标签检查时把第 y-1 行也算进来（只认紧邻，不影响远处席位）。
+  const freeNear = (x: number, y: number, len: number) => {
+    if (!free(x, y, len)) return false;
+    if (y > 0) {
+      // 紧邻上/下行只要有一个被占用的格落在标签范围内，就视为拥挤。
+      for (let i = -1; i <= len; i++) if (taken[y - 1]?.[x + i]) return false;
+    }
+    return true;
+  };
+  // 总理座先占位，标签绝不会压上去。
+  claim(main.x - 1, main.y, 7);
   for (const node of layout.nodes) {
     const selectedNode = selected === node.index;
     const approval = node.task?.state === 'NEEDS_HUMAN';
     const color = node.task ? stateColor(node.task, node.index) : 'idle';
     // 符号本身表达状态（见 seatGlyph），颜色只负责语义分组与轻重。
+    // 只有该格尚未被文字占用时才写符号，避免盖掉相邻席位已画好的名字。
     const marker = seatGlyph(node.task, selectedNode, now);
     const shake = approval ? Math.floor(now / 400) % 2 : 0;
-    put(grid, node.x - 1 + shake, node.y, marker, color);
+    if (free(node.x - 1 + shake, node.y, 1)) {
+      put(grid, node.x - 1 + shake, node.y, marker, color, { bold: true });
+      claim(node.x - 1 + shake, node.y, 1);
+    }
+    // 代理总代：推选出来的兼任治理职责，不是普通席位。
+    // 参考总理 ◉ 的语义，额外套一个圆环把它圈起来——「(◉)」。
+    // 只在两侧有空位时套环，绝不覆盖邻座文字；套不上就退化为加粗，仍有区别。
+    if (node.deputy) {
+      const ringColor = selectedNode ? 'borderAccent' : 'accent';
+      const lx = node.x - 2 + shake, rx = node.x + shake;
+      if (free(lx, node.y, 1)) { put(grid, lx, node.y, '(', ringColor, { bold: true }); claim(lx, node.y, 1); }
+      if (free(rx, node.y, 1)) { put(grid, rx, node.y, ')', ringColor, { bold: true }); claim(rx, node.y, 1); }
+    }
     // 待审批：黄色运行态 + 席位中央的感叹号（沿用敲定语义，不改成静态符号）。
     if (approval) put(grid, node.x, node.y, '!', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
+    // 质感：只有"活的"席位带四角光环（·），让运行态在密集圆环里也能一眼扫到；
+    // 终态与空闲不带，避免背景噪点。
+    if (node.task && isTaskCurrent(node.task)) {
+      for (const [dx, dy, glyph] of [[-1, -1, '·'], [1, -1, '·'], [-1, 1, '·'], [1, 1, '·']] as const) {
+        const gx = node.x + dx, gy = node.y + dy;
+        if (gx >= 0 && gx < safeWidth && gy >= 0 && gy < safeHeight) put(grid, gx, gy, glyph, selectedNode ? 'borderAccent' : 'dim');
+      }
+    }
     // 名字比符号降一阶明度；未分配的席位退到背景。
-    // 标签不能侵入总理座区，否则最小缩放下会糊在一起。
-    const nameColor = selectedNode ? 'accent' : stateNameColor(node.task, node.index);
-    const label = cut(node.label, 10);
+    // 选中席位用品牌色高亮（与主案焦点框一致），未选中跟随状态色。
+    const nameColor = selectedNode ? 'borderAccent' : stateNameColor(node.task, node.index);
+    // 标签可用横向范围：留出侧栏占位。此前只按 safeWidth 判断，
+    // 圆环右侧席位名会越过侧栏左边界、左侧席位名被网格静默裁掉（"监管"变"管")。
+    const gutter = (safeWidth >= 120 && !council?.desk) ? 38 : 0;
+    const labelMaxX = safeWidth - gutter;
+    // 席位名是"说明性文字"：不参与决策阅读，因此用斜体 + 半亮降权。
+    // 多环布局时席位密集，标签必须更短，否则互相挤压、看起来像乱码。
+    // 预算按圆环密度收窄：单环 12 列，多环 6 列——名字只作定位提示。
+    const labelBudget = layout.ringCount > 1 ? 6 : 12;
+    let label = cut(node.label, Math.max(2, Math.min(labelBudget, labelMaxX)));
     const labelY = node.y + 1;
-    let labelX = node.x - Math.floor(visibleWidth(label) / 2);
+    // 以席位圆点为中心严格居中：符号画在 node.x-1，标签中心对齐 node.x-1。
+    // 之前用 node.x - floor(w/2)，宽标签整体右偏半格，密集时看起来像在晃。
+    let labelWidth = visibleWidth(label);
+    let labelX = node.x - 1 - Math.floor(labelWidth / 2);
+    labelX = Math.max(1, Math.min(labelX, labelMaxX - labelWidth - 1));
     // 只有与总理座同一行才需要避让；推不出空间就让标签让位。
     if (labelY === main.y) {
       const boxLeft = main.x - 3, boxRight = main.x + 7;
-      const overlaps = labelX <= boxRight && labelX + visibleWidth(label) >= boxLeft;
+      const overlaps = labelX <= boxRight && labelX + labelWidth >= boxLeft;
       if (overlaps) {
         // 位于总理右侧的席位向右让，左侧的向左让。
         labelX = node.x >= main.x
           ? boxRight + 1
-          : boxLeft - visibleWidth(label);
+          : boxLeft - labelWidth;
         // 让位后可能出界，按剩余空间截断。
-        if (labelX < 0 || labelX >= safeWidth) continue;
-        put(grid, labelX, labelY, cut(label, safeWidth - labelX), nameColor);
-        hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id });
-        continue;
+        if (labelX < 1 || labelX >= labelMaxX) {
+          // 空间不足：贴边放置并截断，而不是整段丢弃（丢掉会让席位居中没有任何说明）。
+          labelX = Math.max(1, Math.min(labelX, labelMaxX - 2));
+          if (labelX < 1) { hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id }); continue; }
+        }
       }
     }
-    put(grid, labelX, labelY, label, nameColor);
+    // 避让已占用的格子（相邻席位的符号/标签）。先在原位置试，再左右平移找空位，
+    // 仍冲突则逐步缩短标签；全都失败才放弃这段文字——绝不覆盖别人的名字。
+    // 标签放宽到 14 列后更容易与邻座相撞，因此平移范围也随之扩大。
+    let placed = false;
+    for (let shrink = 0; shrink <= 8 && !placed; shrink++) {
+      const candidate = shrink ? cut(label, Math.max(2, labelWidth - shrink)) : label;
+      const width = visibleWidth(candidate);
+      for (const shift of [0, -1, 1, -2, 2, -3, 3, -4, 4, -5, 5, -6, 6, -8, 8, -10, 10]) {
+        const x = labelX + shift;
+        if (x < 1 || x + width > labelMaxX) continue;
+        if (!freeNear(x, labelY, width)) continue;
+        put(grid, x, labelY, candidate, nameColor, { italic: true, faint: true });
+        claim(x, labelY, width);
+        placed = true;
+        break;
+      }
+    }
+    // 底线保底：密集布局下可能一个空位都找不到，但"席位没有名字"比"名字略微拥挤"
+    // 更糟（单代表场景曾整段消失）。此时强制放在自身符号下方，宁可挤一点也不丢信息。
+    if (!placed) {
+      const fallback = cut(label, Math.max(2, Math.min(6, labelWidth)));
+      const width = visibleWidth(fallback);
+      const x = Math.max(1, Math.min(node.x - Math.floor(width / 2), labelMaxX - width - 1));
+      put(grid, x, labelY, fallback, nameColor, { italic: true, faint: true });
+      claim(x, labelY, width);
+    }
     hits.push({ id: node.id, kind: node.kind, index: node.index, x: node.x, y: node.y, taskId: node.task?.id });
   }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;

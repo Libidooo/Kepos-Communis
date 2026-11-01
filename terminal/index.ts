@@ -25,14 +25,16 @@ import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, configureWorkerBudget, spentTokens, type WorkerHandle } from './workers.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
+import { loadAttachment, isAttached } from './attachments.ts';
 export { fit, historyLines };
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
 const DEFAULT_COUNCIL_ROLE_COUNT = 48;
 // 48 席显式种子：覆盖治理、代码、法律合规、文书、学术、政策、工具操作与产品。
 // 顺序决定初始化时的席位顺序；initCrew 也只在空席位上补齐，已有代表 ID 不受影响。
+// 代理总代不在编制内：它是人类从现任代表中推选的兼任职责（config.deputyAgentId）。
 const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   // 治理与核心（6）
-  'deputy_chair', 'strategist', 'mediator', 'archivist', 'scribe', 'cartographer',
+  'strategist', 'mediator', 'archivist', 'scribe', 'cartographer', 'integrity_gatekeeper',
   // 代码与工程（10）
   'surveyor', 'engineer', 'software_architect', 'code_reviewer', 'test_strategist', 'qa_engineer',
   'security_engineer', 'devops_engineer', 'performance_engineer', 'refactoring_planner',
@@ -65,7 +67,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,dependsOn:j.dependsOn||[],checkpoint:j.checkpoint?.slice(0,500),error:j.error}))});
  const save=()=>{saveConfig(config);refreshSupervisionPrompt?.();desk?.invalidate();};
  const currentPolicy=()=>normalizePolicy(config.approvalPolicy);
- configureWorkerBudget(()=>config.budget||{});
+ // 每个代表任务默认 200 万 token 预算（未显式配置时）。预算是"单个任务"的额度，
+ // 每开一个新任务 / 新对话都从 0 重新计算——不存在跨任务累计。
+ const DEFAULT_TASK_TOKEN_BUDGET = 2_000_000;
+ configureWorkerBudget(()=>({perTaskTokens:DEFAULT_TASK_TOKEN_BUDGET,...(config.budget||{})}));
  let baselineTools:string[]=[];
  const applyApprovalPolicy=()=>{if(!baselineTools.length)return;try{pi.setActiveTools(currentPolicy()==='readonly'?restrictTools(baselineTools):baselineTools);}catch(error){desk&&(desk.notice='审批模式切换失败：'+clean(error));scheduleRepaint();}};
  function initializeCrew(ctx:any){
@@ -86,7 +91,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const createLinkedSession=(ctx:any,cwd:string,title:string)=>{const piPath=createSessionFile(cwd,title,sessionDir(ctx));const logical=keposSessionStore.createSession({cwd,title,piSessionFile:piPath});config.sessionLinks[piPath]=logical.logicalSessionId;save();return piPath;};
  const repaint=()=>desk?.refresh();const scheduleRepaint=()=>{if(repaintTimer)return;repaintTimer=setTimeout(()=>{repaintTimer=undefined;repaint();},75);};pool.change=scheduleRepaint;
  let unsubscribePool:()=>void=()=>{};let unsubscribeMissions:()=>void=()=>{};
- const bindPool=()=>{unsubscribePool();unsubscribeMissions();unsubscribeMissions=scheduler.subscribe(event=>{if(!desk)return;if(event.state==='NEEDS_HUMAN'&&process.stdout.isTTY)process.stdout.write('\x07');if(['NEEDS_HUMAN','SUCCEEDED','FAILED'].includes(event.state)){desk.notice=`${event.state==='NEEDS_HUMAN'?'需要人类处理':'计划状态更新'}：${event.goal} · ${event.cwd} · F9查看`;desk.refresh();}});unsubscribePool=pool.subscribe(event=>{
+ const bindPool=()=>{unsubscribePool();unsubscribeMissions();unsubscribeMissions=scheduler.subscribe(event=>{if(!desk)return;if(event.state==='NEEDS_HUMAN'&&process.stdout.isTTY)process.stdout.write('\x07');if(['NEEDS_HUMAN','SUCCEEDED','FAILED'].includes(event.state)){const text=`${event.state==='NEEDS_HUMAN'?'需要人类处理':'计划状态更新'}：${event.goal} · ${event.cwd} · F9查看`;if(event.state==='NEEDS_HUMAN')desk.urgent(text);else desk.notice=text;desk.refresh();}});unsubscribePool=pool.subscribe(event=>{
   if(!desk)return;
   if(event.type!=='task_progress')desk.invalidate();
   if(event.task.cwd===desk.ctx.cwd&&event.task.parentSessionId===desk.ctx.sessionManager.getSessionId()){
@@ -95,12 +100,41 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
    if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
-   desk.notice=event.type==='task_finished'?(failed?`✕ 子 Agent ${event.task.agent} ${event.task.status}：${clean(event.task.error||'无错误信息').slice(0,160)} · F3 看完整产出`:`子 Agent ${event.task.agent}：${event.task.status}`):event.type==='task_review_due'?`子 Agent ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`:event.type==='task_stalled'?`⚠ 子 Agent ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`:event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:desk.notice;
+   // 失败 / 空转 / 预算停止走粘性 urgent：不会被下一条普通进度消息顶掉。
+   const text=event.type==='task_finished'?(failed?`✕ 子 Agent ${event.task.agent} ${event.task.status}：${clean(event.task.error||'无错误信息').slice(0,160)} · F3 看完整产出`:`子 Agent ${event.task.agent}：${event.task.status}`):event.type==='task_review_due'?`子 Agent ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`:event.type==='task_stalled'?`⚠ 子 Agent ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`:event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:'';
+   if(text){if(urgent)desk.urgent(text);else desk.notice=text;}
   }
   scheduleRepaint();
  });};bindPool();
+ // Pi rewrites the window title from its own constant ("π - <session>") on every session
+ // change, so a one-shot setTitle is not enough: take over the OSC 0 sequence itself.
+ let titleHooked=false;
+ function ownTerminalTitle(title:string){
+  if(titleHooked||process.env.KEPOS_APP!=='1')return;
+  titleHooked=true;
+  const ESC=String.fromCharCode(27), BEL=String.fromCharCode(7);
+  const OSC=ESC+']0;';
+  const write=(process.stdout.write as any).bind(process.stdout);
+  // Pi rewrites the title from its own constant on every session change, so intercept the
+  // OSC 0 payload itself. Scanned by hand: a regex here kept mangling the control chars.
+  const retitle=(text:string):string=>{
+   let out='', from=0;
+   for(;;){
+    const at=text.indexOf(OSC,from);
+    if(at<0)return out+text.slice(from);
+    const bel=text.indexOf(BEL,at+OSC.length);
+    if(bel<0)return out+text.slice(from);
+    out+=text.slice(from,at)+OSC+title+BEL;
+    from=bel+1;
+   }
+  };
+  (process.stdout as any).write=(chunk:any,...rest:any[])=>{
+   if(typeof chunk==='string'&&chunk.indexOf(OSC)>=0)chunk=retitle(chunk);
+   return write(chunk,...rest);
+  };
+ }
  function install(ctx:any){current=ctx;if(ctx.mode!=='tui'||process.env.KEPOS_APP!=='1')return;
- ctx.ui.setTitle('Kepos Communis');ctx.ui.setHeader((_tui:any,theme:any)=>({invalidate(){},render(width:number){const title='  Kepos Communis';const line=(s:string,color:any)=>theme.fg(color,fit(s,width));return [line(title,'accent')];}}));
+ ownTerminalTitle('Kepos Communis');ctx.ui.setHeader((_tui:any,theme:any)=>({invalidate(){},render(width:number){const title='  Kepos Communis';const line=(s:string,color:any)=>theme.fg(color,fit(s,width));return [line(title,'accent')];}}));
  ctx.ui.setWidget('kepos-model',(_tui:any,theme:any)=>({invalidate(){},render(width:number){const live=busy?'accent':current?.model?'success':'warning';const model=current?.model;const label=model?.id&&model.id!=='unknown'?`${model.provider?clean(model.provider)+'/':''}${clean(model.id)}`:'请先 /login';return[theme.fg(live,fit(`  · ${label} · ${busy?'执行中':model?'空闲':'待连接'}`,width))];}}));}
  for(const name of ['agent_start','agent_settled','message_start','message_update','message_end','tool_execution_start','tool_execution_update','tool_execution_end'] as const)pi.on(name as any,async(e:any,ctx:any)=>{current=ctx;if(name==='agent_start')busy=true;if(name==='agent_settled'){busy=false;tool='';}if(name==='tool_execution_start')tool=e.toolName;if(name==='tool_execution_end')tool='';if(name==='agent_settled'){const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(logical){try{keposSessionStore.syncPi(logical,ctx.sessionManager.getEntries(),ctx.sessionManager.buildContextEntries(),ctx.sessionManager.getSessionId());}catch(error){ctx.ui.notify('历史镜像失败（Pi 原始记录仍保留）：'+clean(error),'warning');}}}desk?.event(e);});
  pi.on('session_start',async(_e,ctx)=>{valid=true;generation++;bindPool();pool.change=scheduleRepaint;const sessionFile=ctx.sessionManager.getSessionFile();if(sessionFile&&!config.sessionLinks[sessionFile]){const linked=keposSessionStore.createSession({cwd:ctx.cwd,title:ctx.sessionManager.getSessionName()||'未命名对话',piSessionFile:sessionFile});config.sessionLinks[sessionFile]=linked.logicalSessionId;save();}if(sessionFile&&config.sessionLinks[sessionFile]){const logical=config.sessionLinks[sessionFile];try{keposSessionStore.syncPi(logical,ctx.sessionManager.getEntries(),ctx.sessionManager.buildContextEntries(),ctx.sessionManager.getSessionId());}catch(error){ctx.ui.notify('历史镜像同步失败，原始会话未修改：'+clean(error),'warning');}}initializeCrew(ctx);install(ctx);try{baselineTools=pi.getActiveTools();}catch{}applyApprovalPolicy();const pending=db().get<any>('ui_reload');if(pending?.pid===process.pid&&pending.sessionId===ctx.sessionManager.getSessionId()&&Date.now()-pending.at<30000){db().set('ui_reload',null);setTimeout(()=>{if(valid){reloadNotice=`扩展已重载 · ${config.agents.length} 位已配置成员 · 当前会话和草稿保留`;ctx.ui.notify(reloadNotice,'info');pi.sendUserMessage("/kepos",{expandPromptTemplates:true});}},100);}});pi.on('model_select',async(_e,ctx)=>{current=ctx;initializeCrew(ctx);if(desk)desk.ctx=ctx;repaint();});
@@ -117,7 +151,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    const workerId=event.input?.taskId||event.input?.handle?.workerId;
    const target=pool.tasks.find(item=>item.id===workerId&&item.parentSessionId===parent);
    if(target?.stalled){
-    if(policy==='proxy'){desk&&(desk.notice=`代理审批留痕 · 模型终止疑似空转任务：${clean(target.agent+' · '+target.title).slice(0,120)}`);scheduleRepaint();return undefined;}
+    if(policy==='proxy'){desk&&desk.urgent(`代理审批留痕 · 模型终止疑似空转任务：${clean(target.agent+' · '+target.title).slice(0,120)}`);scheduleRepaint();return undefined;}
     if(ctx?.hasUI&&typeof ctx.ui?.confirm==='function'){
      const allowed=await ctx.ui.confirm('终止疑似空转的子任务？',`${target.agent} · ${clean(target.title).slice(0,120)}\n系统已标记空转并要求复核；是否终止由你决定。`);
      if(allowed){desk&&(desk.notice='已人工允许终止空转任务：'+clean(target.agent));scheduleRepaint();return undefined;}
@@ -128,7 +162,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }
   const risk=gateRiskOf(event);
   if(!risk)return undefined;
-  if(policy==='proxy'){desk&&(desk.notice=`代理审批留痕 · 模型${risk==='gate'?'操作人工门禁':'修改 Kepos 数据'}：${clean(event.input?.command||event.input?.path).slice(0,140)}`);scheduleRepaint();return undefined;}
+  if(policy==='proxy'){desk&&desk.urgent(`代理审批留痕 · 模型${risk==='gate'?'操作人工门禁':'修改 Kepos 数据'}：${clean(event.input?.command||event.input?.path).slice(0,140)}`);scheduleRepaint();return undefined;}
   if(ctx?.hasUI&&typeof ctx.ui?.confirm==='function'){
    const question=risk==='gate'?`模型想批准人工门禁：\n${clean(event.input?.command).slice(0,200)}`:`模型想修改 Kepos 数据：\n${clean(event.input?.command||event.input?.path).slice(0,200)}`;
    const allowed=await Promise.race([ctx.ui.confirm('严格审批 · 需要你确认',question),new Promise<boolean>(resolve=>{const timer=setTimeout(()=>resolve(false),120000);ctx.signal?.addEventListener('abort',()=>{clearTimeout(timer);resolve(false);},{once:true});})]);
@@ -139,7 +173,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  });
  pi.on('session_shutdown',async(event)=>{valid=false;generation++;unsubscribePool();unsubscribeMissions();current=undefined;clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;pool.change=()=>{};if(event.reason==='quit'||event.reason==='reload'){try{await pool.shutdown();await scheduler.tick();}catch(error){console.error('Kepos 清理未正常完成：'+clean(error));}finally{scheduler.stop();delete globalStore[poolKey];delete globalStore[missionKey];}}});
  let supervisionPrompt='';
- const refreshSupervisionPrompt=()=>{const crew=config.agents.length?config.agents.map(a=>`${a.id}=${a.name}${a.roleKey?`(${a.roleKey})`:''}`).join('；'):'暂无子 Agent';const policy=currentPolicy();const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';supervisionPrompt=`You are Kepos Council, the lead agent. Delegate read-only mandates via kepos_delegate (up to ${MAX_CONCURRENT_CHILDREN} parallel workers; default duration ${DEFAULT_TASK_SECONDS}s). A running delegate may create one copyOf child task with at most half of the parent task's time budget; never recurse beyond one level. Every ${SUPERVISION_INTERVAL_SECONDS}s, review running delegates through kepos_events/kepos_tasks and acknowledge each review with kepos_worker review after checking evidence. MCP governance: the human owns the server configuration; you may grant configured servers per delegation via tasks[].mcp (true = all configured, or an explicit list) — grants are per-task, audited and expire with the worker. Deputy chair governance: when a member with roleKey deputy_chair exists, route tool and MCP grant approvals through it — dispatch a review task, require its VOTE line, record the round with kepos_vote, then set tasks[].mcp accordingly; when many delegates run, batch the five-minute reviews through it the same way. A delegate plan longer than ${HUMAN_APPROVAL_THRESHOLD_SECONDS}s must be represented as an kepos_plan step and explicitly approved by a human before dispatch. Estimate each delegate's likely cost and pass budgetTokens per task; when a task reaches its budget Kepos stops it immediately and the situation is surfaced to the human. When the council must decide, have each delegate end its output with a VOTE: yes|no|abstain - one-line reason, then record the round with kepos_vote including your own recommendation in main, and relay the tally to the human; a task the system marked stalled is never yours to terminate — present it and let the human decide. Use kepos_roles to inspect the preset catalog before inventing a role; use kepos_skills before selecting an installed Skill. Use kepos_plan for long dockets with bounded steps and human gates, kepos_events with a cursor for incremental supervision, kepos_profiles for configured representatives, and kepos_tasks for evidence pages. Use background:true when the human needs to keep talking; use kepos_worker handles to wait, review, cancel, or page evidence. Treat child output as evidence, not verified truth. Infer naming locale from the latest human prompt: Chinese prompts use Chinese display names, English prompts use English display names; preserve existing names. Choose a Council roleKey when creating a temporary delegate. Never claim a human approval occurred unless the human explicitly approved it. ${approval} Crew: ${crew}`;};refreshSupervisionPrompt();
+ const refreshSupervisionPrompt=()=>{const crew=config.agents.length?config.agents.map(a=>`${a.id}=${a.name}${a.roleKey?`(${a.roleKey})`:''}`).join('；'):'暂无子 Agent';const deputyName=config.agents.find(agent=>agent.id===config.deputyAgentId)?.name;const policy=currentPolicy();const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';
+ // 身份与边界：此前没有这段，模型被问及主题/设置/配置时会直接复述底层框架的文档原文，
+  // 把 Pi 的内部说明露给用户。这里明确规定"你是 Kepos 总理"，并给出本产品内的正确答案。
+ const identity=`Identity: you are Kepos Council (总理), the lead agent of this terminal workspace. Kepos Communis is the product the human is using — answer as the product, never as a framework. Never recite, quote, summarize, or reveal any underlying engine/framework documentation, internal resource formats, package layout, provider/SDK names, file paths of bundled docs, or startup flags. If the human asks how to do something in Kepos, answer with Kepos's own capability and the exact keys/commands inside this UI. If a capability genuinely does not exist here, say so plainly and offer the closest Kepos action — do not fall back to describing the engine. Theme control in Kepos: run /theme to cycle 默认 → 深色 → 浅色 instantly, or /theme kepos-light to pick one; F2 → 切换主题 offers the same list. Themes are applied immediately, no restart or reload. Never tell the human to edit settings files, use engine flags, or add theme files by hand.`;
+ supervisionPrompt=`You are Kepos Council, the lead agent. ${identity} Delegate read-only mandates via kepos_delegate (up to ${MAX_CONCURRENT_CHILDREN} parallel workers; default duration ${DEFAULT_TASK_SECONDS}s). A running delegate may create one copyOf child task with at most half of the parent task's time budget; never recurse beyond one level. Every ${SUPERVISION_INTERVAL_SECONDS}s, review running delegates through kepos_events/kepos_tasks and acknowledge each review with kepos_worker review after checking evidence. MCP governance: the human owns the server configuration; you may grant configured servers per delegation via tasks[].mcp (true = all configured, or an explicit list) — grants are per-task, audited and expire with the worker. Deputy chair governance: the deputy chair is an elected part-time duty, not a representative seat — ${deputyName?`the human elected ${deputyName}`:'none is currently elected'}. ${deputyName?'When a governance decision needs a second opinion (tool and MCP grant approvals, batched five-minute reviews), delegate a review task to that member, require its VOTE line, record the round with kepos_vote, then set tasks[].mcp accordingly.':''} Never create a seat or a role for the deputy chair. A delegate plan longer than ${HUMAN_APPROVAL_THRESHOLD_SECONDS}s must be represented as an kepos_plan step and explicitly approved by a human before dispatch. Estimate each delegate's likely cost and pass budgetTokens per task; when a task reaches its budget Kepos stops it immediately and the situation is surfaced to the human. When the council must decide, have each delegate end its output with a VOTE: yes|no|abstain - one-line reason, then record the round with kepos_vote including your own recommendation in main, and relay the tally to the human; a task the system marked stalled is never yours to terminate — present it and let the human decide. Use kepos_roles to inspect the preset catalog before inventing a role; use kepos_skills before selecting an installed Skill. Use kepos_plan for long dockets with bounded steps and human gates, kepos_events with a cursor for incremental supervision, kepos_profiles for configured representatives, and kepos_tasks for evidence pages. Use background:true when the human needs to keep talking; use kepos_worker handles to wait, review, cancel, or page evidence. Treat child output as evidence, not verified truth. Infer naming locale from the latest human prompt: Chinese prompts use Chinese display names, English prompts use English display names; preserve existing names. Choose a Council roleKey when creating a temporary delegate. Never claim a human approval occurred unless the human explicitly approved it. ${approval} Crew: ${crew}`;};refreshSupervisionPrompt();
  pi.on('before_agent_start',(event)=>{if(!supervisionPrompt)refreshSupervisionPrompt();event.systemPromptOptions.sections.kepos_supervision=supervisionPrompt;});
 
  type InstalledSkill={name:string;description:string;path:string};
@@ -229,6 +267,22 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(desk){desk.notice=`表决 · ${params.question.slice(0,80)}：赞成${tally.yes} 反对${tally.no} 弃权${tally.abstain}${params.main?` · 主Agent（分派方）：${VOTE_LABELS[params.main.choice]}`:''}`;scheduleRepaint();}
   return{content:[{type:'text',text:boundedText(lines.join('\n'),1600)}],details:record};
  }});
+ pi.registerTool({name:'kepos_attach',label:'读取附件',description:'读取本地文件并把内容作为证据返回：docx / pptx / xlsx / epub / zip 自动提取文本，pdf 需要可选解析器，图片返回为图像附件，纯文本直接读取。人类说"读一下某个文件"时用它，不要凭空猜测文件内容。凭据文件与 Kepos 数据目录会被拒绝。',parameters:Type.Object({paths:Type.Array(Type.String({maxLength:1000}),{minItems:1,maxItems:8,description:'要读取的绝对路径或相对项目根的路径'}),cwd:Type.Optional(Type.String({maxLength:1000,description:'解析相对路径的基准目录；默认当前项目'})),maxChars:Type.Optional(Type.Integer({minimum:500,maximum:120000,description:'每个文件返回的最大字符数，默认 20000'}))}),async execute(_id,params,_signal,_update,ctx){
+  const base=params.cwd||ctx?.cwd||process.cwd();
+  const results:any[]=[];
+  for(const path of params.paths){
+   const loaded=await loadAttachment(path,{cwd:base,deny:[dataRoot]});
+   if(isAttached(loaded)){
+    const limit=params.maxChars??20000;
+    const body=loaded.attachment.kind==='image'
+     ? `[图片 ${loaded.attachment.name} · ${loaded.attachment.mimeType} · 已作为图像附件]`
+     : boundedText(loaded.attachment.text||'',limit);
+    results.push({ok:true,name:loaded.attachment.name,path:loaded.attachment.path,kind:loaded.attachment.kind,bytes:loaded.attachment.bytes,note:loaded.attachment.note,truncated:!!loaded.attachment.truncated,content:body});
+   }else results.push({ok:false,path,reason:loaded.reason});
+  }
+  const text=results.map(item=>item.ok?`<file name="${item.name}" kind="${item.kind}"${item.note?` note="${item.note}"`:''}>\n${item.content}\n</file>`:`<file-error path="${item.path}">${item.reason}</file-error>`).join('\n\n');
+  return{content:[{type:'text',text}],details:{results}};
+ }});
  pi.registerTool({name:'kepos_skills',label:'查看可用 Skill',description:'返回当前已安装且可被明确选择的 Skill 短索引。Skill 提供方法，不扩大子 Agent 的工具或 MCP 权限。',parameters:Type.Object({query:Type.Optional(Type.String({maxLength:100}))}),async execute(_id,params){
   const query=String(params.query||'').toLowerCase();
   const skills=installedSkillCatalog().filter(skill=>!query||`${skill.name} ${skill.description}`.toLowerCase().includes(query)).slice(0,100);
@@ -253,7 +307,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    if(!params.jobId)throw Error('approve 需要指定 jobId');
    const job=plan.jobs.find(j=>j.id===params.jobId&&j.state==='NEEDS_HUMAN');if(!job)throw Error('该步骤不在人工门禁状态');
    scheduler.approve(plan.id,parent,params.jobId);scheduler.start();
-   desk&&(desk.notice=`代理审批留痕 · 模型批准了门禁 ${params.jobId} · ${clean(plan.goal).slice(0,100)}`);scheduleRepaint();
+   desk&&desk.urgent(`代理审批留痕 · 模型批准了门禁 ${params.jobId} · ${clean(plan.goal).slice(0,100)}`);scheduleRepaint();
    result={approved:true,...planSummary(scheduler.get(plan.id,parent))};
   }
   else{
@@ -450,7 +504,34 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const sessionDir=(ctx:any)=>ctx.sessionManager.getSessionDir();
  async function reopen(fresh:any){setTimeout(()=>{fresh.sendUserMessage('/kepos',{expandPromptTemplates:true}).catch((e:any)=>fresh.ui.notify(clean(e),'error'));},80);}
  async function workspaceAction(action:any,ctx:ExtensionCommandContext){const ui=ownedUI(ctx,text=>{if(desk){desk.notice=text;scheduleRepaint();}});const local={...ctx,ui} as ExtensionCommandContext;
- if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加子 Agent','编辑子 Agent','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','管理长程计划','审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加子 Agent':'crew','编辑子 Agent':'editcrew','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='attach'){
+  // /attach：无参时用 Kepos 自己的输入框问路径，有参时直接读。
+  // 附件缓存在 Desk 上，随会话保存、发送后清空。
+  if(!desk){ui.notify('附件只能在议案中使用','warning');return;}
+  await desk.attachCommand(String(action.text||''),async(title:string,placeholder:string)=>{
+   const input=await ui.input(title,placeholder);
+   return input;
+  });
+  scheduleRepaint();
+  return;
+ }
+ if(action.kind==='theme'){
+  // Kepos 原生主题选择：不必离开议案。列出品牌主题（固定 default/dark/light 顺序）并热切换。
+  const choices=themeChoices(ctx);
+  if(!choices.length){ui.notify('没有可用主题','warning');return;}
+  const currentName=(()=>{try{return ctx.ui.theme?.name;}catch{return undefined;}})();
+  // 选项文案用中文简称；主题名通过索引回查，避免文案与主题名耦合。
+  const labels:Record<string,string>={'kepos-default':'默认','kepos-dark':'深色','kepos-light':'浅色'};
+  const options=choices.map((name:string)=>({label:`${labels[name]||name}${name===currentName?'  · 当前':''}`,name}));
+  const picked=await ui.select(`切换主题 · 当前 ${labels[currentName||'']||currentName||'未设置'}`,options.map(option=>option.label));
+  if(!picked||picked==='（取消）')return;
+  const target=options.find(option=>option.label===picked)?.name;
+  if(!target){ui.notify('未识别的主题选项','warning');return;}
+  const result=await applyTheme(target,ctx);
+  ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
+  return;
+ }
+ if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加子 Agent','编辑子 Agent','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加子 Agent':'crew','编辑子 Agent':'editcrew','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  if(action.kind==='project-remove'){
   if(!config.projects.length){ui.notify('还没有收录任何项目');return;}
   const pick=await ui.select('移除哪个项目？（只移出列表，不删除文件和会话）',config.projects);if(!pick)return;
@@ -459,7 +540,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加子 Agent','crew'],['编辑子 Agent','editcrew'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['管理长程计划','missions'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加子 Agent','crew'],['编辑子 Agent','editcrew'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -478,7 +559,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   config.approvalPolicy=next;save();applyApprovalPolicy();
   ui.notify('审批模式已切换：'+policyLabel[next]);return;
  }
- if(action.kind==='dispatch-command'){const command=action.text.split(/\s/,1)[0];const routes:any={"/kepos-agent":'crew',"/kepos-new":'new',"/kepos-project":'project','/model':'model'};if(routes[command])return workspaceAction({kind:routes[command]},ctx);if(['/kepos',"/kepos"].includes(command)){ui.notify('已在议案中');return;}if(command==="/kepos-warm"){const crew=config.agents[0];if(!crew)throw Error('先配置成员');await pool.prewarm(crew,ctx.cwd);ui.notify('预热执行器已就绪，未请求模型');return;}action={kind:'native-command',text:action.text};}
+ if(action.kind==='dispatch-command'){const command=action.text.split(/\s/,1)[0];const routes:any={"/kepos-agent":'crew',"/kepos-new":'new',"/kepos-project":'project','/model':'model','/theme':'theme'};if(routes[command])return workspaceAction({kind:routes[command],text:action.text},ctx);if(['/kepos',"/kepos"].includes(command)){ui.notify('已在议案中');return;}if(command==="/kepos-warm"){const crew=config.agents[0];if(!crew)throw Error('先配置成员');await pool.prewarm(crew,ctx.cwd);ui.notify('预热执行器已就绪，未请求模型');return;}action={kind:'native-command',text:action.text};}
  if(action.kind==='native-command'){const command=action.text.split(/\s/,1)[0];if(command==='/login'&&host.login){await host.login(local,action.text.trim().split(/\s+/)[1]);return;}if(command==='/logout'&&host.logout){await host.logout(local,action.text.trim().split(/\s+/)[1]);return;}if(command==='/settings'){return workspaceAction({kind:'menu'},ctx);}if(command==='/compact'){ctx.compact({onComplete:()=>ui.notify('上下文压缩已完成'),onError:error=>ui.notify('压缩失败：'+clean(error))});ui.notify('已请求 Pi 引擎压缩；Kepos 保持当前会话');return;}if(await ui.confirm('高级引擎功能',`${action.text} 暂无 Kepos 原生页面。是否明确离开 Kepos，进入 Pi 原生界面处理？取消则留在这里。`))desk?.finish({kind:'native-exit',text:action.text});return;}
  if(action.kind==='missions'){
   const plans=scheduler.list();if(!plans.length){ui.notify('暂无长程计划；主 Agent 可使用 kepos_plan 创建');return;}
@@ -514,6 +595,16 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  if(action.kind==='crew'){await crewForm(local,action.id);ui.notify(`成员配置已更新 · ${config.agents.length} 位成员`);return;}
  if(action.kind==='editcrew'){const choice=await ui.select('编辑成员',config.agents.map(a=>a.name));const crew=config.agents.find(a=>a.name===choice);if(crew)await crewForm(local,crew.id);return;}
+ if(action.kind==='deputy'){
+  // 代理总代是兼任职务：人类从现任代表中推选，不新增席位、不改该代表的职责与模型。
+  const current=config.agents.find(agent=>agent.id===config.deputyAgentId);
+  const options=['（撤销代理总代）',...config.agents.map(agent=>`${agent.name}${agent.id===config.deputyAgentId?' · 现任':''}`)];
+  const pick=await ui.select(`推选代理总代 · 现任 ${current?.name||'无'}\n兼任治理复核：MCP/工具授权审批、批量复核、升级人类`,options);
+  if(!pick)return;
+  const chosen=config.agents.find(agent=>pick.startsWith(agent.name+' · ')||pick===agent.name);
+  if(pick.startsWith('（撤销')){delete config.deputyAgentId;}else if(chosen){config.deputyAgentId=chosen.id;}
+  save();ui.notify(chosen?`${chosen.name} 已推选为代理总代（兼任，不占席位）`:'已撤销代理总代');return;
+ }
  if(action.kind==='delegate'){await delegateForm(local);return;}
   if(action.kind==='cancel-selected'){const task=pool.tasks.find(item=>item.id===action.id&&item.parentSessionId===ctx.sessionManager.getSessionId());if(!task){ui.notify('该席位当前没有可销毁的子 Worker；等待审批的门禁请用 F2 处理','warning');return;}if(terminalStates.has(task.status)){ui.notify(task.agent+' 的任务已结束（'+task.status+'），无需取消','info');return;}if(await ui.confirm('销毁这个子 Worker？',task.agent+' · '+task.title.slice(0,100))){pool.cancel(task.id);ui.notify('已请求终止 '+task.agent);}return;}
  if(action.kind==='message-agent'){
@@ -545,8 +636,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  try{await playSplash(ctx,config,ready);}catch{}
  await ready;if(initialFailed){ctx.ui.notify(clean(initialError),'error');return;}
  while(true){let sessions:any[];try{sessions=firstSessions??await loadSessions();firstSessions=undefined;}catch(e){ctx.ui.notify(clean(e),'error');return;}
- let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,text=>pi.sendUserMessage(text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db())};
-  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
+ let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db())};
+  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;
  try{
  if(action.kind==='reload'){if(blocked(ctx)){ctx.ui.notify('任务进行中，未重载；请等待或中止后重试','warning');continue;}const active=pool.tasks.filter(t=>!terminalStates.has(t.status)).length;if(active&&!await ctx.ui.confirm('重载 Kepos 扩展？',`重载会取消 ${active} 个运行中的子任务（包括其他会话的）；会话记录和输入草稿保留。`))continue;db().set('ui_reload',{pid:process.pid,sessionId:ctx.sessionManager.getSessionId(),at:Date.now()});await ctx.reload();return;}
@@ -557,13 +648,47 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  }
  pi.registerCommand('kepos-warm',{description:'预热子 Agent 执行器（不调用模型；空闲60秒退出）',handler:async(args,ctx)=>{const crew=config.agents.find(a=>a.name===args.trim())||config.agents[0];if(!crew){ctx.ui.notify('先配置至少一个子 Agent','warning');return;}try{const result=await pool.prewarm(crew,ctx.cwd);ctx.ui.notify(`${crew.name} 执行器已就绪 · PID ${result.pid} · 未请求模型`,'info');}catch(error){ctx.ui.notify(clean(error),'error');}}});
- pi.registerCommand('theme',{description:'切换深色/浅色主题（/reload 生效）',handler:async(_args,ctx)=>{
+ // 主题切换的唯一实现：/theme 命令、F2 菜单与命令面板都走这里，避免两套逻辑漂移。
+ // 先试 Pi 的 setTheme 热切换（同时更新设置与已加载 Theme 实例）；
+ // 拿不到该接口时才回退到写 settings.json 并提示重载。
+ const applyTheme=async(wanted:string|undefined,ctx:any):Promise<{ok:boolean;name?:string;reason?:string}>=>{
+  const available=(()=>{try{return (ctx.ui as any).getAllThemes?.()||[];}catch{return [];}})();
+  const names=available.map((entry:any)=>String(entry.name));
+  const preferred=wanted?.trim();
+  // 品牌主题按固定顺序轮换（default → dark → light），不依赖 getAllThemes 的返回顺序；
+  // 这样每次 /theme 的切换路径可预期，且三套主题都能循环到。
+  const BRAND_ORDER=['kepos-default','kepos-dark','kepos-light'];
+  const present=new Set(names);
+  const brand=BRAND_ORDER.filter(name=>present.size===0||present.has(name));
+  const candidates=brand.length?brand:names;
+  const current=(()=>{try{return ctx.ui.theme?.name;}catch{return undefined;}})();
+  // 未设置主题时从第一个开始选，而不是 indexOf('') = -1 后停在第 0 个。
+  const at=current?candidates.indexOf(current):-1;
+  const next=preferred||candidates[(at+1)%Math.max(1,candidates.length)];
+  if(!next)return{ok:false,reason:'没有可用主题'};
+  if(preferred&&names.length&&!names.includes(preferred))return{ok:false,reason:`未知主题 ${preferred}；可用：${names.join('、')}`};
+  const applied=(()=>{try{const result=(ctx.ui as any).setTheme?.(next);return result?.success!==false;}catch{return false;}})();
+  if(applied){
+   // 主题换了以后，desk 缓存的旧 theme 对象要一并替换，否则底栏与书案仍是旧配色。
+   if(desk){try{desk.theme=ctx.ui.theme;}catch{}desk.invalidate();desk.refresh();}
+   return{ok:true,name:next};
+  }
   const settingsFile=join(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'),'settings.json');
   let settings:any={};try{settings=JSON.parse(readFileSync(settingsFile,'utf8'));}catch{}
-  const next=settings.theme==='kepos-light'?'kepos-dark':'kepos-light';
   settings.theme=next;
   writeFileSync(settingsFile,JSON.stringify(settings,null,2)+'\n');
-  ctx.ui.notify(`主题已切换为 ${next}；/reload 生效。`,'info');
+  return{ok:false,name:next,reason:`主题已写入 ${next}；当前 Pi 不支持热切换，/reload 生效。`};
+ };
+ const themeChoices=(ctx:any):string[]=>{
+  const names=(()=>{try{return ((ctx?.ui as any)?.getAllThemes?.()||[]).map((entry:any)=>String(entry.name));}catch{return [];}})();
+  const present=new Set(names);
+  const ordered=['kepos-default','kepos-dark','kepos-light'].filter(name=>present.size===0||present.has(name));
+  return ordered.length?ordered:names;
+ };
+ pi.registerCommand('theme',{description:'切换主题（default / dark / light；即时生效，也可 /theme kepos-light）',handler:async(args,ctx)=>{
+  const result=await applyTheme(args,ctx);
+  if(result.ok){ctx.ui.notify(`主题已切换为 ${result.name}（即时生效）`,'info');return;}
+  ctx.ui.notify(result.reason||'主题切换失败','warning');
  }});
  pi.registerCommand('simon',{description:'开始 Kepos 监督式工作（兼容旧命令）',handler:async(args,ctx)=>{const prompt=args?.trim()||`请先说明当前项目目标、风险和下一步计划；如需并行工作，使用 kepos_delegate 分派最多 ${MAX_CONCURRENT_CHILDREN} 个只读任务，默认每项 ${DEFAULT_TASK_SECONDS/60} 分钟，并每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟用 kepos_events/kepos_tasks 复核；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的工作改用 kepos_plan 并等待人类批准。`;await pi.sendUserMessage(prompt);}});
  pi.registerCommand('simon-status',{description:'查看 Kepos、项目和子 Agent 状态（兼容旧命令）',handler:async(_args,ctx)=>{const tasks=pool.tasks.filter(t=>t.cwd===ctx.cwd&&t.parentSessionId===ctx.sessionManager.getSessionId());ctx.ui.notify(`Kepos Communis · ${ctx.model?.provider}/${ctx.model?.id}\n项目：${ctx.cwd}\n子 Agent：${tasks.filter(t=>!terminalStates.has(t.status)).length} 运行中 / ${tasks.length} 总计`,'info');}});

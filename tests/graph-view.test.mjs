@@ -57,6 +57,23 @@ test('council header and sidebar counts share one definition of active and pendi
   desk.dispose();
 });
 
+// 回归：侧栏曾用 now - started 自行计时，忽略 ended，导致已完成的任务一直读秒（实测 68258s）。
+test('sidebar elapsed freezes at ended for finished tasks and never keeps counting', () => {
+  const started = 1_000_000;
+  const ended = started + 45_000;
+  const tasks = [{ id: 't1', agent: 'A', state: 'SUCCEEDED', status: '完成', title: '旧任务', started, ended }];
+  const snapshot = { agents: [{ id: 'a', name: 'A' }], tasks };
+  const view = renderGraph(snapshot, 140, 32, 0, 1, theme, false, {}, ended + 86_400_000);
+  const body = view.lines.join('\n');
+  assert.match(body, /完成 · 45s/, 'elapsed freezes at ended');
+  assert.equal(/6825\d+s|\d{6,}s/.test(body), false, 'no runaway counter');
+  // 旧记录没有 ended：显示“耗时未记录”，也不能拿当前时间继续累计。
+  const legacy = { agents: [{ id: 'a', name: 'A' }], tasks: [{ id: 't2', agent: 'A', status: '失败', started }] };
+  const legacyBody = renderGraph(legacy, 140, 32, 0, 1, theme, false, {}, started + 86_400_000).lines.join('\n');
+  assert.match(legacyBody, /耗时未记录/);
+  assert.equal(/\d{5,}s/.test(legacyBody), false, 'legacy terminal tasks do not age');
+});
+
 test('council keyboard flow: draft Enter opens detail, Esc peels layers, F1 shows help', () => {
   const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
   const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
@@ -104,8 +121,43 @@ test('layout keeps every seat on its own cell even with a full council', () => {
   assert.equal(keys.size, view.hits.length, 'no two seats share a cell');
 });
 
-// 回归：truncateToWidth 在截断处插入 \x1b[0m，而环图逐字符建格会把 ESC 当字符写进画面，
-// 于是 "[0m...[0m" 直接显示出来（48 席里所有长角色名都中招）。网格文本必须不含转义序列。
+// 回归：侧栏卡片是浮在环图之上的不透明面板。
+// 布局已把环图限制在卡片左侧，所以仅靠"席位名不出现"无法守住不变量——
+// 这里直接验证卡片矩形内的每一格都被清空后重新绘制（不透明度本身）。
+test('the council sidebar paints an opaque card over anything beneath it', async () => {
+  const { renderGraph: render } = await import('../dist/terminal/graph-view.js');
+  const plainTheme = { fg: (_color, value) => value };
+  const crew = Array.from({ length: 48 }, (_, i) => ({ id: String(i), name: '席位名' + String(i).padStart(2, '0') }));
+  const width = 170;
+  const view = render({ agents: crew, tasks: [] }, width, 44, -1, 1, plainTheme);
+  const clean = view.lines.map(line => stripVTControlCharacters(line));
+  const titleRow = clean.findIndex(line => line.includes('议会简要'));
+  assert.ok(titleRow >= 0, 'sidebar renders');
+  const cardStart = clean[titleRow].indexOf('╭');
+  assert.ok(cardStart > 0, 'sidebar card has a left edge');
+  // 卡片底边之后的行不应该带任何卡片边框残留（证明高度确实收在内容上）。
+  const bottomRow = clean.findIndex((line, index) => index > titleRow && line.slice(cardStart).startsWith('╰'));
+  assert.ok(bottomRow > titleRow, 'sidebar card has a bottom edge');
+  for (let row = titleRow; row <= bottomRow; row++) {
+    const inside = clean[row].slice(cardStart + 1, width - 1);
+    assert.equal(/席位名\d\d/.test(inside), false, `row ${row}: seat label visible inside the opaque card`);
+  }
+});
+
+// 回归：席位标签必须整体留在环图画布内。
+// 右侧曾越过侧栏左边界、左侧被网格静默裁掉（"监管监测官"显示成"管监测官"）。
+test('seat labels stay inside the ring canvas on both edges', () => {
+  const plainTheme = { fg: (_color, value) => value };
+  const longNames = ['监管监测官', '政策咨询评议官', '利益相关者分析官', '可复现性审查官', '发表准备审查官', '隐私与数据官'];
+  const crew = longNames.map((name, i) => ({ id: String(i), name }));
+  const width = 170, sideStart = width - 38;
+  const view = renderGraph({ agents: crew, tasks: [] }, width, 44, -1, 1, plainTheme);
+  for (const raw of view.lines) {
+    const line = stripVTControlCharacters(raw);
+    // 侧栏区域不得出现任何完整席位名（不透明卡片已覆盖，这里再守一次）。
+    assert.equal(longNames.some(name => line.slice(sideStart).includes(name)), false, 'label crossed into the sidebar');
+  }
+});
 test('long seat labels never leak escape sequences into the character grid', () => {
   // 模拟真实主题：每个字符都被 SGR 包裹，泄漏的 ESC 会变成独立一格、后面的 [0m 成为可见文本。
   const colored = { fg: (color, value) => `\x1b[38;5;${['accent', 'text', 'dim', 'muted'].includes(color) ? 250 : 240}m${value}\x1b[0m` };
@@ -125,11 +177,18 @@ test('long seat labels never leak escape sequences into the character grid', () 
 });
 
 test('seat labels truncate by visible width, not by escape-laden strings', () => {
+  // 席位名上限放宽到 14 列后，常见中文角色名应能完整显示；
+  // 真正超长的名字才截断并加省略号（仍按可见宽度算，不掺转义序列）。
+  // 注意：席位名是斜体+半亮，断言前先剥掉控制序列。
+  const clean = lines => stripVTControlCharacters(lines.join(''));
   const crew = [{ id: '0', name: '政策咨询评议官' }];
-  const view = renderGraph({ agents: crew, tasks: [] }, 120, 32, -1, 1, theme);
-  const text = view.lines.join('');
+  const text = clean(renderGraph({ agents: crew, tasks: [] }, 120, 32, -1, 1, theme).lines);
   assert.ok(text.includes('政策'), 'label keeps its head');
-  assert.equal(text.includes('评议官'), false, 'label is truncated to the seat budget');
+  assert.equal(/\[0m/.test(text), false, 'no literal escapes in the grid');
+  // 超出预算时必须以省略号收尾，而不是硬切。
+  const long = [{ id: '0', name: '超长席位名称用于验证截断行为是否以省略号收尾' }];
+  const clipped = clean(renderGraph({ agents: long, tasks: [] }, 120, 32, -1, 1, theme).lines);
+  assert.ok(clipped.includes('…'), 'over-budget label ends with an ellipsis');
 });
 
 test('council task filters pick active, pending and match keywords', () => {
@@ -212,15 +271,31 @@ test('motion:false freezes the approval tremble while keeping the 审 mark', () 
   desk.dispose();
 });
 
-test('selecting a seat draws its connection in accent while markers keep state color', () => {
+// 选中态统一用品牌色（borderAccent）：与主案焦点框同族。
+// 若退回 accent（琥珀），选中席位、连线与议会简要会一起抢成黄色。
+test('selecting a seat draws its connection in the brand color while markers keep state color', () => {
   const colored = { fg: (color, value) => `[${color}]${value}` };
   const task = { id: 'w', agent: 'A', state: 'RUNNING', groupKey: 'c' };
   // 未选中不连线。
   const idle = renderGraph({ agents, tasks: [task] }, 100, 24, -1, 1, colored, false, {}, 0);
-  assert.equal(/\[accent\][─│├┤┬┴┼]/.test(idle.lines.slice(0, 24).join('')), false, 'idle council has no edge');
-  // 选中后总理与该代表之间出现 accent 连线。
+  assert.equal(/\[borderAccent\][─│├┤┬┴┼]/.test(idle.lines.slice(0, 24).join('')), false, 'idle council has no edge');
+  // 选中后总理与该代表之间出现品牌色连线，且不用琥珀 accent。
   const picked = renderGraph({ agents, tasks: [task] }, 100, 24, 0, 1, colored, false, {}, 0);
-  assert.ok(/\[accent\][─│├┤┬┴┼]/.test(picked.lines.slice(0, 24).join('')), 'selected seat connects in accent');
+  const body = picked.lines.slice(0, 24).join('');
+  assert.ok(/\[borderAccent\][─│├┤┬┴┼]/.test(body), 'selected seat connects in the brand color');
+  assert.equal(/\[accent\][─│├┤┬┴┼]/.test(body), false, 'selection does not fall back to the amber accent');
+});
+
+// 议会简要标题不再用琥珀整块抢眼；焦点态才用品牌色描边。
+test('the council sidebar title does not compete with the selectable seats', () => {
+  const colored = { fg: (color, value) => `[${color}]${value}` };
+  const view = renderGraph({ agents, tasks: [] }, 160, 40, -1, 1, colored);
+  // 网格逐格上色，字符之间夹着颜色标签：先剥标签再定位标题行。
+  const strip = line => line.replace(/\[[a-zA-Z]+\]/g, '');
+  const titleRow = view.lines.find(line => strip(line).includes('议会简要'));
+  assert.ok(titleRow, 'sidebar title renders');
+  // 标题行可以出现 borderAccent/borderMuted，但不得用 accent（琥珀）。
+  assert.equal(/\[accent\]/.test(titleRow), false, 'sidebar title avoids the amber accent');
 });
 
 test('ring layout is stable between renders and dragging changes only the chosen seat', () => {
@@ -257,12 +332,20 @@ test('node detail bubble stays inside a narrow terminal', () => {
   assert.ok(view.lines.every(line => visibleWidth(line) <= 80));
 });
 
-test('human approval uses a bright hammer and a bounded two-frame tremble', () => {
+test('human approval uses a bright hammer and a bounded two-frame tremble', async () => {
+  // 待审批的琥珀色现在来自主题 warning token；用真实主题渲染才能断言实际色值。
+  const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
+  const real = loadThemeFromPath(fileURLToPath(new URL('../themes/kepos-default.json', import.meta.url)), 'truecolor');
   const snapshot = { agents, tasks: [{ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', title: '等待批准' }] };
-  const first = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 0);
-  const next = renderGraph(snapshot, 100, 24, 0, 1, theme, false, {}, 400);
+  const first = renderGraph(snapshot, 100, 24, 0, 1, real, false, {}, 0);
+  const next = renderGraph(snapshot, 100, 24, 0, 1, real, false, {}, 400);
   assert.ok(first.lines.join('').includes('⚠'));
-  assert.ok(first.lines.join('').includes('\x1b[1;38;2;255;223;84m'));
+  // 断言语义而非具体色值：审批色必须来自主题 warning token，
+  // 这样主题改配色不会让测试变脆（旧断言写死了 #FFDF54，主题一改就红）。
+  const warning = real.colors.warning;
+  assert.equal(warning.kind, 'rgb', 'warning token resolves to a concrete color');
+  const ansi = `\x1b[38;2;${warning.r};${warning.g};${warning.b}m`;
+  assert.ok(first.lines.join('').includes(ansi), 'approval uses the warning token color');
   assert.notDeepEqual(first.lines, next.lines);
   assert.deepEqual(first.hits, next.hits);
 });
@@ -282,11 +365,11 @@ test('seat states distinguish idle, queued, review, success, failure and cancell
   assert.ok(state('CANCELLED').includes('○'), 'cancelled uses ○');
 });
 
-test('real orbital-76 theme renders every running-task palette color without throwing', async () => {
+test('real kepos-dark theme renders every running-task palette color without throwing', async () => {
   // The theme loader is not a public export, so import it by file path.
   const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
-  const real = loadThemeFromPath(fileURLToPath(new URL('../themes/orbital-76.json', import.meta.url)), 'truecolor');
-  // Character-code sums 0..3 mod 4 cover teal, blue, mauve and accent.
+  const real = loadThemeFromPath(fileURLToPath(new URL('../themes/kepos-default.json', import.meta.url)), 'truecolor');
+  // Character-code sums 0..3 mod 4 cover the four group tokens.
   const groups = ['d', 'a', 'b', 'c'];
   const crew = groups.map((name, index) => ({ id: String(index), name }));
   const tasks = groups.map((name, index) => ({ id: 'w' + index, agent: name, state: 'RUNNING', status: '运行中', groupKey: name }));
@@ -296,9 +379,10 @@ test('real orbital-76 theme renders every running-task palette color without thr
       const frame = renderGraph({ agents: crew, tasks }, width, 32, index, 1, real, true);
       assert.ok(frame.lines.length > 0);
     }
-    // 分组色体现在席位本体上；只要有任一 direct color 输出即证明调色板可用。
+    // 分组色现在来自主题 token，所以每帧都带 ANSI，且不再是伪造我们的硬编码 SGR。
     const idle = renderGraph({ agents: crew, tasks }, width, 32, -1, 1, real, true);
-    assert.ok(idle.lines.some(line => /\x1b\[38;2;\d+;\d+;\d+m/.test(line)), 'running seats emit direct palette colors');
+    assert.ok(idle.lines.some(line => /\x1b\[38;2;\d+;\d+;\d+m/.test(line)), 'running seats emit theme colors');
+    assert.equal(idle.lines.join('').includes('[0m'), false, 'no literal escapes leaked');
   }
 });
 

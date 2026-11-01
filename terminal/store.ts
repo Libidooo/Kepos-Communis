@@ -22,6 +22,8 @@ export interface Config {
   budget?: import('./workers.ts').BudgetConfig;
   /** 轻微动效开关（如审批锤抖动）；false 时静态显示，符号语义不变。 */
   motion?: boolean;
+  /** 代理总代：人类从现任代表中推选兼任，只存稳定 agentId，不占用代表编制。 */
+  deputyAgentId?: string;
 }
 
 const snapshots = new WeakMap<Config, Config>();
