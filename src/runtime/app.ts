@@ -4,7 +4,7 @@ import {
   InteractiveMode, SessionManager, type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory,
 } from '@earendil-works/pi-coding-agent';
 import { createAuthService, type AuthService } from '../auth/service.ts';
-import { activatePaths, appPaths, deviceId, preparePaths, type AppPaths } from '../config.ts';
+import { activatePaths, appPaths, brandThemePaths, deviceId, preparePaths, type AppPaths } from '../config.ts';
 import { createAuthHost } from './auth-host.ts';
 
 export interface WorkspaceOptions {
@@ -60,7 +60,8 @@ export async function createWorkspace(options: WorkspaceOptions = {}): Promise<W
       cwd: targetCwd, agentDir: paths.agentDir, modelRuntime: auth.runtime,
       resourceLoaderOptions: {
         noExtensions: true,
-        additionalThemePaths: [join(paths.themeDir, 'kepos-dark.json'), join(paths.themeDir, 'kepos-light.json')],        extensionFactories: [{ name: 'kepos', factory: pi => keposExtension(pi, host) }],
+        additionalThemePaths: brandThemePaths(paths),
+        extensionFactories: [{ name: 'kepos', factory: pi => keposExtension(pi, host) }],
       },
     });
     const session = await createAgentSessionFromServices({
@@ -79,7 +80,7 @@ export async function runWorkspace(options: WorkspaceOptions = {}): Promise<void
   const { runtime } = await createWorkspace(options);
   const mode = new InteractiveMode(runtime, {
     initialMessage: '/kepos',
-    initialThemeSetting: options.theme || runtime.services.settingsManager.getThemeSetting() || 'kepos-dark',
+    initialThemeSetting: options.theme || runtime.services.settingsManager.getThemeSetting() || 'kepos-default',
     modelFallbackMessage: runtime.modelFallbackMessage,
     startupDiagnostics: [...runtime.diagnostics],
   });

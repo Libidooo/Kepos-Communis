@@ -54,3 +54,9 @@ conpty-result.json
 /deliverables/
 /close-window-checker.*
 
+
+# 构建生成的主题发布指纹（不手工维护）
+themes/.brand-theme-hashes.json
+
+# 本地会话计划文件（ZCode 运行时产物，不入库）
+.zcode/
