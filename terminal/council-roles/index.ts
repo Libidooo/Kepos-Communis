@@ -1,20 +1,22 @@
 import { academicRoles } from './academic.ts';
 import { codeRoles } from './code.ts';
 import { coreRoles } from './core.ts';
+import { legalRoles } from './legal.ts';
 import { policyRoles } from './policy.ts';
 import { productRoles } from './product.ts';
 import { publicationRoles } from './publication.ts';
 export * from './types.ts';
 import type { CouncilDomain, CouncilLocale, CouncilRoleDefinition, CouncilRoleKey } from './types.ts';
 
-// 默认十席的均衡配置：治理 / 规划 / 调研 / 工程 / 风险 / 核验 / 安全 / 文档 / 协调 / 上下文。
-// 其余角色（如制图官、策略目录后段）仍在目录中可选，但不占用默认席位。
-const SEED_ORDER = ['deputy_chair', 'strategist', 'surveyor', 'engineer', 'auditor', 'verifier', 'sentinel', 'scribe', 'mediator', 'archivist'];
+// 默认十席的均衡配置：规划 / 调研 / 工程 / 风险 / 核验 / 安全 / 文档 / 协调 / 上下文。
+// 代理总代不是代表编制：它由人类在现任代表中推选兼任（见 deputy 选任），不占席位。
+const SEED_ORDER = ['strategist', 'surveyor', 'engineer', 'auditor', 'verifier', 'sentinel', 'scribe', 'mediator', 'archivist'];
 
 export const COUNCIL_ROLES: readonly CouncilRoleDefinition[] = [
   ...coreRoles,
   ...academicRoles,
   ...policyRoles,
+  ...legalRoles,
   ...publicationRoles,
   ...codeRoles,
   ...productRoles,
@@ -48,8 +50,8 @@ export function roleDomain(role: CouncilRoleDefinition): CouncilDomain {
 
 export function domainName(domain: CouncilDomain, locale: CouncilLocale): string {
   const names: Record<CouncilLocale, Record<CouncilDomain, string>> = {
-    en: { core: 'Core', academic: 'Academic', policy: 'Policy', publication: 'Publication', code: 'Code', product: 'Product' },
-    'zh-CN': { core: '核心', academic: '学术', policy: '政策', publication: '发表', code: '代码', product: '产品' },
+    en: { core: 'Core', academic: 'Academic', policy: 'Policy', legal: 'Legal', publication: 'Publication', code: 'Code', product: 'Product' },
+    'zh-CN': { core: '核心', academic: '学术', policy: '政策', legal: '法律', publication: '发表', code: '代码', product: '产品' },
   };
   return names[locale][domain];
 }

@@ -1,7 +1,6 @@
 export type CouncilLocale = 'zh-CN' | 'en';
 
 export type CouncilRoleKey =
-  | 'deputy_chair'
   | 'archivist' | 'surveyor' | 'auditor' | 'verifier' | 'cartographer'
   | 'sentinel' | 'engineer' | 'scribe' | 'mediator' | 'strategist'
   | 'research_architect' | 'literature_strategist' | 'source_verifier' | 'methodologist'
@@ -15,11 +14,13 @@ export type CouncilRoleKey =
   | 'stakeholder_mapper' | 'policy_brief_editor' | 'consultation_reviewer'
   | 'venue_matcher' | 'submission_editor' | 'peer_response_officer'
   | 'publication_ethics_officer' | 'authorship_disclosure_officer' | 'publication_readiness_auditor'
+  | 'legal_counsel' | 'contract_reviewer' | 'compliance_officer' | 'privacy_officer' | 'ip_officer'
   | 'code_archaeologist' | 'software_architect' | 'code_reviewer' | 'test_strategist'
   | 'security_engineer' | 'performance_engineer' | 'dependency_engineer' | 'api_contract_analyst'
-  | 'refactoring_planner' | 'incident_investigator' | 'migration_planner' | 'accessibility_reviewer';
+  | 'refactoring_planner' | 'incident_investigator' | 'migration_planner' | 'accessibility_reviewer'
+  | 'toolsmith';
 
-export type CouncilDomain = 'core' | 'academic' | 'policy' | 'publication' | 'code' | 'product';
+export type CouncilDomain = 'core' | 'academic' | 'policy' | 'publication' | 'legal' | 'code' | 'product';
 
 export interface CouncilRoleDefinition {
   key: CouncilRoleKey;

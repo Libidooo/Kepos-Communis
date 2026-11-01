@@ -37,17 +37,15 @@ test('Council locale defaults to Chinese and role options remain compact labels'
  assert.equal(roleOptions('zh-CN', 'policy').length >= 6, true);
  assert.equal(roleOptions('zh-CN', 'publication').length >= 6, true);
  assert.equal(roleOptions('zh-CN', 'code').length >= 10, true);
- assert.equal(roleOptions('en')[0].label.includes('Deputy Chair'), true);
-assert.equal(roleOptions('en')[1].label.includes('Strategist'), true);
-assert.equal(roleOptions('en')[9].label.includes('Archivist'), true);
+ assert.equal(roleOptions('en')[0].label.includes('Strategist'), true);
+ assert.equal(roleOptions('en')[8].label.includes('Archivist'), true);
 });
 
-test('deputy_chair is the first seeded council role with approval-governance duties',()=>{
- assert.equal(COUNCIL_ROLES[0].key,'deputy_chair');
- const role=councilRole('deputy_chair');
- assert.equal(role.zhName,'代理总代');
- assert.equal(role.enName,'Deputy Chair');
- const prompt=rolePrompt(role,'zh-CN');
- assert.match(prompt,/VOTE/);
- assert.match(prompt,/mcp\.json|升级给人类/);
+// 代理总代是推选兼任职务，不是代表角色编制：目录里不能有它，免得又被播种成一个席位。
+test('deputy chair is an elected duty, not a council role seat',()=>{
+ assert.equal(COUNCIL_ROLES.some(role=>role.key==='deputy_chair'),false);
+ assert.equal(councilRole('deputy_chair'),undefined);
+ assert.equal(COUNCIL_ROLES[0].key,'strategist');
+ // 目录里没有任何角色自称治理审批（那是推选职责，不是岗位）。
+ assert.equal(COUNCIL_ROLES.some(role=>/代理总代|Deputy Chair/.test(role.zhName+role.enName)),false);
 });
