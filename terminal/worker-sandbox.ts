@@ -19,18 +19,26 @@ const CREDENTIAL_SEGMENTS = ['.ssh', '.aws', '.gnupg', '.azure', '.kube', '.dock
 const CREDENTIAL_BASENAMES = ['auth.json', 'credentials', 'id_rsa', '.env'];
 
 // macOS 上 /tmp 与 /var 是指向 /private/* 的符号链接，只用 resolve() 规范化会让
-// 同一目录出现两种写法，包含判断随即失效（沙箱把合法路径当越界）。这里在路径
-// 存在时按 realpath 归一，不存在则回退到 resolve（新增文件仍需能判定）。
+// 同一目录出现两种写法，包含判断随即失效（沙箱把合法路径当越界）。
+// 这里按 realpath 归一；目标尚不存在时，逐级向上找到最近的已存在祖先，
+// 把剩下的相对段拼回去——只回退一层不够，测试与真实场景都可能有深层的不存在路径。
 function canonical(target: string): string {
+  const resolved = resolve(target);
   try {
-    return realpathSync(target);
+    return realpathSync(resolved);
   } catch {
-    try {
-      // 目标可能尚不存在：归一其父目录再拼回文件名。
-      return join(realpathSync(dirname(target)), basename(target));
-    } catch {
-      return resolve(target);
+    const tail: string[] = [];
+    let cursor = resolved;
+    for (let depth = 0; depth < 64; depth++) {
+      const parent = dirname(cursor);
+      if (parent === cursor) break;              // 已到根
+      tail.unshift(basename(cursor));
+      cursor = parent;
+      try {
+        return join(realpathSync(cursor), ...tail);
+      } catch { /* 继续向上 */ }
     }
+    return resolved;
   }
 }
 
