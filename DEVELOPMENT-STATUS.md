@@ -1,4 +1,4 @@
-# 当前开发状态 — 0.3.0-beta.5 准备中（2026-10-30）
+# 当前开发状态 — 0.3.0-beta.6 准备中（2026-10-30）
 
 **退出与失败呈现修复轮（2026-10-31）**：针对实测三个症状修复——① Windows 关窗口不触发 Pi 的优雅关停（SIGHUP 仅 POSIX 注册），session_shutdown 不运行、warm executor 靠心跳延迟自灭：扩展注册进程级最后清理（exit 上同步 hardKill 全部执行器；win32 另加 SIGHUP 处理器杀干净即退出；每进程只注册一次防 /reload 堆叠）；② 委派秒败只有 4 秒 notice、原因埋在任务详情里（报错无阻拦）：失败族终态（失败/超时/已中断）响铃并把错误原因直接带进 notice，空转与预算告警同样响铃；③ 取消一个进程已死的任务要挂满 10 秒清理定时器（看起来像取消失灵）：取消路径检测进程已退出即立即落账。附带：desk→worker 消息转发改为 await + 经 pool.liveHandle 取真实 capability（字面量 capability 永远过不了哈希授权）。验证：typecheck 通过；npm test 144 项（143 过、0 败、1 项 POSIX 断言在 Windows 跳过），新增 hardKill 幂等/排队不派发、已死进程立即取消两项测试。无模型调用。
 **工程设计评审修复轮（2026-10-30 晚，分支 codex/tui-refresh）**：全库调研后修复五个已验证缺陷——① Mission 调度对真实 WorkerPool 全面失效（capability 双重哈希：库中哈希 handle 呈上后被再次哈希，授权必败，所有派发步骤被误判 FAILED、取消变空操作；现原始 capability 只留派发进程内存，库中仍存哈希，丢失时经 pool.liveHandle 进程内恢复或诚实进 NEEDS_HUMAN）；② SchedulerHost RPC `plan approve` 不受审批模式约束（持 token 即可绕过严格审批批准人工门禁；现仅代理审批模式放行，默认 fail-safe 严格，scheduler.token 落盘 0600）；③ daemon 先 listen 后取租约的端点竞态（第二 daemon 退出时会删掉存活属主的 scheduler.port；现先租约后监听，clearEndpoint 只删指向自己端口的文件）；④ `kepos relay add` 持久化未补全 URL 而探活可能经 /v1 候选通过（现与 TUI 一致：存探测同一生效 URL）；⑤ F10 图多环分支所有真实席位 index=0（选中/点击/Ctrl+X 全部失位）与单环槽位舍入碰撞静默吞席位。SECURITY.md 补充 scheduler.token 与 RPC 审批边界。验证：typecheck 通过；npm test 142 项（141 过、1 项 POSIX 断言在 Windows 按预期跳过），新增 12 项针对性测试（capability 契约四项、RPC 审批策略、端点属主、token 权限、relay URL、多环 index、槽位碰撞、真实池 authorize）。无模型调用。
@@ -18,7 +18,7 @@
 - D5 四种模式、Tab 排队、Ctrl+K、计划步骤树等交互设想需先出界面草图再实现。
 - D6（已决策并实施，2026-10-30）预算与表决：config.budget 支持 perTaskTokens/perTaskCost（到顶立即停止消耗、证据保留、通知等人）与 dailyTokens/dailyCost（当日累计到顶拒绝新派发）；orbital_delegate 支持按任务 budgetTokens（主 Agent 负责估计）；空转检测只标记 stalled+要求复核，不自动终止——严格审批模式下模型终止空转任务需人类逐次确认，代理模式留痕放行；新增 orbital_vote 表决工具（代表票来自产出末尾 VOTE 约定行，主 Agent 票标注"分派方"，结果由主 Agent 转述人类）；orbital_profiles 附带成员风险（连续失败/成功率）；TUI 任务详情显示空转标记与预算上限。强制点为进程级，D4 第 4 阶段上收 daemon 做全局强制。
 - D7（已按推荐执行，2026-10-30，可一键回退）品牌红色统一为 `#B52F3B`：跟随最新展示图（v21–v23，含专门调色的 v23-red）；brand-voice.md 文字、正式 logo v14（17 处 #B3242A）与 README 徽章已同步替换；历史版本 SVG（v17/v18 等）作为档案保留原色。
-- D8（已决策，2026-10-30）发版：本地版本号升至 0.3.0-beta.5、CHANGELOG 转正、打 tag `v0.3.0-beta.5`；不推送 GitHub、不发 npm——等真实模型验收通过后再发布，npm 届时由人类决定。
+- D8（已决策，2026-10-30）发版：本地版本号升至 0.3.0-beta.6、CHANGELOG 转正、打 tag `v0.3.0-beta.6`；不推送 GitHub、不发 npm——等真实模型验收通过后再发布，npm 届时由人类决定。
 - 技术残留：RemoteWorkerPool.eventsSince 仍是返回空结果的桩（随 D4 统一调度处理）；跨进程执行器管理、真实模型长跑、干净环境安装与跨平台实机验收未做。
 
 ## 第三批：只有人类能做

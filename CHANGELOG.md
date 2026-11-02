@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.3.0-beta.6 — 2026-11-02
+
+Native attachments, three-tier themes and council readability:
+
+- **Attachments are handled inside Kepos**: docx, pptx, xlsx, epub and zip are parsed by a hand-rolled ZIP reader built on `node:zlib`, so the feature adds no third-party dependency. PDF uses the optional `pdfjs-dist` package and states clearly that a parser is required when it is absent, instead of returning plausible-but-wrong text. Images reuse Pi's public MIME detection and resize helpers. Three entry points share one code path: `/attach` (with a path or a prompt), automatic recognition of pasted file paths, and the `kepos_attach` tool available to the lead agent and to read-only delegates.
+- **Credential files are always refused**: attachment reads reject `.env`, `id_rsa`, `auth.json` and `.npmrc` outright, along with the credential directories. This closes a gap where the worker sandbox only blocked such names when they lived under home but outside cwd, so a project rooted at home leaked them.
+- **Three brand themes with hot switching**: kepos-default joins kepos-dark and kepos-light. Each is built as a layered palette where page, card and info form a monotone depth ladder and semantic roles never reuse one another. The light theme is genuinely light now that the renderer paints the page background; inline background resets are rewritten to reopen the page colour, which previously cancelled the outer fill and left the main pane black. Themes upgrade themselves via a build-time manifest while user-edited copies are preserved, and the duplicate `themes/orbital-76.json` is retired.
+- **Council seats read as annotations**: seat names are italic and half-bright, labels narrow to six columns in multi-ring layouts and centre on the seat glyph, which removes the half-cell drift that made dense councils look shaky. Selected seats and the prime minister use bolder, heavier circles. The elected deputy chair is ringed rather than seated, since it is a part-time duty rather than a roster entry.
+- **Per-task spend is visible**: delegates default to a two-million-token budget per task, and the desk shows tokens used against the cap, the percentage, cost and cache hit rate. Budgets are per task, so a new task or conversation starts from zero.
+- **The lead agent answers as Kepos**: the prompt carries an identity boundary, so it no longer recites engine documentation, resource formats or startup flags when asked about configuration. Assistant turns are labelled `◆ Kepos 总理`.
+- **Command routing fixes**: `/theme` and `/attach` are Kepos-native and no longer fall through to the "leave Kepos" prompt.
+- Legal and tooling roles join the catalog; deputy_chair leaves it, since governance is elected from sitting members rather than seeded as a seat.
+- Legacy test harness: jiti no longer double-appends `/compat` when resolving pi-ai, and stale assertions were updated to current behaviour (queued submissions, speaker label, MCP layering, kepos_* tool names).
+
+
 ## 0.3.0-beta.5 — 2026-10-30
 
 Exit and failure-surfacing fixes (2026-10-31 round):

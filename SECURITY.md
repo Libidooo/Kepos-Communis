@@ -6,7 +6,7 @@ Do not commit `.env` files, `auth.json`, private keys, certificates with private
 
 The documented Worker port `7788` is only an example listening port. It is not a credential. Runtime defaults bind the Worker to loopback; non-loopback binding requires TLS and a token.
 
-## Approval modes and main-agent boundaries (0.3.0-beta.5)
+## Approval modes and main-agent boundaries (0.3.0-beta.6)
 
 The main agent runs with the Pi SDK's default tools (read/bash/edit/write), so a determined model could previously have approved its own human gates or mutated Kepos's own store through shell commands. Kepos now ships three approval postures (F2 → 审批模式, persisted in config, default strict):
 
@@ -22,7 +22,7 @@ This is an application-level control: pattern matching can be evaded by a model 
 
 Gate approval over RPC is additionally bounded by the approval policy: `plan approve` is refused unless the workspace is in 代理审批 (proxy) mode, so a model cannot approve its own human gate by scripting against the token while strict mode is active. Human approvals stay the TUI confirm or the operator running `kepos missions approve` themselves. Deleting the two endpoint files (or stopping the daemon cleanly) removes the surface; a token leaked to another local user is rotated by deleting `scheduler.token` and restarting the daemon.
 
-## Worker sandbox (0.3.0-beta.5)
+## Worker sandbox (0.3.0-beta.6)
 
 Delegated workers run as separate Pi processes with read-only tools only (read/grep/find/ls; anything else is refused at launch). Two controls bound what they can reach:
 
@@ -31,7 +31,7 @@ Delegated workers run as separate Pi processes with read-only tools only (read/g
 
 Boundaries: the sandbox intercepts the model's tool calls, not Pi's internal file access — a worker still reads the provider credentials it needs to call its model, which is unavoidable without a model-proxy architecture. Reads that are allowed still flow back to the lead agent as evidence. The capability stored in `mission_jobs` rows is now a hash, so a leaked database no longer hands out live handles.
 
-## MCP temporary grants (0.3.0-beta.5)
+## MCP temporary grants (0.3.0-beta.6)
 
 MCP servers are configured only by the human (`<agent-dir>/mcp.json`, or a trusted project's `.pi/mcp.json`). The main agent sees all configured MCP tools itself; delegated workers get MCP only as an explicit per-task grant: `orbital_delegate` `tasks[].mcp` accepts `true` (every configured server) or an exact server list, validated against the human's configuration — the model cannot grant a server that is not configured, and readonly supervision mode grants no MCP at all.
 
