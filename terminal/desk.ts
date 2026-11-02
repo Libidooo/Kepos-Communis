@@ -28,7 +28,7 @@ export function historyLines(entries:any[],width:number,expanded=false,theme?:an
  const delegateName=(String(typeof m.content==='string'?m.content:'').match(/「([^」]+)」/)||[])[1];
  lines.push(
   m.role==='user'?F('accent','› 你')
-  :m.role==='assistant'?F('accent','◆ 总理')
+  :m.role==='assistant'?F('accent','◆ Kepos 总理')
   :fromDelegate?F('toolTitle',`◈ ${delegateName||'代表'}`)
   :m.role==='custom'?F('muted','·')
   :I(F('muted',`┊ ▸ ${clean(m.toolName)}`)));

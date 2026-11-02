@@ -141,7 +141,7 @@ const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixtu
    const extension = await jiti.import(path.join(ext, 'index.ts'));
    const sdk = await jiti.import(path.join(root, 'dist/index.js'));
    const bound = makePool();
-   const key = Symbol.for('orbital.worker-pool:' + stateRoot);
+   const key = Symbol.for('kepos.worker-pool:' + stateRoot);
    globalThis[key] = bound;
    const handlers = {}, commands = {}, tools = {};
    extension.default({ on: (name, handler) => handlers[name] = handler, registerCommand: (name, value) => commands[name] = value, registerTool: value => tools[value.name] = value, getCommands: () => [] });
@@ -163,14 +163,14 @@ const crew = { id: 'fixture', name: 'Fixture', role: 'Local test', model: 'fixtu
     assert.equal(cancelled, 1);
     assert.equal((await bound.prewarm(crew, isolated, [])).ready, true);
     const count = bound.tasks.length;
-    await assert.rejects(tools.orbital_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }, { name: 'second', model: 'fixture', task: '  ' }] }, undefined, undefined, ctx), /不能为空/);
+    await assert.rejects(tools.kepos_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }, { name: 'second', model: 'fixture', task: '  ' }] }, undefined, undefined, ctx), /不能为空/);
     assert.equal(bound.tasks.length, count, 'Invalid batch launched its first task');
     for (const seconds of [0, 3601, NaN]) {
-     await assert.rejects(tools.orbital_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }, { name: 'second', model: 'fixture', task: 'valid', seconds }] }, undefined, undefined, ctx), /期限/);
+     await assert.rejects(tools.kepos_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }, { name: 'second', model: 'fixture', task: 'valid', seconds }] }, undefined, undefined, ctx), /期限/);
      assert.equal(bound.tasks.length, count);
     }
     const abortedSignal = AbortSignal.abort();
-    await assert.rejects(tools.orbital_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }] }, abortedSignal, undefined, ctx), /cancelled/);
+    await assert.rejects(tools.kepos_delegate.execute('id', { background: true, tasks: [{ name: 'first', model: 'fixture', task: 'valid' }] }, abortedSignal, undefined, ctx), /cancelled/);
     assert.equal(bound.tasks.length, count);
 
    } finally { sdk.SessionManager.listAll = listAll; }

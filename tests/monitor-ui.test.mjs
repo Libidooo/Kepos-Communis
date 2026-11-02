@@ -250,7 +250,7 @@ test('human, 总理 and delegate messages are visually distinct in every theme',
 
     // Speaker labels differ in both wording and colour.
     const speakerOf = keyword => out.find(line => line.includes(keyword) && !line.includes('_LINE')) || '';
-    assert.ok(out.some(line => line.includes('◆ 总理')), `${themeName}: 总理 label`);
+    assert.ok(out.some(line => line.includes('◆ Kepos 总理')), `${themeName}: 总理 label`);
     assert.ok(out.some(line => line.includes('◈ 审查员')), `${themeName}: delegate label names the agent`);
     assert.ok(out.some(line => line.includes('› 你')), `${themeName}: human label`);
     void speakerOf;
