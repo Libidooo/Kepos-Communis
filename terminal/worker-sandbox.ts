@@ -51,16 +51,19 @@ function inside(target: string, base: string): boolean {
 export function readDenied(rawTarget: string, policy: SandboxPolicy): string | null {
   const raw = String(rawTarget || '.');
   const expanded = raw === '~' || raw.startsWith('~/') || raw.startsWith('~\\') ? resolve(policy.home, raw.slice(1).replace(/^[\\/]/, '')) : resolve(raw);
-  const target = expanded.toLowerCase();
+  // 凭据段用原文切分（大小写无关），但包含判断必须交原始路径给 inside()：
+  // macOS 的 /var/folders/... 含大小写混合的随机段，lowercase 之后再 realpath
+  // 会与真实路径永远对不上，合法文件被误判越界。Windows 的大小写差异由 inside
+  // 内部的 realpath 归一处理，不需要提前降格。
   const segments = expanded.split(/[\\/]/).map(segment => segment.toLowerCase());
   if (CREDENTIAL_SEGMENTS.some(segment => segments.includes(segment))) return `拒绝访问凭据位置（子 Agent 不可读）：${raw}`;
-  for (const denied of policy.deny) if (inside(target, resolve(denied).toLowerCase())) return `拒绝访问 Kepos 数据目录（子 Agent 不可读）：${raw}`;
-  if (CREDENTIAL_BASENAMES.includes(segments.at(-1) || '') && inside(target, resolve(policy.home).toLowerCase()) && !inside(target, resolve(policy.cwd).toLowerCase())) {
+  for (const denied of policy.deny) if (inside(expanded, resolve(denied))) return `拒绝访问 Kepos 数据目录（子 Agent 不可读）：${raw}`;
+  if (CREDENTIAL_BASENAMES.includes(segments.at(-1) || '') && inside(expanded, resolve(policy.home)) && !inside(expanded, resolve(policy.cwd))) {
     return `拒绝访问凭据文件（子 Agent 不可读）：${raw}`;
   }
   if (policy.mode === 'machine') return null;
-  if (inside(target, resolve(policy.cwd))) return null;
-  for (const allowed of policy.allow) if (inside(target, resolve(allowed))) return null;
+  if (inside(expanded, resolve(policy.cwd))) return null;
+  for (const allowed of policy.allow) if (inside(expanded, resolve(allowed))) return null;
   return `只读范围限定在任务目录${policy.allow.length ? '与白名单目录' : ''}，不包含：${raw}。需要其他资料时请在分派时声明 readScope 或 readAllow。`;
 }
 
