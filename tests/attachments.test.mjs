@@ -166,12 +166,16 @@ test('credential files are refused even without a sandbox policy', async () => {
 });
 
 test('project-scope policy still restricts reads outside the task directory', async () => {
+  // 不用 ../ 造"外面"：macOS 上 /tmp 是指向 /private/tmp 的符号链接，
+  // 路径规范化后可能仍落在 home 内，测试就失去意义。改为在独立的兄弟目录建文件。
+  const siblingDir = mkdtempSync(join(tmpdir(), 'kepos-attach-outside-'));
+  const outsidePath = join(siblingDir, 'outside.txt');
+  writeFileSync(outsidePath, 'nope');
   const inside = write('note.txt', 'ok');
-  const outside = write('../outside.txt', 'nope');
   const policy = { mode: 'project', cwd: home, allow: [], deny: [], home };
-  assert.equal((await loadAttachment(inside, { policy })).ok, true);
-  const blocked = await loadAttachment(outside, { policy });
-  assert.equal(blocked.ok, false);
+  assert.equal((await loadAttachment(inside, { policy })).ok, true, 'a file inside the task directory is allowed');
+  const blocked = await loadAttachment(outsidePath, { policy });
+  assert.equal(blocked.ok, false, 'a file outside the task directory is refused');
   assert.match(blocked.reason, /拒绝读取/);
 });
 

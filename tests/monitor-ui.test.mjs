@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+import {fileURLToPath} from 'node:url';
 const home=mkdtempSync(join(tmpdir(),'kepos-monitor-'));process.env.ORBITAL_HOME=join(home,'orbital');
 const {Desk,KEY_HINTS,keyBytes}=await import('../dist/terminal/desk.js');
 const {KeposDatabase}=await import('../dist/terminal/database.js');
@@ -209,7 +210,9 @@ test('side-panel rows always set a foreground colour so tinted panels stay reada
   // The panels sit on a tinted background; a row without an explicit foreground inherits the
   // terminal default and can disappear on a light theme.
   const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
-  const light = loadThemeFromPath(new URL('../themes/kepos-light.json', import.meta.url).pathname.replace(/^\//, ''), 'truecolor');
+  // 跨平台：必须用 fileURLToPath 转换；手动剥前导斜杠只在 Windows 上凑巧成立，
+  // 在 Linux / macOS 上会把绝对路径变成相对路径，CI 直接 ENOENT。
+  const light = loadThemeFromPath(fileURLToPath(new URL('../themes/kepos-light.json', import.meta.url)), 'truecolor');
   const ctx = { cwd: home, isIdle: () => true, model: { id: 'fixture' }, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => [], getEntries: () => [] } };
   const sessions = [{ path: '/s1.jsonl', cwd: home, name: 'old chat' }];
   const desk = new Desk({ terminal: { rows: 30 }, requestRender() {} }, light, ctx,

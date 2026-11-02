@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
-import { isAbsolute, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { realpathSync } from 'node:fs';
 
 /** Where a worker's read tools may look. 'project' confines to the task directory plus allow-list; 'machine' allows everything except the deny list. */
 export type ReadScope = 'project' | 'machine';
@@ -17,8 +18,24 @@ const CREDENTIAL_SEGMENTS = ['.ssh', '.aws', '.gnupg', '.azure', '.kube', '.dock
 // Refused outside the task directory: provider auth files look like source when a repo has its own.
 const CREDENTIAL_BASENAMES = ['auth.json', 'credentials', 'id_rsa', '.env'];
 
+// macOS 上 /tmp 与 /var 是指向 /private/* 的符号链接，只用 resolve() 规范化会让
+// 同一目录出现两种写法，包含判断随即失效（沙箱把合法路径当越界）。这里在路径
+// 存在时按 realpath 归一，不存在则回退到 resolve（新增文件仍需能判定）。
+function canonical(target: string): string {
+  try {
+    return realpathSync(target);
+  } catch {
+    try {
+      // 目标可能尚不存在：归一其父目录再拼回文件名。
+      return join(realpathSync(dirname(target)), basename(target));
+    } catch {
+      return resolve(target);
+    }
+  }
+}
+
 function inside(target: string, base: string): boolean {
-  const rel = relative(base, target);
+  const rel = relative(canonical(base), canonical(target));
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
