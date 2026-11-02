@@ -5,7 +5,7 @@ import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {WorkerPool,MAX_CONCURRENT_CHILDREN,DEFAULT_TASK_SECONDS,configureWorkerBudget} from '../dist/terminal/workers.js';
-import {OrbitalDatabase} from '../dist/terminal/database.js';
+import {KeposDatabase} from '../dist/terminal/database.js';
 
 const crew={id:'expert',name:'Expert',role:'investigate',model:'fixture',provider:'fixture'};
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
@@ -15,7 +15,7 @@ test('copy delegation is one level and halves the parent budget',async t=>{const
 function fixture(t,concurrency=1){
  configureWorkerBudget(()=>({}));
  const dir=mkdtempSync(join(tmpdir(),'kepos-queue-'));
- const database=new OrbitalDatabase(join(dir,'state.sqlite'));
+ const database=new KeposDatabase(join(dir,'state.sqlite'));
  const executors=[];let alive=0,peak=0;
  const create=profile=>{
   if(profile.role==='spawn-failure')throw Error('injected spawn failure');

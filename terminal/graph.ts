@@ -1,5 +1,5 @@
 import {randomUUID} from 'node:crypto';
-import type {OrbitalDatabase} from './database.ts';
+import type {KeposDatabase} from './database.ts';
 
 export type GraphRunState='QUEUED'|'RUNNING'|'PAUSED'|'NEEDS_HUMAN'|'SUCCEEDED'|'FAILED'|'CANCELLED';
 export type GraphNodeState='QUEUED'|'RUNNING'|'WAITING'|'NEEDS_HUMAN'|'SUCCEEDED'|'FAILED'|'CANCELLED';
@@ -11,7 +11,7 @@ export interface GraphArtifact {id:string;runId:string;nodeId?:string;kind:strin
 
 const safe=(value:unknown,max=2000)=>String(value??'').slice(0,max);
 export class GraphStore {
- constructor(private readonly database:OrbitalDatabase){this.ensureSchema();}
+ constructor(private readonly database:KeposDatabase){this.ensureSchema();}
  private ensureSchema(){this.database.sql.exec(`CREATE TABLE IF NOT EXISTS graph_runs(id TEXT PRIMARY KEY,goal TEXT NOT NULL,cwd TEXT NOT NULL,parent TEXT NOT NULL,state TEXT NOT NULL,created INTEGER NOT NULL,updated INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY,run_id TEXT NOT NULL REFERENCES graph_runs(id),kind TEXT NOT NULL,label TEXT NOT NULL,state TEXT NOT NULL,profile_revision TEXT,started INTEGER,ended INTEGER,checkpoint TEXT,error TEXT);CREATE TABLE IF NOT EXISTS graph_edges(run_id TEXT NOT NULL,from_node TEXT NOT NULL,to_node TEXT NOT NULL,kind TEXT NOT NULL,PRIMARY KEY(run_id,from_node,to_node,kind));CREATE TABLE IF NOT EXISTS graph_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,run_id TEXT NOT NULL,node_id TEXT,type TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL);CREATE TABLE IF NOT EXISTS graph_artifacts(id TEXT PRIMARY KEY,run_id TEXT NOT NULL,node_id TEXT,kind TEXT NOT NULL,summary TEXT NOT NULL,uri TEXT,created INTEGER NOT NULL);CREATE INDEX IF NOT EXISTS graph_events_cursor ON graph_events(run_id,seq);`);}
  createRun(input:{id?:string;goal:string;cwd:string;parentSessionId:string;state?:GraphRunState}):GraphRun{const run:GraphRun={id:input.id||'run_'+randomUUID().replaceAll('-',''),goal:safe(input.goal,4000),cwd:input.cwd,parentSessionId:input.parentSessionId,state:input.state||'QUEUED',created:Date.now(),updated:Date.now()};this.database.prepare('INSERT INTO graph_runs VALUES(?,?,?,?,?,?,?)').run(run.id,run.goal,run.cwd,run.parentSessionId,run.state,run.created,run.updated);this.event(run.id,undefined,'run_created',{state:run.state});return run;}
  addNode(runId:string,input:{id?:string;kind:GraphNode['kind'];label:string;state?:GraphNodeState;profileRevision?:string;dependsOn?:string[]}):GraphNode{const node:GraphNode={id:input.id||'node_'+randomUUID().replaceAll('-',''),runId,kind:input.kind,label:safe(input.label),state:input.state||'QUEUED',profileRevision:input.profileRevision};this.database.transaction(()=>{this.database.prepare('INSERT INTO graph_nodes VALUES(?,?,?,?,?,?,?,?,?,?)').run(node.id,runId,node.kind,node.label,node.state,node.profileRevision||null,null,null,null,null);for(const dependency of input.dependsOn||[])this.database.prepare('INSERT OR IGNORE INTO graph_edges VALUES(?,?,?,?)').run(runId,dependency,node.id,'depends_on');this.event(runId,node.id,'node_created',{kind:node.kind,state:node.state});});return node;}

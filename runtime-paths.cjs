@@ -22,7 +22,7 @@ function resolveExtension(baseDir = __dirname) {
   if (!fs.existsSync(file)) throw Error('KEPOS_EXTENSION_DIR has no index.ts: ' + file);
   return file;
  }
- const candidates = [path.join(baseDir, 'terminal/index.ts'), path.join(baseDir, 'runtime/index.ts'), path.join(os.homedir(), '.pi/agent/extensions/orbital/index.ts')];
+ const candidates = [path.join(baseDir, 'terminal/index.ts'), path.join(baseDir, 'runtime/index.ts'), path.join(os.homedir(), '.pi/agent/extensions/kepos/index.ts')];
  const file = candidates.find(candidate => fs.existsSync(candidate));
  if (!file) throw Error('Kepos extension is missing; run node install-terminal.cjs first.');
  return file;

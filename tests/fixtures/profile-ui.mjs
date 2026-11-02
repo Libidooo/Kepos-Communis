@@ -1,11 +1,11 @@
 import {mkdirSync} from 'node:fs';
 import {join} from 'node:path';
-import {OrbitalDatabase} from '../../dist/terminal/database.js';
+import {KeposDatabase} from '../../dist/terminal/database.js';
 import {ProfileHistory} from '../../dist/terminal/profiles.js';
 const home=process.argv[2];
 if(!home)throw Error('Expected isolated test home');
 mkdirSync(join(home,'data'),{recursive:true});
-const database=new OrbitalDatabase(join(home,'data','orbital.sqlite'));
+const database=new KeposDatabase(join(home,'data','orbital.sqlite'));
 const history=new ProfileHistory(database);
 const original={id:'fixture-expert',name:'Fixture Expert',provider:'fixture',model:'fixture-model',role:'FIRST_ROLE_UI_FIXTURE',tools:['read']};
 history.record(original);

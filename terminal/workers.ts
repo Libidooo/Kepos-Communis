@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { root, type Crew } from './store.ts';
-import { db, type OrbitalDatabase } from './database.ts';
+import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
@@ -63,7 +63,7 @@ export class WorkerPool {
  private ownerHeartbeat?: ReturnType<typeof setInterval>;
  readonly concurrency: number;
 
- constructor(readonly database: OrbitalDatabase = db(), private readonly createExecutor: (profile: WorkerProfile) => WorkerExecutor = profile => new WarmExecutor(profile), options: { concurrency?: number } = {}) {
+ constructor(readonly database: KeposDatabase = db(), private readonly createExecutor: (profile: WorkerProfile) => WorkerExecutor = profile => new WarmExecutor(profile), options: { concurrency?: number } = {}) {
   this.concurrency = Math.min(MAX_CONCURRENT_CHILDREN, Math.max(1, Math.floor(options.concurrency || MAX_CONCURRENT_CHILDREN)));
   this.importLegacy();
   this.tasks = (database.prepare("SELECT task FROM workers ORDER BY json_extract(task,'$.started')").all() as any[]).map(row => JSON.parse(row.task));

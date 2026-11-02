@@ -1,4 +1,4 @@
-import type {OrbitalDatabase} from './database.ts';
+import type {KeposDatabase} from './database.ts';
 
 export interface RetentionOptions {maxAgeMs?:number;maxRowsPerSource?:number;batchSize?:number;}
 export interface RetentionReport {archived:number;remaining:number;cutoff:number;workersPruned?:number;}
@@ -9,7 +9,7 @@ const SOURCES=[
 ] as const;
 
 export class EventRetention {
- constructor(private readonly database:OrbitalDatabase){database.sql.exec(`CREATE TABLE IF NOT EXISTS event_archive(source TEXT NOT NULL,entity TEXT NOT NULL,sequence INTEGER NOT NULL,type TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL,archived_at INTEGER NOT NULL,PRIMARY KEY(source,entity,sequence));CREATE INDEX IF NOT EXISTS event_archive_created ON event_archive(created);`);}
+ constructor(private readonly database:KeposDatabase){database.sql.exec(`CREATE TABLE IF NOT EXISTS event_archive(source TEXT NOT NULL,entity TEXT NOT NULL,sequence INTEGER NOT NULL,type TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL,archived_at INTEGER NOT NULL,PRIMARY KEY(source,entity,sequence));CREATE INDEX IF NOT EXISTS event_archive_created ON event_archive(created);`);}
  run(options:RetentionOptions={}):RetentionReport {
   const maxAgeMs=Math.max(60_000,options.maxAgeMs??30*24*60*60*1000);const cutoff=Date.now()-maxAgeMs;const batchSize=Math.max(10,Math.min(5000,options.batchSize??500));let archived=0;
   for(const source of SOURCES){if(!this.tableExists(source.table))continue;archived+=this.archiveSource(source,cutoff,batchSize);}

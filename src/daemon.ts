@@ -1,6 +1,6 @@
 import { join } from 'node:path';
-import { preparePaths, activatePaths, type AppPaths } from './config.ts';
-import { OrbitalDatabase } from '../terminal/database.ts';
+import { preparePaths, activatePaths, type AppPaths } from './config.ts';import { keposDatabaseFile } from '../terminal/paths.ts';
+import { KeposDatabase } from '../terminal/database.ts';
 import { WorkerPool } from '../terminal/workers.ts';
 import { RemoteWorkerClient, RemoteWorkerPool } from '../terminal/remote-worker.ts';
 import { SchedulerDaemon } from '../terminal/daemon.ts';
@@ -8,7 +8,7 @@ import { SchedulerHost } from '../terminal/scheduler-host.ts';
 
 export async function runDaemon(paths: AppPaths, options?: { port?: string }): Promise<void> {
   preparePaths(paths);activatePaths(paths);
-  const database=new OrbitalDatabase(join(paths.dataDir,'orbital.sqlite'));
+  const database=new KeposDatabase(keposDatabaseFile(paths.dataDir));
   const remoteHost=process.env.KEPOS_REMOTE_WORKER_HOST;
   const remotePort=Number(process.env.KEPOS_REMOTE_WORKER_PORT||7788);
   const remoteToken=process.env.KEPOS_REMOTE_WORKER_TOKEN;

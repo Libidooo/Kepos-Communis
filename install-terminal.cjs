@@ -4,7 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
 const source = path.join(__dirname, 'terminal');
-const target = path.resolve(process.env.KEPOS_INSTALL_DIR || path.join(os.homedir(), '.pi/agent/extensions/orbital'));
+const target = path.resolve(process.env.KEPOS_INSTALL_DIR || path.join(os.homedir(), '.pi/agent/extensions/kepos'));
 function runtimeFiles(directory, prefix = '') {
  const files = [];
  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {

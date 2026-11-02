@@ -4,11 +4,11 @@ import {mkdtempSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHash} from 'node:crypto';
-import {OrbitalDatabase} from '../dist/terminal/database.js';
+import {KeposDatabase} from '../dist/terminal/database.js';
 import {MissionScheduler} from '../dist/terminal/scheduler.js';
 const agent={name:'Expert',model:'fixture',provider:'fixture',role:'read only'};
 function fixture(t,options={}){
- const cwd=mkdtempSync(join(tmpdir(),'kepos-dag-'));const db=new OrbitalDatabase(join(cwd,'state.sqlite'));
+ const cwd=mkdtempSync(join(tmpdir(),'kepos-dag-'));const db=new KeposDatabase(join(cwd,'state.sqlite'));
  const records=new Map(),dispatch=[],cancelled=[];
  const pool={children:new Map(),launch(a,text,dir,session,seconds,signal,parent,tools){const id='w'+(dispatch.length+1);const h={version:1,workerId:id,parentSessionId:parent,capability:'fake'};dispatch.push({a,text,dir,parent,seconds,tools,h});records.set(id,{state:'RUNNING'});return h;},result(h,p){assert.equal(h.parentSessionId,p);return records.get(h.workerId)||{state:'UNKNOWN_HANDLE'};},cancelHandle(h){cancelled.push(h.workerId);records.set(h.workerId,{state:'CANCELLED'});return{state:'CANCELLED'};}};
  const scheduler=new MissionScheduler(db,pool,options);t.after(()=>{scheduler.stop();db.close();});
@@ -115,7 +115,7 @@ test('planTree renders depth-first dependency order with state glyphs',async()=>
 
 // 与真实 WorkerPool 相同的授权契约：呈上的 capability 必须是原始值（池内哈希后比对）。
 function secureFixture(t,options={}){
- const cwd=mkdtempSync(join(tmpdir(),'kepos-sec-'));const db=new OrbitalDatabase(join(cwd,'state.sqlite'));
+ const cwd=mkdtempSync(join(tmpdir(),'kepos-sec-'));const db=new KeposDatabase(join(cwd,'state.sqlite'));
  const raw=new Map(),records=new Map(),cancelled=[],dispatch=[];
  let next=0;
  const authorize=(h,p)=>{if(!h||h.parentSessionId!==p)return false;const stored=raw.get(h.workerId);return !!stored&&h.capability===stored;};

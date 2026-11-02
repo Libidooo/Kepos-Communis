@@ -1,4 +1,4 @@
-import { join, resolve } from 'node:path';
+import { basename, join, resolve } from 'node:path';
 import {
   createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices,
   InteractiveMode, SessionManager, type AgentSessionRuntime, type CreateAgentSessionRuntimeFactory,
@@ -45,8 +45,12 @@ export async function createWorkspace(options: WorkspaceOptions = {}): Promise<W
   activatePaths(paths);
   // Load path-bound services only after selecting this installation's data directory.
   const activeStore = await import('../../terminal/paths.ts');
-  const expectedDatabase = resolve(join(paths.dataDir, 'orbital.sqlite'));
-  if (resolve(activeStore.databasePath) !== expectedDatabase) {
+  // 进程一旦导入 paths.ts 就会锁定当时的 home。这里比较解析出的数据库目录与
+  // 本次请求的数据目录：不一致说明本进程已绑定到另一个安装，必须拒绝。
+  // 文件名可能是 kepos.sqlite 或兼容沿用的 orbital.sqlite，因此只比较目录。
+  const boundDatabase = resolve(activeStore.databaseFile());
+  const expectedDatabase = resolve(join(paths.dataDir, basename(boundDatabase)));
+  if (boundDatabase !== expectedDatabase) {
     throw Error('This process is already bound to another Kepos data directory. Start a separate process for a different --home.');
   }
   const { default: keposExtension } = await import('../../terminal/index.ts');

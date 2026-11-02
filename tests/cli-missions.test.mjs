@@ -24,7 +24,8 @@ test('supervise human gate exits without a model request, then CLI can approve/p
 });
 test('public SDK import does not bind the default home before a custom workspace is created',()=>{
  const home=mkdtempSync(join(tmpdir(),'kepos-sdk-home-'));
- const source=`import {createWorkspace,appPaths} from ${JSON.stringify(pathToFileURL(resolve('dist/src/index.js')).href)};const paths=appPaths({KEPOS_HOME:${JSON.stringify(home)}});const app=await createWorkspace({paths,cwd:${JSON.stringify(home)}});const {databasePath}=await import(${JSON.stringify(pathToFileURL(resolve('dist/terminal/paths.js')).href)});console.log(JSON.stringify({databasePath,home:app.paths.home}));await app.runtime.dispose();`;
+ const source=`import {createWorkspace,appPaths} from ${JSON.stringify(pathToFileURL(resolve('dist/src/index.js')).href)};const paths=appPaths({KEPOS_HOME:${JSON.stringify(home)}});const app=await createWorkspace({paths,cwd:${JSON.stringify(home)}});const {databaseFile}=await import(${JSON.stringify(pathToFileURL(resolve('dist/terminal/paths.js')).href)});console.log(JSON.stringify({databasePath:databaseFile(),home:app.paths.home}));await app.runtime.dispose();`;
  const result=spawnSync(process.execPath,['--input-type=module','-e',source],{encoding:'utf8',env:cleanEnv,windowsHide:true,timeout:15000});assert.equal(result.status,0,result.stderr);
- assert.equal(JSON.parse(result.stdout).databasePath,join(home,'data','orbital.sqlite'));
+ // 全新工作区用新文件名；已有的 orbital.sqlite 安装会继续沿用（见 paths.ts 的兼容解析）。
+ assert.equal(JSON.parse(result.stdout).databasePath,join(home,'data','kepos.sqlite'));
 });

@@ -6,11 +6,11 @@ import { join } from 'node:path';
 const isolated = mkdtempSync(join(tmpdir(), 'kepos-profile-history-'));
 process.env.ORBITAL_HOME = join(isolated, 'orbital');
 const { ProfileHistory, agentRevision } = await import('../dist/terminal/profiles.js');
-const { OrbitalDatabase } = await import('../dist/terminal/database.js');
+const { KeposDatabase } = await import('../dist/terminal/database.js');
 const profile = { id: 'expert', name: 'Expert', model: 'fixture', provider: 'fixture', role: 'Investigate', tools: ['read'] };
 
 test('history deduplicates unchanged configuration and keeps immutable old revisions', () => {
- const db = new OrbitalDatabase(join(isolated, 'versions.sqlite'));
+ const db = new KeposDatabase(join(isolated, 'versions.sqlite'));
  const history = new ProfileHistory(db);
  const first = history.record(profile);
  const second = history.record({ ...profile, role: 'Review' });
@@ -49,7 +49,7 @@ test('restoring a renamed version cannot collide with another member name', asyn
 
 test('worker defaults respect saved readonly tool presets and preserve the profile revision', async () => {
  const { WorkerPool } = await import('../dist/terminal/workers.js');
- const db = new OrbitalDatabase(join(isolated, 'tool-default.sqlite'));
+ const db = new KeposDatabase(join(isolated, 'tool-default.sqlite'));
  let requested;
  const pool = new WorkerPool(db, tools => { requested = tools; throw Error('fixture: do not spawn'); });
  const handle = pool.launch(profile, 'fixture', isolated, 'source', 1, undefined, 'parent');

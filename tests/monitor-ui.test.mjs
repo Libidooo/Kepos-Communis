@@ -5,12 +5,12 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const home=mkdtempSync(join(tmpdir(),'kepos-monitor-'));process.env.ORBITAL_HOME=join(home,'orbital');
 const {Desk,KEY_HINTS,keyBytes}=await import('../dist/terminal/desk.js');
-const {OrbitalDatabase}=await import('../dist/terminal/database.js');
+const {KeposDatabase}=await import('../dist/terminal/database.js');
 const {taskSummaries,taskEvidence}=await import('../dist/terminal/monitor.js');
 const {initTheme}=await import('@earendil-works/pi-coding-agent');initTheme('dark');
 const {visibleWidth}=await import('@earendil-works/pi-tui');
 test('monitor list queries omit full output/profile while selected evidence remains available',()=>{
- const db=new OrbitalDatabase(join(home,'monitor.sqlite'));
+ const db=new KeposDatabase(join(home,'monitor.sqlite'));
  const task={id:'remote',agent:'Expert',title:'remote job',cwd:'project-b',parentSessionId:'other',status:'完成',started:100,limit:300,output:'FULL_EVIDENCE_SECRET_SENTINEL',profileSnapshot:{role:'LARGE_ROLE_SENTINEL'}};
  db.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,?)').run('remote','other','c','hash','e','SUCCEEDED',JSON.stringify(task),'{}');
  const list=taskSummaries(db);assert.equal(list.length,1);assert.ok(!JSON.stringify(list).includes('SENTINEL'));assert.equal(taskEvidence(db,'remote').output,task.output);db.close();

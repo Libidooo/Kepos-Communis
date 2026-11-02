@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 const isolated=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-render-bench-'));
-process.env.ORBITAL_HOME=path.join(isolated,'orbital');
+process.env.ORBITAL_HOME=path.join(isolated,'kepos');
 const {Desk}=await import('../dist/terminal/desk.js');
 const {initTheme,Theme}=await import('@earendil-works/pi-coding-agent');
 const {TimingWindow}=await import('../dist/terminal/metrics.js');

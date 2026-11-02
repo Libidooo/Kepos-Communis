@@ -26,13 +26,14 @@ export function commandRisk(command: string): Risk | null {
   // 'kepos … approve' within one pipe-free segment; an approve BEFORE 'kepos' (commit
   // messages, grep patterns) or after a pipe is not an approval attempt.
   if (/\bkepos\b[^|;&]*\bapprove\b/.test(lower)) return 'gate';
-  if (lower.includes('orbital.sqlite')) return 'data';
+  // 两个数据库名都要认：新装是 kepos.sqlite，老装仍是 orbital.sqlite。
+  if (lower.includes('kepos.sqlite') || lower.includes('orbital.sqlite')) return 'data';
   const touchesKeposHome = lower.includes('.kepos') || lower.includes('kepos_home') || lower.includes('kepos_home');
   if (touchesKeposHome && (WRITE_HINTS.some(hint => lower.includes(hint)) || lower.includes('sqlite3'))) return 'data';
   return null;
 }
 
-/** Is this file inside the Kepos data directory (config, workspace.json, orbital.sqlite)? */
+/** Is this file inside the Kepos data directory (config, workspace.json, the Kepos database)? */
 export function pathRisk(path: string, keposDataRoot: string): Risk | null {
   const candidate = resolve(String(path || ''));
   const base = resolve(keposDataRoot);

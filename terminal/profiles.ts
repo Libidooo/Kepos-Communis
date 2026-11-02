@@ -1,4 +1,4 @@
-import type { OrbitalDatabase } from './database.ts';
+import type { KeposDatabase } from './database.ts';
 import { profileRevision, READ_ONLY_TOOLS } from './worker-contract.ts';
 
 export interface AgentProfile {
@@ -49,7 +49,7 @@ export function agentRevision(profile: AgentProfile): string {
 
 /** Revision history belongs to a stable profile ID; deleting a member keeps its history. */
 export class ProfileHistory {
-  constructor(private readonly database: OrbitalDatabase) {
+  constructor(private readonly database: KeposDatabase) {
     database.sql.exec(`
       CREATE TABLE IF NOT EXISTS profile_revisions(
         agent_id TEXT NOT NULL, revision TEXT NOT NULL, created INTEGER NOT NULL,

@@ -1,4 +1,4 @@
-import type { OrbitalDatabase } from './database.ts';
+import type { KeposDatabase } from './database.ts';
 export interface WorkerEventQuery {
     cursor?: number;
     parentSessionId?: string;
@@ -29,7 +29,7 @@ function safePayload(value: unknown): Record<string, unknown> {
             result[key] = item;
     return result;
 }
-export function readWorkerEvents(database: OrbitalDatabase, query: WorkerEventQuery = {}): WorkerEventPage {
+export function readWorkerEvents(database: KeposDatabase, query: WorkerEventQuery = {}): WorkerEventPage {
     if (query.cursor !== undefined && (!Number.isSafeInteger(query.cursor) || query.cursor < 0))
         throw Error('Invalid event cursor');
     const limit = Math.max(1, Math.min(500, Math.floor(query.limit ?? 100)));

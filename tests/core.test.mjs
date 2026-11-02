@@ -6,7 +6,7 @@ import path from 'node:path';
 import { parseCli } from '../dist/src/cli.js';
 import { appPaths, preparePaths, deviceId } from '../dist/src/config.js';
 import { AuthService } from '../dist/src/auth/service.js';
-import { OrbitalDatabase } from '../dist/terminal/database.js';
+import { KeposDatabase } from '../dist/terminal/database.js';
 import { MissionScheduler } from '../dist/terminal/scheduler.js';
 
 test('portable CLI and private paths', () => {
@@ -29,7 +29,7 @@ test('agent profile revisions are deterministic and immutable snapshots differ o
 
 test('worker events are cursor-paginated, scoped, and secret-free', async () => {
  const { readWorkerEvents } = await import('../dist/terminal/events.js');
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-events-')); const db=new OrbitalDatabase(path.join(root,'state.sqlite'));
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-events-')); const db=new KeposDatabase(path.join(root,'state.sqlite'));
  db.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,?)').run('w1','parent','corr','hash','epoch','RUNNING',JSON.stringify({id:'w1',cwd:root}),null);
  db.prepare("INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)").run('w1','state',100,JSON.stringify({state:'RUNNING',tool:'read',secret:'do-not-return'}));
  db.prepare("INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)").run('w1','tool_start',101,JSON.stringify({tool:'grep',profileRevision:'rev1'}));
@@ -37,12 +37,12 @@ test('worker events are cursor-paginated, scoped, and secret-free', async () => 
 });
 
 test('mission scheduler validates DAG and persists mission records', () => {
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-mission-')); const db=new OrbitalDatabase(path.join(root,'state.sqlite')); const pool={children:new Map(),launch(){throw Error('not started')},result(){return {state:'RUNNING'}},cancelHandle(){}}; const scheduler=new MissionScheduler(db,pool,{concurrency:1});
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-mission-')); const db=new KeposDatabase(path.join(root,'state.sqlite')); const pool={children:new Map(),launch(){throw Error('not started')},result(){return {state:'RUNNING'}},cancelHandle(){}}; const scheduler=new MissionScheduler(db,pool,{concurrency:1});
  const mission=scheduler.enqueue({goal:'fixture',cwd:root,parentSessionId:'parent',jobs:[{id:'a',agent:{name:'A',model:'fixture',provider:'fixture',role:'test'},task:'one',seconds:300},{id:'b',agent:{name:'B',model:'fixture',provider:'fixture',role:'test'},task:'two',dependsOn:['a']}]}); assert.equal(mission.jobs.length,2); assert.equal(scheduler.get(mission.id,'parent').state,'QUEUED'); assert.throws(()=>scheduler.enqueue({goal:'cycle',cwd:root,parentSessionId:'parent',jobs:[{id:'a',agent:{name:'A',model:'fixture'},task:'a',dependsOn:['b']},{id:'b',agent:{name:'B',model:'fixture'},task:'b',dependsOn:['a']}]}),/cycle/); db.close();
 });
 
 test('nested transactions isolate failed savepoints and retain outer changes',()=>{
- const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-tx-'));const db=new OrbitalDatabase(path.join(dir,'state.sqlite'));
+ const dir=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-tx-'));const db=new KeposDatabase(path.join(dir,'state.sqlite'));
  db.transaction(()=>{db.set('outer',1);assert.throws(()=>db.transaction(()=>{db.set('inner',2);throw Error('rollback inner');}),/rollback inner/);db.set('after',3);});
  assert.equal(db.get('outer'),1);assert.equal(db.get('inner'),undefined);assert.equal(db.get('after'),3);
  assert.throws(()=>db.transaction(()=>{db.set('outer',9);db.transaction(()=>db.set('after',9));throw Error('rollback all');}),/rollback all/);
@@ -52,7 +52,7 @@ test('nested transactions isolate failed savepoints and retain outer changes',()
 test('worker pool authorizes by hashing the presented capability; live handles recover in-process', async () => {
  const { createHash } = await import('node:crypto');
  const { WorkerPool } = await import('../dist/terminal/workers.js');
- const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-auth-')); const db=new OrbitalDatabase(path.join(root,'state.sqlite'));
+ const root=fs.mkdtempSync(path.join(os.tmpdir(),'kepos-auth-')); const db=new KeposDatabase(path.join(root,'state.sqlite'));
  const capability='cap-raw-123';
  db.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run('w-auth','parent','corr',createHash('sha256').update(capability).digest('hex'),'epoch','RUNNING',JSON.stringify({id:'w-auth',status:'运行中',ownerPid:process.pid,parentSessionId:'parent'}));
  const pool=new WorkerPool(db);

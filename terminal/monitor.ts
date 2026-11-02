@@ -1,6 +1,6 @@
-import type {OrbitalDatabase} from './database.ts';
+import type {KeposDatabase} from './database.ts';
 import {representativeRisk, type RepresentativeTaskHistory} from './representative-health.ts';
-export function taskSummaries(database:OrbitalDatabase,limit=100) {
+export function taskSummaries(database:KeposDatabase,limit=100) {
  return database.prepare(`SELECT id,parent AS parentSessionId,state,
  json_extract(task,'$.agent') AS agent,json_extract(task,'$.agentId') AS agentId,json_extract(task,'$.purpose') AS purpose,json_extract(task,'$.cwd') AS cwd,
  json_extract(task,'$.title') AS title,json_extract(task,'$.status') AS status,
@@ -13,11 +13,11 @@ export function taskSummaries(database:OrbitalDatabase,limit=100) {
  json_extract(task,'$.delegationDepth') AS delegationDepth,json_extract(task,'$.parentWorkerId') AS parentWorkerId
  FROM workers ORDER BY CASE WHEN receipt IS NULL THEN 0 ELSE 1 END, json_extract(task,'$.started') DESC LIMIT ?`).all(Math.max(1,Math.min(200,limit))) as any[];
 }
-export function taskEvidence(database:OrbitalDatabase,id:string) {
+export function taskEvidence(database:KeposDatabase,id:string) {
  const row=database.prepare('SELECT task FROM workers WHERE id=?').get(id) as any;
  return row?JSON.parse(row.task):undefined;
 }
-export function planSummaries(database:OrbitalDatabase) {
+export function planSummaries(database:KeposDatabase) {
  // The monitor exposes no Worker capabilities or full evidence in a list query.
  if(!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='missions'").get())return [];
  return database.prepare(`SELECT m.id,m.goal,m.cwd,m.parent AS parentSessionId,m.state,m.updated,

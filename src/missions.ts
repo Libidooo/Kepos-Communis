@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises';
+import { keposDatabaseFile } from '../terminal/paths.ts';
 import { join } from 'node:path';
 import type { CliOptions } from './cli/options.ts';
 import { activatePaths, preparePaths, type AppPaths } from './config.ts';
@@ -115,10 +116,10 @@ async function watchMission(scheduler: MissionScheduler, mission: MissionRecord,
 export async function missionCommand(options: MissionOptions, paths: AppPaths): Promise<void> {
   preparePaths(paths);
   activatePaths(paths);
-  const { OrbitalDatabase } = await import('../terminal/database.ts');
+  const { KeposDatabase } = await import('../terminal/database.ts');
   const { WorkerPool } = await import('../terminal/workers.ts');
   const { MissionScheduler } = await import('../terminal/scheduler.ts');
-  const database = new OrbitalDatabase(join(paths.dataDir, 'orbital.sqlite'));
+  const database = new KeposDatabase(keposDatabaseFile(paths.dataDir));
   const readPool: MissionWorkerPool = {
     launch() { throw Error('A read-only mission control cannot launch workers'); },
     result() { return { state: 'UNKNOWN_HANDLE' }; },

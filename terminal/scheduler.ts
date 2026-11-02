@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import type { OrbitalDatabase } from './database.ts';
+import type { KeposDatabase } from './database.ts';
 import { GraphStore } from './graph.ts';
 import type { WorkerPool } from './workers.ts';
 import { DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, READ_ONLY_TOOLS, MAX_TASK_SECONDS, profileRevision, type WorkerHandle } from './worker-contract.ts';
@@ -85,7 +85,7 @@ export class MissionScheduler {
     private concurrency: number;
     readonly graph: GraphStore;
     lastError?: string;
-    constructor(readonly database: OrbitalDatabase, readonly pool: MissionWorkerPool, readonly options: {
+    constructor(readonly database: KeposDatabase, readonly pool: MissionWorkerPool, readonly options: {
         concurrency?: number;
         tickMs?: number;
         missionIds?: string[];

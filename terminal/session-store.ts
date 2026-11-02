@@ -1,16 +1,16 @@
 import { readFileSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
-import { db, type OrbitalDatabase } from './database.ts';
+import { db, type KeposDatabase } from './database.ts';
 import { dataRoot } from './paths.ts';
 export type SessionStatus='active'|'archived';
 export type SessionMeta={schemaVersion:1;logicalSessionId:string;title:string;cwd:string;source:'kepos';createdAt:number;updatedAt:number;status:SessionStatus;archivedAt:number|null;parentLogicalSessionId:string|null;piSessionFile:string|null;messageCount:number;lastMessageUid:string|null;nextSequence:number;generation?:number};
 export type MessageRecord={schemaVersion:1;messageUid:string;logicalSessionId:string;sequence:number;role:string;content:unknown;timestamp:number;active:0|1;archived:0|1;parentMessageUid:string|null;toolCallUid:string|null;toolCalls:unknown;metadata:Record<string,unknown>};
 export type NewMessage={role:string;content:unknown;messageUid?:string;timestamp?:number;parentMessageUid?:string|null;toolCallUid?:string|null;toolCalls?:unknown;metadata?:Record<string,unknown>};
 const uid=(s:string)=>createHash('sha256').update(s).digest('hex').slice(0,32);
-export class OrbitalSessionStore {
+export class KeposSessionStore {
  readonly root=dataRoot;
- constructor(readonly database:OrbitalDatabase=db()){this.importLegacy();}
+ constructor(readonly database:KeposDatabase=db()){this.importLegacy();}
  private importLegacy(){const d=this.database;if(d.get('json_sessions_imported'))return;
   const indexPath=join(dataRoot,'store.json');if(!existsSync(indexPath)){d.set('json_sessions_imported',true);return;}
   const index=JSON.parse(readFileSync(indexPath,'utf8'));if(index.schemaVersion!==1||!index.sessions)throw Error('Legacy SessionStore index is invalid; not overwriting');
@@ -47,5 +47,5 @@ export class OrbitalSessionStore {
  archiveSession(id:string){this.setStatus(id,'archived');}
  activateSession(id:string){this.setStatus(id,'active');}
 }
-let store:OrbitalSessionStore|undefined;
-export const keposSessionStore={getMessages:(...args:Parameters<OrbitalSessionStore['getMessages']>)=>(store??=new OrbitalSessionStore()).getMessages(...args),getGeneration:(...args:Parameters<OrbitalSessionStore['getGeneration']>)=>(store??=new OrbitalSessionStore()).getGeneration(...args),generations:(id:string)=>(store??=new OrbitalSessionStore()).generations(id),createSession:(input:Parameters<OrbitalSessionStore['createSession']>[0])=>(store??=new OrbitalSessionStore()).createSession(input),syncPi:(...args:Parameters<OrbitalSessionStore['syncPi']>)=>(store??=new OrbitalSessionStore()).syncPi(...args)};
+let store:KeposSessionStore|undefined;
+export const keposSessionStore={getMessages:(...args:Parameters<KeposSessionStore['getMessages']>)=>(store??=new KeposSessionStore()).getMessages(...args),getGeneration:(...args:Parameters<KeposSessionStore['getGeneration']>)=>(store??=new KeposSessionStore()).getGeneration(...args),generations:(id:string)=>(store??=new KeposSessionStore()).generations(id),createSession:(input:Parameters<KeposSessionStore['createSession']>[0])=>(store??=new KeposSessionStore()).createSession(input),syncPi:(...args:Parameters<KeposSessionStore['syncPi']>)=>(store??=new KeposSessionStore()).syncPi(...args)};

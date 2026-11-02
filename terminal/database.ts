@@ -1,19 +1,19 @@
 import { DatabaseSync, type StatementSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { databasePath } from './paths.ts';
+import { databaseFile } from './paths.ts';
 // A connection per extension runtime. SQLite serializes writers across Pi processes;
 // there is no claim that the extension replaces Pi's own SessionManager authority.
-export class OrbitalDatabase {
+export class KeposDatabase {
  readonly sql:DatabaseSync;
  private statements=new Map<string,StatementSync>();
  private transactionDepth=0;
- constructor(readonly path=databasePath){
+ constructor(readonly path=databaseFile()){
   mkdirSync(dirname(path),{recursive:true});this.sql=new DatabaseSync(path);
   try {
   this.sql.exec('PRAGMA busy_timeout=3000; PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;');
   const version=Number((this.sql.prepare('PRAGMA user_version').get() as any).user_version);
-  if(version>1)throw Error('Orbital database is newer than this extension; refusing downgrade');
+  if(version>1)throw Error('Kepos database is newer than this extension; refusing downgrade');
   this.transaction(()=>{this.sql.exec(`
    CREATE TABLE IF NOT EXISTS kv(key TEXT PRIMARY KEY,value TEXT NOT NULL);
    CREATE TABLE IF NOT EXISTS sessions(id TEXT PRIMARY KEY,pi_path TEXT UNIQUE,pi_id TEXT,cwd TEXT NOT NULL,title TEXT NOT NULL,status TEXT NOT NULL DEFAULT 'active',generation INTEGER NOT NULL DEFAULT 0,checkpoint TEXT,meta TEXT NOT NULL);
@@ -48,5 +48,5 @@ export class OrbitalDatabase {
  set(key:string,value:unknown){this.prepare('INSERT INTO kv VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value').run(key,JSON.stringify(value));}
  close(){this.statements.clear();this.sql.close();}
 }
-const key=Symbol.for('orbital.sqlite.connection:'+databasePath);
-export const db=():OrbitalDatabase=>{const shared=globalThis as any;return shared[key]??=(new OrbitalDatabase());};
+const key=Symbol.for('kepos.sqlite.connection:'+databaseFile());
+export const db=():KeposDatabase=>{const shared=globalThis as any;return shared[key]??=(new KeposDatabase());};
