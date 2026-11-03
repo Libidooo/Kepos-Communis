@@ -278,3 +278,21 @@ test('tool output folds to one summary line but failures always stay expanded', 
   assert.ok(failedSummary.length > summary.length, 'failed tool output is not collapsed');
   assert.ok(failedSummary.some(line => line.includes('line-39')), 'failed output stays readable to the end');
 });
+
+// 审批模式必须常驻可见：此前只有在 F2 菜单里才能看到当前模式，
+// 操作时根本不知道自己处在哪种授权下。三态用不同符号与颜色区分。
+test('the approval mode is always visible in the status bar', () => {
+  const ctx = { cwd: home, isIdle: () => true, model: undefined, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => [], getEntries: () => [] } };
+  const desk = new Desk({ terminal: { rows: 35 }, requestRender() {} }, { fg: (_c, s) => s, bg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, [], { tasks: [], children: new Map() }, () => {}, () => {});
+  const statusOf = () => desk.render(120).at(-2);
+  desk.approvalPolicy = () => 'human';
+  assert.ok(statusOf().includes('⛨ 严格'), 'strict mode is labelled');
+  desk.approvalPolicy = () => 'proxy';
+  assert.ok(statusOf().includes('◐ 代理'), 'proxy mode is labelled');
+  desk.approvalPolicy = () => 'readonly';
+  assert.ok(statusOf().includes('○ 只读'), 'readonly mode is labelled');
+  // 默认（未注入回调）按严格处理，绝不默认放宽。
+  desk.approvalPolicy = undefined;
+  assert.ok(statusOf().includes('⛨ 严格'), 'missing callback falls back to strict');
+  desk.dispose();
+});

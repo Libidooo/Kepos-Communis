@@ -71,7 +71,7 @@ export type KeyHint = { key: string; label: string; help: string; when: Scope | 
 export const KEY_HINTS: readonly KeyHint[] = [
  { key: 'f10', label: 'F10 议会', help: 'F10：打开 / 关闭 48 席议会', when: 'always', footer: true },
  { key: 'f1', label: 'F1 帮助', help: 'F1：打开 / 关闭本帮助', when: 'always', footer: true },
- { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式', when: 'always', footer: true },
+ { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式（状态栏常驻显示：⛨ 严格 / ◐ 代理 / ○ 只读）', when: 'always', footer: true },
  { key: 'f3', label: 'F3 任务', help: 'F3：当前会话的任务与书案详情', when: 'always', footer: true },
  { key: 'f8', label: 'F8 全局', help: 'F8：跨项目任务监控；议会内切换筛选', when: 'always', footer: true },
  { key: 'f11', label: 'F11 专注', help: 'F11：专注阅读（中栏最大化）', when: 'always', footer: true },
@@ -129,6 +129,8 @@ export class Desk {
  taskScope:'session'|'all'='session';
  missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;councilDesk=false;councilDeskTaskId:string|null=null;deskOffset=0;deskX=0;deskWidth=0;deskOutputTotal=0;deskOutputVisible=0;deskWrapKey='';deskWrapCache:string[]|null=null;graph?:{snapshot:()=>GraphViewSnapshot};
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[]};
+ /** 当前审批模式，用于状态栏常驻显示；由 index.ts 注入。 */
+ approvalPolicy?:()=>'human'|'proxy'|'readonly';
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
  private evidenceCache:{id:string;ended:any;output:any;value:any}|undefined;
@@ -543,7 +545,16 @@ export class Desk {
  // 模式芯片（vim 风）：一眼看清当前面板/视图，CineTTY 同款状态栏语汇。
  const modeText='-- '+(this.missionView?'计划':this.help?'帮助':this.taskView?'书案':preview?'预览':this.maximize?'专注':this.readStart!==null?'阅读':this.focus==='input'?'输入':this.focus==='projects'?'项目':'代表')+' --';
  const modeChip=this.theme.style?this.theme.style(modeText,{fg:'accent',bold:true}):this.theme.fg('accent',modeText);
- const row1=modeChip+' '+this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,Math.max(1,width-visibleWidth(modeText)-1)));
+ // 审批模式常驻显示：此前只在 F2 菜单里能看到，操作时根本不知道自己处在哪种授权下。
+ // 三态用不同的符号与颜色，缩小终端里也能一眼分辨：
+ //   ⛨ 严格（默认，需要你逐次确认）  ◐ 代理（模型自主但留痕）  ○ 只读（模型不能改动）
+ const policy=this.approvalPolicy?.()||'human';
+ const policyChip=policy==='readonly'
+  ?this.theme.fg('warning','○ 只读')
+  :policy==='proxy'
+   ?this.theme.fg('accent','◐ 代理')
+   :this.theme.fg('success','⛨ 严格');
+ const row1=modeChip+' '+policyChip+' '+this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,Math.max(1,width-visibleWidth(modeText)-visibleWidth('○ 只读')-4)));
  const prefixWidth=this._noticeUrgent&&noticePart?2:0;
  const row2=(noticePart?(this._noticeUrgent?this.theme.fg('warning','⚠ '+noticePart):this.theme.fg('muted',noticePart)):'')+this.theme.fg('dim',fit(footerText,Math.max(1,width-visibleWidth(noticePart)-prefixWidth)));
  return [...header,...body,...input,row1,row2];
