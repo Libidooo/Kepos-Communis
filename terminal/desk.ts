@@ -725,7 +725,7 @@ export class Desk {
    const handle=this.pool.liveHandle?.(hit.taskId,parent);
    if(!handle){this.notice='无法转发：拿不到该任务的活句柄（可能已结束）';this.refresh();return;}
    void this.pool.sendMessage(handle,parent,text).then((outcome:any)=>{
-    if(outcome.delivered){this.editor.setText('');this.notice=`已转发给 ${outcome.agent||hit.taskId}${outcome.queued?'（排队中）':''}`;}
+    if(outcome.delivered){this.editor.setText('');this.notice=`已转发给 ${outcome.agent||hit.taskId}${outcome.urgent?(outcome.queued?'（排队中，轮到即加急）':'（已加急启动）'):outcome.queued?'（排队中）':''}`;}
     else{this.notice='转发失败：'+(outcome.error||'未知原因')+'（原稿保留）';}
     this.refresh();
    });

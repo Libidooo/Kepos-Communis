@@ -72,6 +72,59 @@ test('queued AbortSignal and deadline finish without spawning another executor',
  assert.equal(f.pool.result(expired,'b').state,'TIMED_OUT');assert.equal(f.executors.length,1);
 });
 
+test('a human message awakens a queued task into the reserved slot, and only one at a time',async t=>{
+ const f=fixture(t); // concurrency 1
+ f.launch('active','a');await turn();
+ const waitingA=f.launch('waiting-a','a');
+ const waitingB=f.launch('waiting-b','a');
+ assert.equal(f.pool.status(waitingA,'a').state,'QUEUED');
+
+ // 常规槽已满（active 占着），人给 waitingA 发一句 → 它越过 FIFO 立刻启动，用掉预留槽。
+ const forwarded=await f.pool.sendMessage(waitingA,'a','先看 auth 目录');
+ assert.equal(forwarded.delivered,true);
+ assert.equal(forwarded.urgent,true);
+ await turn();
+ assert.equal(f.pool.status(waitingA,'a').state,'STARTING','the human note wakes the task');
+ assert.equal(f.pool.status(waitingB,'a').state,'QUEUED','a plain queued task cannot take the human slot');
+ assert.equal(f.executors.length,2,'exactly one extra executor, not an unbounded burst');
+
+ // 人类的话并入任务说明，代表拿到的是完整上下文。
+ assert.ok(f.executors[1].messages.some(m=>String(m).includes('先看 auth 目录')),'the note reaches the worker instruction');
+ assert.ok(f.pool.tasks.find(task=>task.id===waitingA.workerId).title.includes('优先处理'));
+
+ // 预留槽只有一格：再给 waitingB 加急也不能开出第三个进程。
+ await f.pool.sendMessage(waitingB,'a','也看这里');
+ await turn();
+ assert.equal(f.pool.status(waitingB,'a').state,'QUEUED','the single human slot is already taken');
+ assert.ok(f.executors.length<=2);
+ f.pool.cancel(waitingA.workerId);f.pool.cancel(waitingB.workerId);f.pool.cancel(f.pool.tasks[0].id);await turn();
+});
+
+test('the human slot closes again once nobody is waiting on a person',async t=>{
+ const f=fixture(t);
+ const first=f.launch('first','a');await turn();
+ const second=f.launch('second','a');await turn();
+ assert.equal(f.pool.status(second,'a').state,'QUEUED');
+ f.executors[0].succeed('one');await turn();
+ assert.equal(f.pool.status(second,'a').state,'STARTING','normal dispatch unaffected');
+ // 没有加急标记时并发上限仍是 concurrency：第三个任务必须排队。
+ const third=f.launch('third','a');await turn();
+ assert.equal(f.pool.status(third,'a').state,'QUEUED');
+ assert.ok(f.executors.length<=2);
+ f.pool.cancel(second.workerId);f.pool.cancel(third.workerId);void first;await turn();
+});
+
+test('sending to an already running worker still forwards without touching the queue',async t=>{
+ const f=fixture(t);
+ const running=f.launch('running','a');await turn();
+ assert.equal(f.pool.status(running,'a').state,'STARTING');
+ const outcome=await f.pool.sendMessage(running,'a','补一句');
+ assert.equal(outcome.delivered,true);
+ assert.equal(outcome.urgent,undefined,'a running task is not a queued wake-up');
+ assert.equal(f.executors.length,1);
+ f.pool.cancel(running.workerId);await turn();
+});
+
 test('queued configuration is a frozen snapshot and receipt keeps its revision',async t=>{
  const f=fixture(t);f.launch('active');const config={...crew};const h=f.launch('waiting','b',{crew:config});
  config.role='changed';config.model='changed';const queued=f.pool.tasks.at(-1);

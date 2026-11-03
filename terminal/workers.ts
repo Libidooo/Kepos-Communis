@@ -51,7 +51,7 @@ export class WorkerPool {
  private executorsByTask = new Map<string, WorkerExecutor>();
  private completions = new Map<string, Promise<Task>>();
  private closed = false;
- private queued = new Map<string, { task: Task; handle: WorkerHandle; profile: WorkerProfile; instruction: string; signal?: AbortSignal; timer: ReturnType<typeof setTimeout>; abort: () => void }>();
+ private queued = new Map<string, { task: Task; handle: WorkerHandle; profile: WorkerProfile; instruction: string; signal?: AbortSignal; timer: ReturnType<typeof setTimeout>; abort: () => void; urgent?: boolean }>();
  private resolvers = new Map<string, (task: Task) => void>();
  // Raw capabilities of tasks this instance launched; the database only stores hashes.
  // Lets an in-process scheduler restart (MissionScheduler recreated, pool shared) recover handles.
@@ -243,6 +243,17 @@ export class WorkerPool {
   const task = this.tasks.find(item => item.id === handle.workerId && item.parentSessionId === parent);
   if (!task || !this.authorize(handle, parent)) return { state: 'UNKNOWN_HANDLE', delivered: false };
   if (terminalStates.has(task.status)) return { state: task.state, delivered: false, error: '任务已结束，无法追加消息' };
+  // 还没轮到的任务：人这一句直接并进任务说明并抢占加急槽，不然队列位置会把这句吞掉。
+  const queued = this.queued.get(handle.workerId);
+  if (queued) {
+   const appended = `${queued.instruction}\n\n## 人类补充（优先处理）\n${text}`;
+   queued.instruction = appended;
+   task.title = appended;
+   this.persist(task, 'human_note');
+   this.emit({ type: 'task_message_forwarded', task: { ...task }, urgent: true });
+   const woken = this.wakeByHuman(handle.workerId, text);
+   return { state: task.state, delivered: true, queued: !woken, urgent: true, agent: task.agent };
+  }
   const executor = this.executorsByTask.get(handle.workerId);
   if (!executor) return { state: task.state, delivered: false, error: '执行器不可达，请稍后重试或终止任务' };
   this.emit({ type: 'task_message_forwarded', task: { ...task } });
@@ -299,12 +310,30 @@ export class WorkerPool {
    ]);
   } finally {clearTimeout(timer);}
  }
+ /**
+  * 人员加急槽：常规槽位满员时，人类发给**排队中**任务的消息仍能把它唤醒并立即启动，
+  * 临时占用 concurrency+1 个槽。新分派的任务永远抢不到这个槽——它只属于人。
+  *
+  * 为什么需要：48 个代表同时跑时，人想给某个还没轮到的任务补一句"先看 X"，
+  * 常规队列只能等。人的一句话比排队的自动分派更该先被听见。
+  */
+ private humanAwake = new Set<string>();
+ /** 人给排队任务发消息：标记加急并立刻尝试调度。返回任务是否已经离开队列。 */
+ private wakeByHuman(id: string, _text: string): boolean {
+  const entry = this.queued.get(id);
+  if (!entry) return false;
+  entry.urgent = true;
+  this.humanAwake.add(id);
+  this.pump();
+  return !this.queued.has(id);
+ }
  private removeQueued(id: string) {
   const entry = this.queued.get(id);
   if (!entry) return;
   clearTimeout(entry.timer);
   entry.signal?.removeEventListener('abort', entry.abort);
   this.queued.delete(id);
+  this.humanAwake.delete(id);
   return entry;
  }
  private schedulePump() {
@@ -324,14 +353,15 @@ export class WorkerPool {
   return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
    representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants };
  }
- private executor(profile: WorkerProfile): WorkerExecutor | undefined {
+ private executor(profile: WorkerProfile, extraSlots = 0): WorkerExecutor | undefined {
   const key = JSON.stringify(profile);
   for (const executor of this.executors) {
    // A terminating process occupies a slot until its close event is confirmed.
    if (executor.dead) { this.executors.delete(executor); continue; }
    if (!executor.busy && !executor.stopping && executor.key === key) { executor.reserve(); return executor; }
   }
-  if (this.executors.size >= this.concurrency) {
+  // extraSlots 只给人加急槽：常规派发永远受 concurrency 限制。
+  if (this.executors.size >= this.concurrency + extraSlots) {
    const idle = [...this.executors].find(executor => !executor.busy && !executor.stopping);
    if (idle) idle.kill();
    return undefined;
@@ -590,14 +620,20 @@ export class WorkerPool {
   if (this.closed || this.cancelling || this.pumping) return;
   this.pumping = true;
   try {
-   while (this.queued.size && this.children.size < this.concurrency) {
+   while (this.queued.size) {
     const candidates = [...this.queued.values()];
+    // 加急槽：队列里有人类发过消息的任务时，允许比常规并发多一个。
+    // 只在真的有人加急时才放宽，空闲时不预占——否则日常并发会悄悄涨一格。
+    const urgent = candidates.some(entry => this.humanAwake.has(entry.task.id));
+    if (this.children.size >= this.concurrency + (urgent ? 1 : 0)) break;
     // FIFO within a parent; strict round robin between parents so one project cannot starve another.
+    // 人加急的任务排到最前：它带着人的一句话，不该继续等到整轮轮完。
     this.parentRotation = this.parentRotation.filter(pid => candidates.some(item => item.task.parentSessionId === pid));
+    const human = candidates.find(entry => this.humanAwake.has(entry.task.id));
     const parent = this.parentRotation[0];
-    const entry = (parent && candidates.find(item => item.task.parentSessionId === parent)) || candidates[0];
+    const entry = human || (parent && candidates.find(item => item.task.parentSessionId === parent)) || candidates[0];
     let executor: WorkerExecutor | undefined;
-    try { executor = this.executor(entry.profile); }
+    try { executor = this.executor(entry.profile, entry.urgent ? 1 : 0); }
     catch (error) {
      this.removeQueued(entry.task.id);
      this.settle(entry.task, 'FAILED', String(error));
