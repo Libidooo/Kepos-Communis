@@ -21,7 +21,10 @@ export function killTree(child: ChildProcess) {
  }
 }
 
-export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[]; mcpServers?: string[] };
+export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[]; mcpServers?: string[];
+ /** 该进程是否为代表：决定是否加载代表侧工具（派生僚属、裁决报告）。 */ representative?: boolean;
+ /** 代表/僚属的归档根目录，供代表侧工具写入派生请求与裁决。 */ archiveRoot?: string;
+ /** 代表名，写入裁决文档。 */ agentName?: string };
 export class WarmExecutor {
  readonly child: ChildProcess;
  readonly key: string;
@@ -53,7 +56,11 @@ export class WarmExecutor {
   // never a cwd-relative path or a stale dist fallback from a different installation.
   const sandbox = join(runtimeDir, `worker-sandbox${extname(runtimeFile) === '.ts' ? '.ts' : '.js'}`);
   if (!existsSync(sandbox)) throw Error('Worker sandbox extension is missing from the Kepos runtime');
-  const args = [join(getPackageDir(), 'dist', 'cli.js'), '--mode', 'rpc', '--no-session', '--no-extensions', '-e', sandbox, '--no-skills', ...(mcpServers.length ? [] : ['--no-mcp']), '--no-context-files', '--no-prompt-templates', '--no-approve', '--offline',
+  // 代表额外加载派生与裁决工具。僚属不加载——只有代表能派生僚属，
+  // 把派生能力下放给僚属会让层级无限增殖，也让责任链失效。
+  const repTools = join(runtimeDir, `representative-tools${extname(runtimeFile) === '.ts' ? '.ts' : '.js'}`);
+  const extraExtensions = profile.representative && existsSync(repTools) ? ['-e', repTools] : [];
+  const args = [join(getPackageDir(), 'dist', 'cli.js'), '--mode', 'rpc', '--no-session', '--no-extensions', '-e', sandbox, ...extraExtensions, '--no-skills', ...(mcpServers.length ? [] : ['--no-mcp']), '--no-context-files', '--no-prompt-templates', '--no-approve', '--offline',
    ...(toolAllow.length ? ['--tools', toolAllow.join(',')] : ['--no-tools']),
    ...profile.skills.flatMap(p => ['--skill', p]), '--thinking', 'low', '--model', profile.model,
    ...(profile.provider ? ['--provider', profile.provider] : []),
@@ -79,6 +86,11 @@ Put the detailed working above that summary. The transcript is still retained as
   // 僚属就能读到同项目其他僚属的结论——正是禁止的互读。
   const archiveDir = join(profile.cwd, ARCHIVE_DIR);
   Object.assign(env, sandboxEnv({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot, archiveDir] }));
+  // 代表侧工具需要知道归档根与代表名：派生请求与裁决都写在这个目录下。
+  if (profile.representative) {
+    env.KEPOS_ARCHIVE_ROOT = archiveDir;
+    env.KEPOS_AGENT_NAME = profile.agentName || '';
+  }
   this.child = spawnWorker(process.execPath, [join(runtimeDir, 'worker-host.cjs'), ...args], {
    cwd: profile.cwd, env, windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
