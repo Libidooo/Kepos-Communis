@@ -10,6 +10,7 @@
 //   - 整理自身的 token 计入预算；失败不影响任务结算。
 import type { KeposDatabase } from './database.ts';
 import { parseConsolidationOps, RepresentativeMemory, consolidationPrompt, type MemoryRow, type ConsolidationOp } from './memory.ts';
+import { candidatesFromProcedures } from './skill-proposal.ts';
 
 export type ConsolidationCandidate = {
   workerId: string;
@@ -121,4 +122,15 @@ export class ConsolidationPipeline {
   search(agentId: string, query: string): MemoryRow[] { return this.memory.search(agentId, query); }
   invalidate(id: string): boolean { return this.memory.invalidate(id); }
   asOf(agentId: string, at: number): MemoryRow[] { return this.memory.asOf(agentId, at); }
+  /** 该代表的过程记忆——技能闭环的输入。 */
+  procedures(agentId: string): MemoryRow[] { return this.memory.active(agentId, 200).filter(row => row.kind === 'procedure'); }
+  /** 同一 slug 出现在多少个不同任务里。计数口径只在 RepresentativeMemory 一处。 */
+  procedureCount(agentId: string, slug: string): number { return this.memory.procedureCount(agentId, slug); }
+  /** 该代表的过程记忆里，已经够格提技能的 slug。 */
+  skillCandidates(agentId: string): Array<{ slug: string; steps: string[] }> {
+    return candidatesFromProcedures(
+      this.procedures(agentId).map(row => ({ content: row.content, workerId: row.sourceWorkerId })),
+      slug => this.procedureCount(agentId, slug),
+    );
+  }
 }

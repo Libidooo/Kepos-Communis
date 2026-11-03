@@ -31,6 +31,7 @@ import { renderMemoryIndex } from './memory.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
+import { adoptProposal, discardProposal, listProposals, writeProposal, SKILL_TRIGGER_WORKERS } from './skill-proposal.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -95,6 +96,25 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   });
   return entries;
  },message=>{if(desk){desk.notice='记忆整理：'+message;scheduleRepaint();}});
+ /**
+  * 记忆 → 技能：整理后检查该代表是否有够格的过程记忆（同一 slug 来自 ≥3 个不同任务）。
+  * 只写提议，不装进 skills/——一份 SKILL.md 会改变后续每次分派的提示词，采纳必须是人。
+  */
+ const skillAgentDir=()=>process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
+ const proposeSkills=(agentId:string)=>{
+  try{
+   const member=config.agents.find(agent=>agent.id===agentId);
+   if(!member)return;
+   for(const candidate of memoryPipeline.skillCandidates(agentId)){
+    // 已有同名提议就跳过：重复写只会反复覆盖同一份文件，提示一次就够。
+    const existing=listProposals(skillAgentDir()).find(item=>item.slug===candidate.slug);
+    if(existing)continue;
+    writeProposal(skillAgentDir(),{slug:candidate.slug,description:candidate.steps[0]?.slice(0,120)||candidate.slug,steps:candidate.steps,agent:member.name,workers:SKILL_TRIGGER_WORKERS});
+    const total=listProposals(skillAgentDir()).length;
+    if(desk){desk.notice=`${member.name} 的过程已重复到可固化为技能：${candidate.slug} · 共 ${total} 条提议技能待审阅（F2 → 审阅提议技能）`;scheduleRepaint();}
+   }
+  }catch{/* 提议失败不影响记忆本身 */}
+ };
  // Watchdog 判定器：与记忆整理共用一次最小生成，不额外开进程。
  // 阶段① 只落库 + 一行提示；progress 静默，绝不终止任务。
  const watchdogStore=new WatchdogStore(db());
@@ -151,7 +171,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    // 委派秒败时用户毫无感知（报错无阻拦）。错误原因带进 notice，不用翻任务详情。
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
    // 任务终态后入队做记忆整理：只入队不执行，避免在结算路径上做模型调用。
-   if(event.type==='task_finished'){const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().catch(()=>{});}}
+   if(event.type==='task_finished'){const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}}
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
    // 到复核点：先让模型判断"还在推进吗"。这是 observe 阶段，判定结果只提示，不终止。
    if(event.type==='task_review_due')void judgeReview(event.task);
@@ -776,7 +796,26 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
+ if(action.kind==='skills-review'){
+  const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
+  const proposals=listProposals(agentDir);
+  if(!proposals.length){ui.notify('暂无提议技能。同一代表的同一套做法出现在 3 个不同任务里才会提议。','info');return;}
+  const nameOf=(item:any)=>`${item.description.slice(0,70)} · ${item.slug}`;
+  const pick=await ui.select('提议技能 · 采纳后才会进入代表可引用的 Skill 目录',proposals.map(nameOf));
+  const proposal=proposals.find(item=>nameOf(item)===pick);
+  if(!proposal)return;
+  const steps=proposal.steps.length?proposal.steps.map((step,index)=>`${index+1}. ${step}`).join('\n'):'（未记录步骤）';
+  const decision=await ui.select(`${proposal.slug}\n\n${steps}\n\n边界：仅在同类任务中套用；执行前核对路径与命令。`,['采纳并安装','丢弃这份提议','返回']);
+  if(decision==='采纳并安装'){
+   // 采纳的动作本身是权威：装进 skills/ 之后，代表通过 skills[] 显式引用才会用到。
+   try{adoptProposal(agentDir,proposal.slug);ui.notify(`已安装技能 ${proposal.slug} · 在代表配置的 skills 里引用后生效`);}catch(error){ui.notify('安装失败：'+clean(error),'warning');}
+   return;
+  }
+  if(decision==='丢弃这份提议'){discardProposal(agentDir,proposal.slug);ui.notify('已丢弃提议 '+proposal.slug);}
+  return;
+ }
  if(action.kind==='project-remove'){
   if(!config.projects.length){ui.notify('还没有收录任何项目');return;}
   const pick=await ui.select('移除哪个项目？（只移出列表，不删除文件和会话）',config.projects);if(!pick)return;

@@ -32,8 +32,8 @@ export const MAX_MEMORIES_PER_TASK = 8;
 export const MAX_INJECTED_MEMORIES = 50;
 export const MAX_INJECTED_LINES = 200;
 
-/** 整理管道的输出项。 */
-export type ConsolidationOp = { op: 'ADD' | 'UPDATE' | 'NOOP'; content: string; replacesId?: string };
+/** 整理管道的输出项。kind=procedure 的过程需要带 slug，才能跨任务归并成技能。 */
+export type ConsolidationOp = { op: 'ADD' | 'UPDATE' | 'NOOP'; content: string; replacesId?: string; kind?: MemoryKind };
 
 export class RepresentativeMemory {
   constructor(private readonly database: KeposDatabase) {}
@@ -108,13 +108,15 @@ export class RepresentativeMemory {
     for (const op of ops.slice(0, MAX_MEMORIES_PER_TASK)) {
       const content = String(op.content ?? '').trim();
       if (!content || op.op === 'NOOP') { skipped++; continue; }
-      if (op.op === 'ADD') { this.add({ agentId, content, sourceWorkerId, now }); added++; continue; }
+      // 过程记忆必须带 slug：没有 slug 的步骤无法跨任务归并，也就永远提不出技能。
+      const kind: MemoryKind = op.kind === 'procedure' && /slug\s*[=:]\s*[a-z0-9-]+/i.test(content) ? 'procedure' : 'semantic';
+      if (op.op === 'ADD') { this.add({ agentId, content, kind, sourceWorkerId, now }); added++; continue; }
       if (op.op === 'UPDATE') {
         const owned = op.replacesId
           ? this.database.prepare('SELECT id FROM representative_memories WHERE id=? AND agent_id=? AND valid_to IS NULL').get(op.replacesId, agentId)
           : undefined;
-        if (owned) { this.update(op.replacesId!, { agentId, content, sourceWorkerId, now }); updated++; }
-        else { this.add({ agentId, content, sourceWorkerId, now }); added++; }
+        if (owned) { this.update(op.replacesId!, { agentId, content, kind, sourceWorkerId, now }); updated++; }
+        else { this.add({ agentId, content, kind, sourceWorkerId, now }); added++; }
         continue;
       }
       skipped++;
@@ -187,7 +189,8 @@ export function parseConsolidationOps(raw: string): ConsolidationOp[] {
     if (!['ADD', 'UPDATE', 'NOOP'].includes(op)) continue;
     const content = String(item.content ?? '').trim();
     if (op !== 'NOOP' && !content) continue;
-    ops.push({ op: op as ConsolidationOp['op'], content, ...(item.replacesId ? { replacesId: String(item.replacesId) } : {}) });
+    const kind = String(item.kind ?? '').toLowerCase() === 'procedure' ? 'procedure' as const : undefined;
+    ops.push({ op: op as ConsolidationOp['op'], content, ...(kind ? { kind } : {}), ...(item.replacesId ? { replacesId: String(item.replacesId) } : {}) });
   }
   return ops.slice(0, MAX_MEMORIES_PER_TASK);
 }
@@ -229,6 +232,7 @@ export function consolidationPrompt(input: { goal: string; checkpoint?: string; 
     `- 最多 ${MAX_MEMORIES_PER_TASK} 条；没有值得记住的就返回 [{"op":"NOOP"}]。`,
     '- 已有记忆仍然成立时用 NOOP，不要重复添加。',
     '- 新发现与旧记忆冲突时用 UPDATE 并给出 replacesId。',
+    '- 如果产出显示了**可复用的多步骤流程**，用 {"op":"ADD","kind":"procedure","content":"slug=<小写连字符名> 步骤：1) … 2) …"} 记录；slug 描述流程本身（如 fetch-build-log），同一流程必须复用同一 slug。',
     input.failed ? '- 本次任务失败：优先记录"哪个环节出错、下次应如何委派"，不要记录无根据的结论。' : '',
   ].filter(Boolean).join('\n');
 }
