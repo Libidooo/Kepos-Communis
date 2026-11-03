@@ -274,7 +274,34 @@ export function clampAttachmentText(text: string, max = MAX_ATTACHMENT_TEXT): { 
   if (text.length <= max) return { text, truncated: false };
   const head = Math.floor(max * 0.7);
   const tail = max - head;
-  return { text: `${text.slice(0, head)}\n\n… [附件过长，中间已省略；完整内容请指定页码/章节] …\n\n${text.slice(-tail)}`, truncated: true };
+  return { text: `${text.slice(0, head)}\n\n… [附件过长，中间已省略；用 kepos_attach 的 cursor 读取后续段落] …\n\n${text.slice(-tail)}`, truncated: true };
+}
+
+/**
+ * 附件分页：超长附件按段读取，替代"只有头尾"的旧行为。
+ * 返回该段的正文与下一段的游标；游标为 null 表示读到末尾。
+ * 游标按字符计，切点会避开代理对，防止把 emoji / 生僻字劈成两半。
+ */
+export function paginateAttachmentText(
+  text: string,
+  cursor = 0,
+  pageSize = MAX_ATTACHMENT_TEXT,
+): { text: string; cursor: number; nextCursor: number | null; total: number; page: number; pages: number } {
+  const total = text.length;
+  if (!Number.isSafeInteger(cursor) || cursor < 0 || cursor > total) throw Error('无效的附件游标');
+  if (!Number.isSafeInteger(pageSize) || pageSize < 256) throw Error('无效的分页大小');
+  // 游标落在代理对中间时前移一位，保证不劈开字符。
+  if (cursor > 0 && /[\uDC00-\uDFFF]/.test(text[cursor]) && /[\uD800-\uDBFF]/.test(text[cursor - 1])) cursor -= 1;
+  let end = Math.min(total, cursor + pageSize);
+  if (end < total && /[\uD800-\uDBFF]/.test(text[end - 1])) end -= 1;
+  return {
+    text: text.slice(cursor, end),
+    cursor,
+    nextCursor: end < total ? end : null,
+    total,
+    page: Math.floor(cursor / pageSize) + 1,
+    pages: Math.max(1, Math.ceil(total / pageSize)),
+  };
 }
 
 /**

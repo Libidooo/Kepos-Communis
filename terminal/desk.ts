@@ -153,9 +153,15 @@ export class Desk {
  // 附件条：输入框上方一行，显示已附加项与移除提示。
  attachmentBar(width:number):string[]{
   if(!this.attachments.length)return[];
-  const names=this.attachments.map((a:any,index:number)=>`${index+1}.${a.name}`).join('  ');
-  const head='📎 '+names;
-  const tail='   /attach remove 清除';
+  // 单项可移除：`/attach remove 2` 只移除第 2 项，`/attach remove` 全部清除。
+  // 同时标出体积与被截断标记，避免用户以为读到的是全文。
+  const size=(bytes:number)=>bytes>=1048576?`${(bytes/1048576).toFixed(1)}M`:`${Math.max(1,Math.round(bytes/1024))}K`;
+  const items=this.attachments.map((a:any,index:number)=>{
+   const mark=a.truncated?'⁂':a.kind==='image'?'▣':'▤';
+   return `${index+1}.${mark}${a.name}(${size(a.bytes)})`;
+  });
+  const head='📎 '+items.join(' ');
+  const tail=this.attachments.length===1?'   /attach remove':'   /attach remove <序号> · remove 全清';
   const line=visibleWidth(head+tail)<=width?head+tail:head;
   return [this.theme.fg('toolTitle',truncateToWidth(line,width))];
  }
@@ -171,7 +177,17 @@ export class Desk {
  // /attach 的处理：无参弹文件选择器，有参直接加载，ask 交给外层打开对话框。
  async attachCommand(argument:string,ask:(title:string,placeholder:string)=>Promise<string|undefined>){
   const arg=argument.trim();
-  if(arg==='remove'||arg==='clear'||arg==='清除'){this.clearAttachments();this.notice='已清除全部附件';this.refresh();return;}
+  // `/attach remove` 全清；`/attach remove 2` 只移除第 2 项（附件条上标了序号）。
+  const removeMatch=arg.match(/^(?:remove|clear|清除)\s*(\d+)?$/i);
+  if(removeMatch){
+   const at=removeMatch[1]?Number(removeMatch[1]):0;
+   if(!at){this.clearAttachments();this.notice='已清除全部附件';this.refresh();return;}
+   if(at<1||at>this.attachments.length){this.notice=`没有第 ${at} 项附件（当前 ${this.attachments.length} 项）`;this.refresh();return;}
+   const removed=this.attachments.splice(at-1,1)[0];
+   this.saveAttachments();
+   this.notice=`已移除附件 ${removed?.name||at}（剩 ${this.attachments.length} 项）`;
+   this.refresh();return;
+  }
   const paths=arg?splitPaths(arg):[];
   if(!paths.length){
    const picked=await ask('附加文件 · 输入路径（docx/pdf/pptx/xlsx/epub/zip/图片/文本）',this.ctx.cwd);

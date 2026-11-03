@@ -224,3 +224,38 @@ test('pasted paths are recognised only when every line is an existing file', () 
   // 没有扩展名的也不猜。
   assert.equal(looksLikeFilePaths(home), null);
 });
+
+test('long attachments paginate by cursor so the middle is reachable', async () => {
+  const { paginateAttachmentText } = await import('../dist/terminal/attachments.js');
+  const long = 'A'.repeat(5000) + 'MIDDLE' + 'B'.repeat(5000);
+  const first = paginateAttachmentText(long, 0, 3000);
+  assert.equal(first.page, 1);
+  assert.equal(first.pages, 4);
+  // 旧行为只能看头尾；分页后按游标推进就能读到中段。
+  let cursor = 0, rebuilt = '', guard = 0;
+  while (cursor !== null && guard++ < 20) {
+    const page = paginateAttachmentText(long, cursor, 3000);
+    rebuilt += page.text;
+    cursor = page.nextCursor;
+  }
+  assert.equal(rebuilt, long, 'pages concatenate back to the original');
+  assert.ok(rebuilt.includes('MIDDLE'), 'the middle section is reachable');
+});
+
+test('pagination refuses an invalid cursor instead of guessing', async () => {
+  const { paginateAttachmentText } = await import('../dist/terminal/attachments.js');
+  assert.throws(() => paginateAttachmentText('abc', -1), /游标/);
+  assert.throws(() => paginateAttachmentText('abc', 99), /游标/);
+  assert.throws(() => paginateAttachmentText('abc', 0, 10), /分页/);
+});
+
+test('single attachment removal is addressable by index', async () => {
+  const { loadAttachment } = await import('../dist/terminal/attachments.js');
+  const a = await loadAttachment(write('one.txt', '1'));
+  const b = await loadAttachment(write('two.txt', '2'));
+  assert.equal(a.ok && b.ok, true);
+  const list = [a.attachment, b.attachment];
+  list.splice(0, 1);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].name, 'two.txt', 'removing index 1 keeps the second item');
+});

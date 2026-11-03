@@ -25,7 +25,7 @@ import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, spentTokens, type WorkerHandle } from './workers.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
-import { loadAttachment, isAttached } from './attachments.ts';
+import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
 export { fit, historyLines };
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
 const DEFAULT_COUNCIL_ROLE_COUNT = 48;
@@ -290,17 +290,21 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(desk){desk.notice=`表决 · ${params.question.slice(0,80)}：赞成${tally.yes} 反对${tally.no} 弃权${tally.abstain}${params.main?` · 主Agent（分派方）：${VOTE_LABELS[params.main.choice]}`:''}`;scheduleRepaint();}
   return{content:[{type:'text',text:boundedText(lines.join('\n'),1600)}],details:record};
  }});
- pi.registerTool({name:'kepos_attach',label:'读取附件',description:'读取本地文件并把内容作为证据返回：docx / pptx / xlsx / epub / zip 自动提取文本，pdf 需要可选解析器，图片返回为图像附件，纯文本直接读取。人类说"读一下某个文件"时用它，不要凭空猜测文件内容。凭据文件与 Kepos 数据目录会被拒绝。',parameters:Type.Object({paths:Type.Array(Type.String({maxLength:1000}),{minItems:1,maxItems:8,description:'要读取的绝对路径或相对项目根的路径'}),cwd:Type.Optional(Type.String({maxLength:1000,description:'解析相对路径的基准目录；默认当前项目'})),maxChars:Type.Optional(Type.Integer({minimum:500,maximum:120000,description:'每个文件返回的最大字符数，默认 20000'}))}),async execute(_id,params,_signal,_update,ctx){
+ pi.registerTool({name:'kepos_attach',label:'读取附件',description:'读取本地文件并把内容作为证据返回：docx / pptx / xlsx / epub / zip 自动提取文本，pdf 需要可选解析器，图片返回为图像附件，纯文本直接读取。人类说"读一下某个文件"时用它，不要凭空猜测文件内容。凭据文件与 Kepos 数据目录会被拒绝。',parameters:Type.Object({paths:Type.Array(Type.String({maxLength:1000}),{minItems:1,maxItems:8,description:'要读取的绝对路径或相对项目根的路径'}),cwd:Type.Optional(Type.String({maxLength:1000,description:'解析相对路径的基准目录；默认当前项目'})),cursor:Type.Optional(Type.Integer({minimum:0,description:'上一页返回的 nextCursor；用于读取超长附件的后续段落'})),maxChars:Type.Optional(Type.Integer({minimum:500,maximum:120000,description:'每个文件返回的最大字符数，默认 20000'}))}),async execute(_id,params,_signal,_update,ctx){
   const base=params.cwd||ctx?.cwd||process.cwd();
   const results:any[]=[];
   for(const path of params.paths){
    const loaded=await loadAttachment(path,{cwd:base,deny:[dataRoot]});
    if(isAttached(loaded)){
     const limit=params.maxChars??20000;
+    // 超长附件按游标分页：模型读一段后可用 nextCursor 继续，
+    // 而不是永远只能看到头尾、中段永远读不到。
+    const page=loaded.attachment.kind==='image'?null:paginateAttachmentText(loaded.attachment.text||'',params.cursor??0,limit);
     const body=loaded.attachment.kind==='image'
      ? `[图片 ${loaded.attachment.name} · ${loaded.attachment.mimeType} · 已作为图像附件]`
-     : boundedText(loaded.attachment.text||'',limit);
-    results.push({ok:true,name:loaded.attachment.name,path:loaded.attachment.path,kind:loaded.attachment.kind,bytes:loaded.attachment.bytes,note:loaded.attachment.note,truncated:!!loaded.attachment.truncated,content:body});
+     : page!.text;
+    results.push({ok:true,name:loaded.attachment.name,path:loaded.attachment.path,kind:loaded.attachment.kind,bytes:loaded.attachment.bytes,note:loaded.attachment.note,truncated:!!loaded.attachment.truncated,content:body,
+     ...(page?{cursor:page.cursor,nextCursor:page.nextCursor,total:page.total,page:page.page,pages:page.pages}:{})});
    }else results.push({ok:false,path,reason:loaded.reason});
   }
   const text=results.map(item=>item.ok?`<file name="${item.name}" kind="${item.kind}"${item.note?` note="${item.note}"`:''}>\n${item.content}\n</file>`:`<file-error path="${item.path}">${item.reason}</file-error>`).join('\n\n');
