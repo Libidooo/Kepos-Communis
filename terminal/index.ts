@@ -101,8 +101,16 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
    if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
+   // 僚属失败时把责任归到直属代表：代表对该僚属全权负责，必须由它去修或重派。
+   // 主环不显示僚属，所以这条通知是发现问题的唯一入口，必须写明"谁该负责"。
+   const parentTask=event.task.parentWorkerId?pool.tasks.find(t=>t.id===event.task.parentWorkerId):undefined;
+   const blame=parentTask?` · 由代表「${parentTask.agent}」负责修复或重派`:' · F3 看完整产出';
    // 失败 / 空转 / 预算停止走粘性 urgent：不会被下一条普通进度消息顶掉。
-   const text=event.type==='task_finished'?(failed?`✕ 子 Agent ${event.task.agent} ${event.task.status}：${clean(event.task.error||'无错误信息').slice(0,160)} · F3 看完整产出`:`子 Agent ${event.task.agent}：${event.task.status}`):event.type==='task_review_due'?`子 Agent ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`:event.type==='task_stalled'?`⚠ 子 Agent ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`:event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:'';
+   const text=event.type==='task_finished'
+    ?(failed?`✕ ${parentTask?'僚属':'僚属'} ${event.task.agent} ${event.task.status}：${clean(event.task.error||'无错误信息').slice(0,140)}${blame}`:`${parentTask?'僚属':'僚属'} ${event.task.agent}：${event.task.status}`)
+    :event.type==='task_review_due'?`僚属 ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`
+    :event.type==='task_stalled'?`⚠ ${parentTask?'僚属':'僚属'} ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`
+    :event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:'';
    if(text){if(urgent)desk.urgent(text);else desk.notice=text;}
   }
   scheduleRepaint();
@@ -178,7 +186,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 每轮都全量塞入 MCP 治理、表决、计划门禁的规则，会白烧约 600 tokens——
  // 大多数对话用不到这些。分层的判据是"这次会不会真用到"，宁可多注入不可少。
  const assembleSupervisionPrompt=()=>{
-  const crew=config.agents.length?config.agents.map(a=>`${a.id}=${a.name}${a.roleKey?`(${a.roleKey})`:''}`).join('；'):'暂无子 Agent';
+  const crew=config.agents.length?config.agents.map(a=>`${a.id}=${a.name}${a.roleKey?`(${a.roleKey})`:''}`).join('；'):'暂无僚属';
   const deputyName=config.agents.find(agent=>agent.id===config.deputyAgentId)?.name;
   const policy=currentPolicy();
   const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';
@@ -229,14 +237,14 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  async function resolveDelegateJob(task:any,ctx:any,skillPaths:Map<string,string>,names:Set<string>){
   if(!task.task?.trim())throw Error('任务内容不能为空；本批任务未启动');
   if(task.seconds!==undefined&&(!Number.isInteger(task.seconds)||task.seconds<1||task.seconds>MAX_TASK_SECONDS))throw Error(`任务期限必须为 1–${MAX_TASK_SECONDS} 秒；本批任务未启动`);
-  if(task.seconds!==undefined&&task.seconds>HUMAN_APPROVAL_THRESHOLD_SECONDS)throw Error(`超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的子 Agent 必须进入 kepos_plan 并等待人类批准；本批任务未启动`);
+  if(task.seconds!==undefined&&task.seconds>HUMAN_APPROVAL_THRESHOLD_SECONDS)throw Error(`超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的僚属 必须进入 kepos_plan 并等待人类批准；本批任务未启动`);
   if(task.budgetTokens!==undefined&&(!Number.isInteger(task.budgetTokens)||task.budgetTokens<1000))throw Error('budgetTokens 必须是不少于 1000 的整数；本批任务未启动');
   const existing=config.agents.find(agent=>agent.id===task.agent||agent.name===task.agent);
   const selectedRole=task.roleKey&&councilRole(task.roleKey);
   if(task.roleKey&&!selectedRole)throw Error('未知 Council 角色：'+task.roleKey);
   const locale=councilLocale(process.env.KEPOS_LOCALE);
   const suggestedName=task.name||(selectedRole?roleName(selectedRole,locale):undefined);
-  if(!existing&&!suggestedName)throw Error('未配置的子 Agent，且缺少自定义 name：'+task.agent);
+  if(!existing&&!suggestedName)throw Error('未配置的僚属，且缺少自定义 name：'+task.agent);
   const base:any=existing||{id:randomUUID(),name:suggestedName!,role:selectedRole?rolePrompt(selectedRole,locale):'独立只读调查',roleKey:selectedRole?.key,model:ctx.model?.id||'',provider:ctx.model?.provider||'',skills:[],tools:Array.from(READ_ONLY_TOOLS)};
   // MCP temporary grants: the human owns the configuration (mcp.json); the main agent
   // may grant configured servers per task. The grant dies with the worker process.
@@ -269,7 +277,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
 
  const handleSchema=Type.Object({version:Type.Literal(1),workerId:Type.String(),parentSessionId:Type.String(),capability:Type.String()});
- pi.registerTool({name:'kepos_worker',label:'子 Agent 生命周期',description:'使用 Handle 或当前会话 taskId 查询/等待/复核确认/取消。每 5 分钟出现复核点；主 Agent 检查状态和证据后使用 review 确认下一周期。完成结果默认返回1600字符预览；cursor/maxChars 分页读取证据。校验父会话和 capability。',parameters:Type.Object({handle:Type.Optional(handleSchema),taskId:Type.Optional(Type.String({description:'当前会话的任务 ID；前台分派拿不到 Handle 时用它'})),action:Type.Union(['status','wait','review','result','cancel','reconnect','message'].map(value=>Type.Literal(value))),text:Type.Optional(Type.String({maxLength:4000,description:'message 动作转发的追加消息；只对运行中的任务有效，任务结束即收回'})),seconds:Type.Optional(Type.Integer({minimum:0,maximum:30})),cursor:Type.Optional(Type.Integer({minimum:0})),maxChars:Type.Optional(Type.Integer({minimum:200,maximum:6000}))}),async execute(_id,params,_signal,_update,ctx){
+ pi.registerTool({name:'kepos_worker',label:'僚属 生命周期',description:'使用 Handle 或当前会话 taskId 查询/等待/复核确认/取消。每 5 分钟出现复核点；主 Agent 检查状态和证据后使用 review 确认下一周期。完成结果默认返回1600字符预览；cursor/maxChars 分页读取证据。校验父会话和 capability。',parameters:Type.Object({handle:Type.Optional(handleSchema),taskId:Type.Optional(Type.String({description:'当前会话的任务 ID；前台分派拿不到 Handle 时用它'})),action:Type.Union(['status','wait','review','result','cancel','reconnect','message'].map(value=>Type.Literal(value))),text:Type.Optional(Type.String({maxLength:4000,description:'message 动作转发的追加消息；只对运行中的任务有效，任务结束即收回'})),seconds:Type.Optional(Type.Integer({minimum:0,maximum:30})),cursor:Type.Optional(Type.Integer({minimum:0})),maxChars:Type.Optional(Type.Integer({minimum:200,maximum:6000}))}),async execute(_id,params,_signal,_update,ctx){
   const parent=ctx.sessionManager.getSessionId();
   let handle=params.handle as WorkerHandle|undefined;
   if(!handle&&params.taskId){const task=pool.tasks.find(item=>item.id===params.taskId&&item.parentSessionId===parent);if(!task)throw Error('当前会话没有该任务：'+params.taskId);handle={version:1,workerId:task.id,parentSessionId:parent,capability:'task'};}
@@ -350,7 +358,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const text=results.map(item=>item.ok?`<file name="${item.name}" kind="${item.kind}"${item.note?` note="${item.note}"`:''}>\n${item.content}\n</file>`:`<file-error path="${item.path}">${item.reason}</file-error>`).join('\n\n');
   return{content:[{type:'text',text}],details:{results}};
  }});
- pi.registerTool({name:'kepos_skills',label:'查看可用 Skill',description:'返回当前已安装且可被明确选择的 Skill 短索引。Skill 提供方法，不扩大子 Agent 的工具或 MCP 权限。',parameters:Type.Object({query:Type.Optional(Type.String({maxLength:100}))}),async execute(_id,params){
+ pi.registerTool({name:'kepos_skills',label:'查看可用 Skill',description:'返回当前已安装且可被明确选择的 Skill 短索引。Skill 提供方法，不扩大僚属 的工具或 MCP 权限。',parameters:Type.Object({query:Type.Optional(Type.String({maxLength:100}))}),async execute(_id,params){
   const query=String(params.query||'').toLowerCase();
   const skills=installedSkillCatalog().filter(skill=>!query||`${skill.name} ${skill.description}`.toLowerCase().includes(query)).slice(0,100);
   return{content:[{type:'text',text:JSON.stringify({skills:skills.map(({name,description})=>({name,description})),usage:'将 name 传给 kepos_delegate.tasks[].skills；只选择与当前授权事项匹配的 Skill。'})}],details:{count:skills.length}};
@@ -417,17 +425,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }
   throw Error('Unknown action');
  }});
- pi.registerTool({name:'kepos_delegate',label:'分派子 Agent',description:`主 Agent 以 Council 角色分派 1–${MAX_CONCURRENT_CHILDREN} 个具体、只读的授权事项。默认时长 ${DEFAULT_TASK_SECONDS/60} 分钟；每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核。子 Agent 可使用 copyOf 复制一个正在运行任务的最小子任务，但只能一层，时限最多为父任务的一半。超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟必须改用 kepos_plan 并等待人类批准。`,parameters:Type.Object({tasks:Type.Array(Type.Object({agent:Type.Optional(Type.String({description:'已配置代表名称或 ID'})),roleKey:Type.Optional(Type.String({description:'Council 角色 key，例如 auditor、surveyor、verifier'})),name:Type.Optional(Type.String({description:'本次代表显示名称；中文请求用中文，英文请求用英文'})),role:Type.Optional(Type.String({description:'覆盖角色提示词；优先使用 roleKey 的标准职责'})),model:Type.Optional(Type.String({description:'本次任务模型 ID'})),provider:Type.Optional(Type.String({description:'本次任务 provider'})),tools:Type.Optional(Type.Array(Type.String({description:'只读工具名：read/grep/find/ls'}))),task:Type.String({description:'小而具体的授权事项与验收要求'}),copyOf:Type.Optional(Type.String({description:'正在运行的父任务 ID；复制委派只能一层，时间上限为父任务的一半'})),skills:Type.Optional(Type.Array(Type.String({description:'已安装且明确批准的 Skill 名称'}))),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')],{description:'读取范围：project 只读任务目录（默认，可用 readAllow 加白名单）；machine 除 Kepos 数据和凭据位置外都可读。保密任务用 project。'})),readAllow:Type.Optional(Type.Array(Type.String({description:'额外允许读取的绝对目录（readScope=project 时生效）'}))),budgetTokens:Type.Optional(Type.Integer({minimum:1000,description:'本任务 token 预算上限；到达即停止消耗并呈报人类'})),mcp:Type.Optional(Type.Union([Type.Boolean(),Type.Array(Type.String({description:'服务器名'}))],{description:'临时 MCP 授权（任务结束即收回）：true=授予全部已配置服务器；数组=仅列出的服务器。只能授予人类已在 mcp.json 配置的服务器'})),groupId:Type.Optional(Type.String({maxLength:64,description:'临时工作小组标识：同一 groupId 的代表可互读证据（结论与投票仍各自独立）。不传则各自独立'})),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS}))}),{minItems:1,maxItems:MAX_CONCURRENT_CHILDREN}),background:Type.Optional(Type.Boolean({description:'true：立即返回 Worker Handle，使用 kepos_worker 查询/等待/取消；false：等待全部完成'}))}),async execute(_id,params,signal,onUpdate,ctx){
+ pi.registerTool({name:'kepos_delegate',label:'分派僚属',description:`主 Agent 以 Council 角色分派 1–${MAX_CONCURRENT_CHILDREN} 个具体、只读的授权事项。默认时长 ${DEFAULT_TASK_SECONDS/60} 分钟；每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核。僚属 可使用 copyOf 复制一个正在运行任务的最小子任务，但只能一层，时限最多为父任务的一半。超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟必须改用 kepos_plan 并等待人类批准。`,parameters:Type.Object({tasks:Type.Array(Type.Object({agent:Type.Optional(Type.String({description:'已配置代表名称或 ID'})),roleKey:Type.Optional(Type.String({description:'Council 角色 key，例如 auditor、surveyor、verifier'})),name:Type.Optional(Type.String({description:'本次代表显示名称；中文请求用中文，英文请求用英文'})),role:Type.Optional(Type.String({description:'覆盖角色提示词；优先使用 roleKey 的标准职责'})),model:Type.Optional(Type.String({description:'本次任务模型 ID'})),provider:Type.Optional(Type.String({description:'本次任务 provider'})),tools:Type.Optional(Type.Array(Type.String({description:'只读工具名：read/grep/find/ls'}))),task:Type.String({description:'小而具体的授权事项与验收要求'}),copyOf:Type.Optional(Type.String({description:'正在运行的父任务 ID；复制委派只能一层，时间上限为父任务的一半'})),skills:Type.Optional(Type.Array(Type.String({description:'已安装且明确批准的 Skill 名称'}))),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')],{description:'读取范围：project 只读任务目录（默认，可用 readAllow 加白名单）；machine 除 Kepos 数据和凭据位置外都可读。保密任务用 project。'})),readAllow:Type.Optional(Type.Array(Type.String({description:'额外允许读取的绝对目录（readScope=project 时生效）'}))),budgetTokens:Type.Optional(Type.Integer({minimum:1000,description:'本任务 token 预算上限；到达即停止消耗并呈报人类'})),mcp:Type.Optional(Type.Union([Type.Boolean(),Type.Array(Type.String({description:'服务器名'}))],{description:'临时 MCP 授权（任务结束即收回）：true=授予全部已配置服务器；数组=仅列出的服务器。只能授予人类已在 mcp.json 配置的服务器'})),groupId:Type.Optional(Type.String({maxLength:64,description:'临时工作小组标识：同一 groupId 的代表可互读证据（结论与投票仍各自独立）。不传则各自独立'})),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS}))}),{minItems:1,maxItems:MAX_CONCURRENT_CHILDREN}),background:Type.Optional(Type.Boolean({description:'true：立即返回 Worker Handle，使用 kepos_worker 查询/等待/取消；false：等待全部完成'}))}),async execute(_id,params,signal,onUpdate,ctx){
   if(signal?.aborted)throw Error('Task cancelled');
   if(!params.tasks.length)throw Error('任务列表为空');
   const {paths,names}=skillIndex();
   const requestedSkills=params.tasks.flatMap((task:any)=>task.skills||[]);
   const unknown=requestedSkills.filter((skill:string)=>!names.has(skill)&&!names.has('skill:'+skill));
-  if(unknown.length)return{content:[{type:'text',text:'这些 Skill 尚未安装或未被信任：'+unknown.join(', ')+'。请先向人类说明用途、来源和所需权限，由人类决定安装/信任后再重试；本批任务未启动任何子 Agent。'}],isError:true,details:{approval:'human_required',unknownSkills:unknown}};
+  if(unknown.length)return{content:[{type:'text',text:'这些 Skill 尚未安装或未被信任：'+unknown.join(', ')+'。请先向人类说明用途、来源和所需权限，由人类决定安装/信任后再重试；本批任务未启动任何僚属。'}],isError:true,details:{approval:'human_required',unknownSkills:unknown}};
   // MCP grants are validated per task in resolveDelegateJob against the human's mcp.json.
   const jobs=await Promise.all(params.tasks.map(async(task:any)=>resolveDelegateJob(task,ctx,paths,names)));
   const parent=ctx.sessionManager.getSessionId();
-  for(const job of jobs){if(!job.copyOf)continue;const parentTask=pool.tasks.find(task=>task.id===job.copyOf&&task.parentSessionId===parent);if(!parentTask||terminalStates.has(parentTask.status))throw Error('copyOf 必须指向当前会话中正在运行的父任务');if((parentTask.delegationDepth||0)>=1)throw Error('复制委派最多一层，子 Agent 不能继续递归复制');const half=Math.max(1,Math.floor(parentTask.limit/2));if(job.seconds===undefined)job.seconds=half;if(job.seconds>half)throw Error(`复制任务时限不能超过父任务的一半（${half} 秒）`);job.delegationDepth=1;job.parentWorkerId=parentTask.id;}
+  for(const job of jobs){if(!job.copyOf)continue;const parentTask=pool.tasks.find(task=>task.id===job.copyOf&&task.parentSessionId===parent);if(!parentTask||terminalStates.has(parentTask.status))throw Error('copyOf 必须指向当前会话中正在运行的父任务');if((parentTask.delegationDepth||0)>=1)throw Error('复制委派最多一层，僚属 不能继续递归复制');const half=Math.max(1,Math.floor(parentTask.limit/2));if(job.seconds===undefined)job.seconds=half;if(job.seconds>half)throw Error(`复制任务时限不能超过父任务的一半（${half} 秒）`);job.delegationDepth=1;job.parentWorkerId=parentTask.id;}
   if(params.background){const handles:any[]=[];try{for(const job of jobs)handles.push(pool.launch(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,undefined,parent,job.tools,job.skills,false,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens,{groupId:job.groupId}));}catch(error){for(const handle of handles)pool.cancelHandle(handle,parent);throw Error('本批任务已回滚，已启动的子任务一并取消：'+clean(error));}return{content:[{type:'text',text:JSON.stringify({state:'accepted',handles})}],details:{handles}};}
   const results=await Promise.all(jobs.map(async job=>{onUpdate?.({content:[{type:'text',text:`启动 ${job.crew.name}：${job.task}`}],details:undefined});return pool.run(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,signal,parent,job.tools,job.skills,job.mcp,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens,{groupId:job.groupId});}));
   const perTask=Math.min(1600,Math.floor(8000/Math.max(1,results.length)));
@@ -558,7 +566,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   async function delegateForm(ctx:any){if(!config.agents.length){await crewForm(ctx);return;}const pick=await ctx.ui.select(`分派只读任务 · 默认 ${DEFAULT_TASK_SECONDS/60} 分钟 · 最多 ${MAX_CONCURRENT_CHILDREN} 项`,config.agents.map(a=>a.name));const crew=config.agents.find(a=>a.name===pick);if(!crew)return;const text=await ctx.ui.editor('具体任务与完成标准','');if(!text?.trim())return;
   if(!await ctx.ui.confirm('启动代表？',`模型：${crew.provider}/${crew.model}\n目录：${ctx.cwd}\n只读工具；会产生模型费用；默认 ${DEFAULT_TASK_SECONDS/60} 分钟，每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核。`))return;
  const sourceGeneration=generation;const sourceSession=ctx.sessionManager.getSessionFile()||ctx.sessionManager.getSessionId();
- void pool.run(crew,text.trim(),ctx.cwd,ctx.sessionManager.getSessionFile()||'',300,undefined,ctx.sessionManager.getSessionId()).then(t=>{if(!valid||generation!==sourceGeneration||!current||(current.sessionManager.getSessionFile()||current.sessionManager.getSessionId())!==sourceSession)return;ctx.ui.notify(`${t.agent}：${t.status}。F3 查看产出。`,'info');if(t.status==='完成')pi.sendMessage({customType:'kepos-task-result',content:`子 Agent「${t.agent}」完成了手动分派的任务。任务：${t.title}\n结果（需主 Agent 验证）：\n${t.outputTruncated?'[产出已截断，保留末尾约 32 KiB]\n':''}${boundedText(t.output,1600)}`,display:true},{triggerTurn:false});}).catch(e=>{if(valid&&generation===sourceGeneration)ctx.ui.notify(clean(e),'error');});}
+ void pool.run(crew,text.trim(),ctx.cwd,ctx.sessionManager.getSessionFile()||'',300,undefined,ctx.sessionManager.getSessionId()).then(t=>{if(!valid||generation!==sourceGeneration||!current||(current.sessionManager.getSessionFile()||current.sessionManager.getSessionId())!==sourceSession)return;ctx.ui.notify(`${t.agent}：${t.status}。F3 查看产出。`,'info');if(t.status==='完成')pi.sendMessage({customType:'kepos-task-result',content:`僚属「${t.agent}」完成了手动分派的任务。任务：${t.title}\n结果（需主 Agent 验证）：\n${t.outputTruncated?'[产出已截断，保留末尾约 32 KiB]\n':''}${boundedText(t.output,1600)}`,display:true},{triggerTurn:false});}).catch(e=>{if(valid&&generation===sourceGeneration)ctx.ui.notify(clean(e),'error');});}
  const blocked=(ctx:any)=>!ctx.isIdle();
  const sessionDir=(ctx:any)=>ctx.sessionManager.getSessionDir();
  async function reopen(fresh:any){setTimeout(()=>{fresh.sendUserMessage('/kepos',{expandPromptTemplates:true}).catch((e:any)=>fresh.ui.notify(clean(e),'error'));},80);}
@@ -590,7 +598,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加子 Agent','编辑子 Agent','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加子 Agent':'crew','编辑子 Agent':'editcrew','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  if(action.kind==='project-remove'){
   if(!config.projects.length){ui.notify('还没有收录任何项目');return;}
   const pick=await ui.select('移除哪个项目？（只移出列表，不删除文件和会话）',config.projects);if(!pick)return;
@@ -599,7 +607,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加子 Agent','crew'],['编辑子 Agent','editcrew'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -706,7 +714,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }catch(e){ctx.ui.notify(clean(e),'error');}
  }
  }
- pi.registerCommand('kepos-warm',{description:'预热子 Agent 执行器（不调用模型；空闲60秒退出）',handler:async(args,ctx)=>{const crew=config.agents.find(a=>a.name===args.trim())||config.agents[0];if(!crew){ctx.ui.notify('先配置至少一个子 Agent','warning');return;}try{const result=await pool.prewarm(crew,ctx.cwd);ctx.ui.notify(`${crew.name} 执行器已就绪 · PID ${result.pid} · 未请求模型`,'info');}catch(error){ctx.ui.notify(clean(error),'error');}}});
+ pi.registerCommand('kepos-warm',{description:'预热僚属 执行器（不调用模型；空闲60秒退出）',handler:async(args,ctx)=>{const crew=config.agents.find(a=>a.name===args.trim())||config.agents[0];if(!crew){ctx.ui.notify('先配置至少一个僚属','warning');return;}try{const result=await pool.prewarm(crew,ctx.cwd);ctx.ui.notify(`${crew.name} 执行器已就绪 · PID ${result.pid} · 未请求模型`,'info');}catch(error){ctx.ui.notify(clean(error),'error');}}});
  // 主题切换的唯一实现：/theme 命令、F2 菜单与命令面板都走这里，避免两套逻辑漂移。
  // 先试 Pi 的 setTheme 热切换（同时更新设置与已加载 Theme 实例）；
  // 拿不到该接口时才回退到写 settings.json 并提示重载。
@@ -750,9 +758,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ctx.ui.notify(result.reason||'主题切换失败','warning');
  }});
  pi.registerCommand('simon',{description:'开始 Kepos 监督式工作（兼容旧命令）',handler:async(args,ctx)=>{const prompt=args?.trim()||`请先说明当前项目目标、风险和下一步计划；如需并行工作，使用 kepos_delegate 分派最多 ${MAX_CONCURRENT_CHILDREN} 个只读任务，默认每项 ${DEFAULT_TASK_SECONDS/60} 分钟，并每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟用 kepos_events/kepos_tasks 复核；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的工作改用 kepos_plan 并等待人类批准。`;await pi.sendUserMessage(prompt);}});
- pi.registerCommand('simon-status',{description:'查看 Kepos、项目和子 Agent 状态（兼容旧命令）',handler:async(_args,ctx)=>{const tasks=pool.tasks.filter(t=>t.cwd===ctx.cwd&&t.parentSessionId===ctx.sessionManager.getSessionId());ctx.ui.notify(`Kepos Communis · ${ctx.model?.provider}/${ctx.model?.id}\n项目：${ctx.cwd}\n子 Agent：${tasks.filter(t=>!terminalStates.has(t.status)).length} 运行中 / ${tasks.length} 总计`,'info');}});
+ pi.registerCommand('simon-status',{description:'查看 Kepos、项目和僚属 状态（兼容旧命令）',handler:async(_args,ctx)=>{const tasks=pool.tasks.filter(t=>t.cwd===ctx.cwd&&t.parentSessionId===ctx.sessionManager.getSessionId());ctx.ui.notify(`Kepos Communis · ${ctx.model?.provider}/${ctx.model?.id}\n项目：${ctx.cwd}\n僚属：${tasks.filter(t=>!terminalStates.has(t.status)).length} 运行中 / ${tasks.length} 总计`,'info');}});
  pi.registerCommand('kepos',{description:'Kepos Communis · 打开议案',handler:async(_args,ctx)=>runDesk(ctx)});
  pi.registerCommand('kepos-new',{description:'在当前项目创建对话',handler:async(_args,ctx)=>{if(blocked(ctx)){ctx.ui.notify('请先等待任务结束。','warning');return;}const name=await ctx.ui.input('新对话名称','');if(!name?.trim())return;const path=createLinkedSession(ctx,ctx.cwd,name.trim());await ctx.switchSession(path,{withSession:async fresh=>reopen(fresh)});}});
  pi.registerCommand('kepos-project',{description:'收录本地项目',handler:async(_args,ctx)=>{const input=await ctx.ui.input('项目绝对目录','');if(!input?.trim())return;try{const path=projectPath(input);if(!config.projects.includes(path))config.projects.push(path);save();}catch(e){ctx.ui.notify(clean(e),'error');}}});
- pi.registerCommand('kepos-agent',{description:'配置真实子 Agent',handler:async(_args,ctx)=>{try{await crewForm(ctx);}catch(e){ctx.ui.notify(clean(e),'error');}}});
+ pi.registerCommand('kepos-agent',{description:'配置真实僚属',handler:async(_args,ctx)=>{try{await crewForm(ctx);}catch(e){ctx.ui.notify(clean(e),'error');}}});
 }
