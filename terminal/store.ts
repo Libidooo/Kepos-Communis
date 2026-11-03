@@ -26,7 +26,24 @@ export interface Config {
   deputyAgentId?: string;
   /** 工具输出展开状态：默认折叠为一行摘要；true 表示展开完整输出。 */
   expandedTools?: boolean;
+  /**
+   * 外部 CLI 白名单：由人类决定，总理可通过工具增删。键是可执行名。
+   * 不写死在源码里——人类加什么，总理就能用什么。
+   */
+  cliAllowlist?: Record<string, CliAllowEntry>;
 }
+
+export type CliAllowEntry = {
+  /** 显示名。 */
+  label: string;
+  /** 该 CLI 需要的环境变量名（只传这一个，不给全部）。 */
+  envKey?: string;
+  /** 允许的参数前缀，例如 -b / -P；空表示只允许该 CLI 的默认交互。 */
+  argPrefixes?: string[];
+  /** 人类审批时记录的说明。 */
+  note?: string;
+  addedAt: number;
+};
 
 const snapshots = new WeakMap<Config, Config>();
 const histories = new WeakMap<object, ProfileHistory>();

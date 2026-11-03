@@ -27,6 +27,10 @@ const RIM = [255, 206, 164] as const;
 const AMBER = [255, 196, 120] as const;
 // Mid tone between shadow and highlight: the ring reads warmer than a pure red ramp.
 const EMBER = [214, 74, 74] as const;
+// Drop shadow for the wordmark. SHADOW is nearly black and vanished against the background.
+// A light neutral grey gives the offset copy enough presence to read as depth while staying
+// clearly below the white KEPOS and the vermilion COMMUNIS.
+const DROP = [176, 168, 166] as const;
 const WHITE = [255, 255, 255] as const;
 const QUADRANTS = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
 
@@ -125,8 +129,8 @@ function makeWordmark(font: Record<string, string[]>, variant: Variant, block = 
       bits[(y0 * block + dy) * subWidth + x * block * 2 + dx] = 1;
     }
   }));
-  // Reserve one extra sub-pixel column for the offset drop shadow so it stays inside the logotype box.
-  return { x: 0, y: 0, width: Math.ceil((subWidth + 1) / 2), height: Math.ceil((subHeight + 1) / 2), variant, fontWidth, fontHeight, bits, bitmapWidth: subWidth, bitmapHeight: subHeight, splitRow: secondStart * block };
+  // Reserve room for the drop shadow, which sits two sub-rows below the glyphs.
+  return { x: 0, y: 0, width: Math.ceil((subWidth + 1) / 2), height: Math.ceil((subHeight + 2) / 2), variant, fontWidth, fontHeight, bits, bitmapWidth: subWidth, bitmapHeight: subHeight, splitRow: secondStart * block };
 }
 // Largest first: layout picks the biggest lockup that fits, so wide terminals get a poster-scale wordmark.
 const WORDMARKS = [
@@ -403,13 +407,16 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
       const tint = mix(BRAND, AMBER, sweep);
       return { rgb: mix(WHITE, tint, glow * .9), glow };
     };
-    // The shadow clears before the lockup settles, so the held frame is byte-identical every tick.
-    const shadowLife = 1 - smooth((elapsed - (SPLASH_TIMING.sweepEndMs - 320)) / 200);
-    if (opacity > 0 && shadowLife > 0) {
+    if (opacity > 0) {
       const glyphW = layout.wordmark.bitmapWidth, glyphH = layout.wordmark.bitmapHeight;
+      // Drop the shadow straight down by a full sub-row. Offsetting it sideways as well put
+      // shadow ink into the gaps between letters, so mid-sweep the wordmark read as one fused
+      // block and only snapped apart on the final frame.
+      // The shadow is permanent: it stays for the held frame and fades with the lockup, giving
+      // the wordmark the same engraved relief the reference art has.
       for (let y = 0; y < glyphH; y++) for (let x = 0; x < glyphW; x++) {
         if (!layout.wordmark.bits[y * glyphW + x]) continue;
-        paint(buffer, subWidth, subHeight, originX + x + 1, originY + y + 1, SHADOW, opacity * shadowLife * .55);
+        paint(buffer, subWidth, subHeight, originX + x, originY + y + 2, DROP, opacity * .92);
       }
     }
     if (opacity > 0) {

@@ -24,7 +24,9 @@ export function killTree(child: ChildProcess) {
 export type WorkerProfile = { cwd: string; model: string; provider: string; tools: string[]; skills: string[]; mcp: boolean; role: string; readScope?: ReadScope; readAllow?: string[]; mcpServers?: string[];
  /** 该进程是否为代表：决定是否加载代表侧工具（派生僚属、裁决报告）。 */ representative?: boolean;
  /** 代表/僚属的归档根目录，供代表侧工具写入派生请求与裁决。 */ archiveRoot?: string;
- /** 代表名，写入裁决文档。 */ agentName?: string };
+ /** 代表名，写入裁决文档。 */ agentName?: string;
+ /** 本任务 id：代表侧工具据此管理 CLI 会话。 */ taskId?: string;
+ /** 本任务已获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }> };
 export class WarmExecutor {
  readonly child: ChildProcess;
  readonly key: string;
@@ -90,6 +92,9 @@ Put the detailed working above that summary. The transcript is still retained as
   if (profile.representative) {
     env.KEPOS_ARCHIVE_ROOT = archiveDir;
     env.KEPOS_AGENT_NAME = profile.agentName || '';
+    env.KEPOS_TASK_ID = profile.taskId || '';
+    // 外部 CLI 授权：只下发本任务已批准的那些，代表据此决定能启动什么。
+    if (profile.cliGrants?.length) env.KEPOS_CLI_GRANTS = JSON.stringify(profile.cliGrants);
   }
   this.child = spawnWorker(process.execPath, [join(runtimeDir, 'worker-host.cjs'), ...args], {
    cwd: profile.cwd, env, windowsHide: true,

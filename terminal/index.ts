@@ -24,6 +24,7 @@ import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } fr
 import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
 import { SpawnRequestPoller } from './spawn-poller.ts';
+import { credentialsReady } from './cli-runtime.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -235,6 +236,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    return !query||haystack.includes(query);
   }).map(role=>({key:role.key,domain:roleDomain(role),domainName:domainName(roleDomain(role),locale),name:roleName(role,locale),scope:roleScope(role,locale),skillHints:role.skillHints||[]}));
  }
+ // 已批准的 CLI 授权：按当前会话过滤，下发给代表进程。
+ // 代表只能启动这里列出的 CLI；任务结束父进程终止其全部会话。
+ function activeCliGrants(){const all:any[]=(db() as any).get?.('cli_grants')||[];const parent=current?.sessionManager?.getSessionId?.();const ids=new Set(pool.tasks.filter(t=>!parent||t.parentSessionId===parent).map(t=>t.id));const seen=new Set<string>();const out:any[]=[];for(const g of all){if(seen.has(g.cli))continue;if(!terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||'')){seen.add(g.cli);out.push({cli:g.cli,envKey:g.envKey,argPrefixes:g.argPrefixes});}}return out;}
  async function resolveDelegateJob(task:any,ctx:any,skillPaths:Map<string,string>,names:Set<string>){
   if(!task.task?.trim())throw Error('任务内容不能为空；本批任务未启动');
   if(task.seconds!==undefined&&(!Number.isInteger(task.seconds)||task.seconds<1||task.seconds>MAX_TASK_SECONDS))throw Error(`任务期限必须为 1–${MAX_TASK_SECONDS} 秒；本批任务未启动`);
@@ -299,6 +303,48 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   lines.push('请把以上结果原样转述给人类；是否执行（含是否终止任务）由人类决定。');
   if(desk){desk.notice=`表决 · ${params.question.slice(0,80)}：赞成${tally.yes} 反对${tally.no} 弃权${tally.abstain}${params.main?` · 主Agent（分派方）：${VOTE_LABELS[params.main.choice]}`:''}`;scheduleRepaint();}
   return{content:[{type:'text',text:boundedText(lines.join('\n'),1600)}],details:record};
+ }});
+ pi.registerTool({name:'kepos_cli_grant',label:'外部 CLI 白名单与授权',description:'管理外部 agent CLI（codex / claude 等）的白名单与任务级授权。白名单存 config.json，由人类决定。授权绑定到某次任务，任务结束自动回收。代表只能在授权范围内启动 CLI。',parameters:Type.Object({action:Type.Union(['list','allow','remove','grant','status'].map(value=>Type.Literal(value))),cli:Type.Optional(Type.String({maxLength:40,description:'CLI 可执行名，如 codex'})),label:Type.Optional(Type.String({maxLength:60,description:'allow 时的显示名'})),envKey:Type.Optional(Type.String({maxLength:80,description:'该 CLI 需要的凭据环境变量名；只传这一个'})),argPrefixes:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'允许的首参数前缀，如 exec / -b / -P'})),taskId:Type.Optional(Type.String({description:'grant 时把授权绑定到该任务'})),note:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
+  const allowlist=config.cliAllowlist||{};
+  if(params.action==='list'){
+   const entries=Object.entries(allowlist).map(([name,entry])=>({cli:name,...entry}));
+   return{content:[{type:'text',text:JSON.stringify({allowlist:entries,note:entries.length?'':'白名单为空：请先用 allow 添加，再由人类确认。'})}],details:{allowlist:entries}};
+  }
+  if(params.action==='allow'){
+   const name=String(params.cli||'').trim().toLowerCase();
+   if(!/^[a-z0-9][a-z0-9._-]{0,39}$/.test(name))throw Error('CLI 名只能含字母数字与 ._-，长度 1-40');
+   const existing=allowlist[name];
+   config.cliAllowlist={...allowlist,[name]:{label:String(params.label||existing?.label||name),...(params.envKey?{envKey:String(params.envKey)}:existing?.envKey?{envKey:existing.envKey}:{}),...(params.argPrefixes?{argPrefixes:params.argPrefixes.map(String)}:existing?.argPrefixes?{argPrefixes:existing.argPrefixes}:{}),...(params.note?{note:String(params.note)}:existing?.note?{note:existing.note}:{}),addedAt:existing?.addedAt??Date.now()}};
+   save();
+   return{content:[{type:'text',text:`已加入白名单：${name}${params.envKey?`（凭据变量 ${params.envKey}）`:''}。代表只能在授权后使用它。`}],details:{cli:name}};
+  }
+  if(params.action==='remove'){
+   const name=String(params.cli||'').trim().toLowerCase();
+   if(!allowlist[name])throw Error('白名单里没有该 CLI：'+name);
+   const next={...allowlist};delete next[name];
+   config.cliAllowlist=next;save();
+   return{content:[{type:'text',text:`已移出白名单：${name}。进行中的会话不受影响，新的启动会被拒绝。`}],details:{cli:name}};
+  }
+  if(params.action==='grant'){
+   // 授权：把白名单条目下发给指定任务。任务结束时父进程回收。
+   const name=String(params.cli||'').trim().toLowerCase();
+   const entry=allowlist[name];
+   if(!entry)throw Error(`白名单里没有 ${name}：先 allow，再由人类确认`);
+   const ready=credentialsReady(entry,process.env);
+   if(!ready.ok)throw Error(String(ready.reason));
+   if(!params.taskId)throw Error('grant 需要 taskId：授权绑定到具体任务');
+   const grants:any[]=(db() as any).get?.('cli_grants')||[];
+   grants.push({id:randomUUID(),taskId:String(params.taskId),cli:name,envKey:entry.envKey,argPrefixes:entry.argPrefixes,note:params.note?String(params.note):undefined,grantedAt:Date.now()});
+   db().set('cli_grants',grants.slice(-200));
+   if(desk){desk.notice=`已授权 ${name} 给任务 ${String(params.taskId).slice(0,8)}（任务结束回收）`;scheduleRepaint();}
+   return{content:[{type:'text',text:`已授权 ${name} 给任务 ${params.taskId}。代表可在该任务内启动该 CLI 的多个会话；任务结束全部终止。`}],details:{cli:name,taskId:params.taskId}};
+  }
+  // status：列出授权与对应任务状态。
+  const grants:any[]=(db() as any).get?.('cli_grants')||[];
+  const parent=ctx.sessionManager.getSessionId();
+  const ids=new Set(pool.tasks.filter(t=>t.parentSessionId===parent).map(t=>t.id));
+  const view=grants.filter(g=>ids.has(g.taskId)).map(g=>({id:g.id,taskId:g.taskId,cli:g.cli,active:!terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||'')}));
+  return{content:[{type:'text',text:JSON.stringify({grants:view,allowlist:Object.keys(allowlist)})}],details:{grants:view}};
  }});
  pi.registerTool({name:'kepos_grant',label:'权限申请与转授',description:'代表申请写权限，或把自身持有的权限转授给僚属。审批链：代表申请 → 代理总代转呈 → 总理批准 → 人类确认。授权绑定在这一次任务的进程上，任务结束即失效。转授不能超过自身持有范围。',parameters:Type.Object({action:Type.Union(['request','grant','status'].map(value=>Type.Literal(value))),tools:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'request: 申请的写权限（bash/powershell/edit/write）；grant: 要转授给僚属的子集'})),reason:Type.Optional(Type.String({maxLength:500,description:'request 必填：要改什么、为什么必须写'})),taskId:Type.Optional(Type.String({description:'申请者任务 id；缺省取当前会话最近的任务'})),member:Type.Optional(Type.String({description:'grant 时指定僚属名称或任务 id'})),grantId:Type.Optional(Type.String({description:'status/approve 时指定授权 id'})),approve:Type.Optional(Type.Boolean({description:'true 表示人类确认批准（严格模式下必须显式传）'})),note:Type.Optional(Type.String({maxLength:300,description:'批准或驳回的理由，写入审计'})),text:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
   // 授权表：按任务 id 记，任务终态时由 sweepGrants 清掉，绝不跨任务保留。
@@ -437,8 +483,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const jobs=await Promise.all(params.tasks.map(async(task:any)=>resolveDelegateJob(task,ctx,paths,names)));
   const parent=ctx.sessionManager.getSessionId();
   for(const job of jobs){if(!job.copyOf)continue;const parentTask=pool.tasks.find(task=>task.id===job.copyOf&&task.parentSessionId===parent);if(!parentTask||terminalStates.has(parentTask.status))throw Error('copyOf 必须指向当前会话中正在运行的父任务');if((parentTask.delegationDepth||0)>=1)throw Error('复制委派最多一层，僚属 不能继续递归复制');const half=Math.max(1,Math.floor(parentTask.limit/2));if(job.seconds===undefined)job.seconds=half;if(job.seconds>half)throw Error(`复制任务时限不能超过父任务的一半（${half} 秒）`);job.delegationDepth=1;job.parentWorkerId=parentTask.id;}
-  if(params.background){const handles:any[]=[];try{for(const job of jobs)handles.push(pool.launch(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,undefined,parent,job.tools,job.skills,false,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens,{groupId:job.groupId}));}catch(error){for(const handle of handles)pool.cancelHandle(handle,parent);throw Error('本批任务已回滚，已启动的子任务一并取消：'+clean(error));}return{content:[{type:'text',text:JSON.stringify({state:'accepted',handles})}],details:{handles}};}
-  const results=await Promise.all(jobs.map(async job=>{onUpdate?.({content:[{type:'text',text:`启动 ${job.crew.name}：${job.task}`}],details:undefined});return pool.run(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,signal,parent,job.tools,job.skills,job.mcp,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens,{groupId:job.groupId});}));
+  if(params.background){const handles:any[]=[];try{for(const job of jobs)handles.push(pool.launch(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,undefined,parent,job.tools,job.skills,false,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens,{groupId:job.groupId,cliGrants:activeCliGrants()}));}catch(error){for(const handle of handles)pool.cancelHandle(handle,parent);throw Error('本批任务已回滚，已启动的子任务一并取消：'+clean(error));}return{content:[{type:'text',text:JSON.stringify({state:'accepted',handles})}],details:{handles}};}
+  const results=await Promise.all(jobs.map(async job=>{onUpdate?.({content:[{type:'text',text:`启动 ${job.crew.name}：${job.task}`}],details:undefined});return pool.run(job.crew,job.task,ctx.cwd,ctx.sessionManager.getSessionFile()||'',job.seconds??DEFAULT_TASK_SECONDS,signal,parent,job.tools,job.skills,job.mcp,job.delegationDepth||0,job.parentWorkerId,job.budgetTokens,{groupId:job.groupId,cliGrants:activeCliGrants()});}));
   const perTask=Math.min(1600,Math.floor(8000/Math.max(1,results.length)));
   const data=results.map(task=>({id:task.id,agent:task.agent,state:task.state,error:task.error,elapsedMs:(task.ended||Date.now())-task.started,profileRevision:task.profileRevision,outputTruncated:task.outputTruncated,...outputPage(task.output,{maxChars:perTask})}));
   return{content:[{type:'text',text:JSON.stringify({tasks:data,more:'Use kepos_tasks taskId/cursor for evidence pages; excerpts are not verified conclusions.'})}],isError:results.every(task=>task.status!=='完成'),usage:results.reduce((sum,task)=>mergeUsage(sum,task.usage),undefined),details:{partialFailure:results.some(task=>task.status!=='完成'),tasks:data}};

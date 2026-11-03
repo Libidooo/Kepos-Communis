@@ -362,3 +362,40 @@ test('disabled splash allocates nothing and a process plays once', async () => {
     if (previousPlayed === undefined) delete globalThis[key]; else globalThis[key] = previousPlayed;
   }
 });
+
+test('the wordmark drop shadow is visible and distinct from the glyph colours', () => {
+  // The shadow sat at ~50% of a near-black tone, which was invisible on the dark backdrop.
+  // It must now read as its own layer while staying clear of the white and vermilion faces.
+  const layout = layoutSplash(160, 45);
+  const frame = buildSplashFrame(1400 / SPLASH_TIMING.frameMs, 160, 45);
+  const tally = new Map();
+  for (let row = layout.wordmark.y; row < layout.wordmark.y + layout.wordmark.height; row++) {
+    let colour = null;
+    for (const token of (frame[row] || '').match(/\x1b\[[0-9;]*m|[^\x1b]/gu) || []) {
+      if (token.startsWith('\x1b[')) {
+        const m = token.match(/38;2;(\d+);(\d+);(\d+)m/);
+        if (m) colour = m.slice(1).map(Number);
+        continue;
+      }
+      if (token.trim() && colour) {
+        const key = colour.join(',');
+        tally.set(key, (tally.get(key) || 0) + 1);
+      }
+    }
+  }
+  const lum = c => .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
+  // The shadow tone: mid grey, clearly above the background but below the white glyphs.
+  const shadowCandidates = [...tally.entries()]
+    .map(([key, count]) => ({ rgb: key.split(',').map(Number), count }))
+    .filter(({ rgb }) => lum(rgb) > 80 && lum(rgb) < 160);
+  assert.ok(shadowCandidates.length > 0, 'a mid-tone shadow layer is present');
+  const heaviest = shadowCandidates.sort((a, b) => b.count - a.count)[0];
+  assert.ok(heaviest.count > 40, `shadow must be substantial, saw ${heaviest.count} cells`);
+  // Distinguishable from both faces.
+  for (const { rgb, count } of [...tally.entries()].map(([k, c]) => ({ rgb: k.split(',').map(Number), count: c }))) {
+    if (count < 10) continue;
+    const distance = Math.hypot(rgb[0] - heaviest.rgb[0], rgb[1] - heaviest.rgb[1], rgb[2] - heaviest.rgb[2]);
+    if (distance === 0) continue;                     // the shadow tone itself
+    assert.ok(distance > 25, `shadow too close to a glyph colour ${rgb.join(',')}`);
+  }
+});

@@ -10,7 +10,7 @@ import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from 
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration'; groupId?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[] };
+export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration'; groupId?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }> };
 export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
@@ -312,7 +312,7 @@ export class WorkerPool {
   this.pumpScheduled = true;
   queueMicrotask(() => { this.pumpScheduled = false; this.pump(); });
  }
- private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false): WorkerProfile {
+ private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false, taskId?: string, cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>): WorkerProfile {
   if (!crew.model?.trim()) throw Error('Worker model is empty');
   // 只读工具永远允许；写工具（bash/powershell/edit/write）必须出现在本任务的授权里。
   // 授权由代表申请、代理总代转呈、总理批准、人类确认后绑定到这次任务，任务结束即失效。
@@ -322,7 +322,7 @@ export class WorkerPool {
   const blocked = tools.filter(tool => !allowed.has(tool));
   if (blocked.length) throw Error(`Unapproved tool: ${blocked.join(', ')}；写权限需由代表向代理总代申请，经总理批准后随任务生效`);
   return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
-   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name };
+   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants };
  }
  private executor(profile: WorkerProfile): WorkerExecutor | undefined {
   const key = JSON.stringify(profile);
@@ -549,7 +549,7 @@ export class WorkerPool {
   if (parentTask && seconds > Math.max(1, Math.floor(parentTask.limit / 2))) throw Error(`Copied task deadline cannot exceed half of parent task (${Math.floor(parentTask.limit / 2)} seconds)`);
   if (!instruction.trim()) throw Error('Task goal is empty');
   if (this.queued.size >= 1000) throw Error('Worker queue is full');
-  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], delegationDepth === 0);
+  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], delegationDepth === 0, undefined, metadata.cliGrants);
   const snapshotBase = { name: crew.name, role: crew.role, roleKey: crew.roleKey, model: profile.model, provider: profile.provider, tools: [...profile.tools], skills: [...profile.skills], mcp: profile.mcp };
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);

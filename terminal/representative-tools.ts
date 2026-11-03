@@ -7,6 +7,8 @@
 // 新增网络能力，权限面最小。
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { CliSessions } from './cli-runtime.ts';
+import { clampTurnOutput } from './cli-dialog.ts';
 
 /** 代表进程的请求目录：放在归档区下，父进程天然能看见。 */
 export const SPAWN_REQUEST_FILE = 'spawn-request.json';
@@ -158,4 +160,90 @@ export default function representativeTools(pi: any) {
       return { content: [{ type: 'text', text: `已对 ${params.workerId} 作出裁决：${params.adopted ? '采纳' : '不采纳'}。` }] };
     },
   });
+
+  // 外部 CLI：多会话管理。授权与白名单由总理下发到本进程的环境变量，
+  // 代表只在授权范围内启动；任务结束父进程会终止全部会话。
+  registerCliTool(pi, { archiveRoot, agentName: agent });
+}
+
+/**
+ * 外部 CLI 工具：代表可以同时开多个会话，各自独立推进。
+ *
+ * 授权如何到达本进程：总理把已批准的 CLI 清单与凭据环境变量写进 KEPOS_CLI_GRANTS，
+ * 形如 [{"cli":"codex","envKey":"OPENAI_API_KEY","argPrefixes":["exec"]}]。
+ * 代表只能启动清单里的名字；清单为空时任何调用都被拒绝。
+ */
+export function registerCliTool(pi: any, options: { archiveRoot: string; agentName: string }) {
+  const { archiveRoot, agentName } = options;
+  const sessions = new CliSessions({ maxPerTask: 4 });
+  const taskId = String(process.env.KEPOS_TASK_ID || '');
+  const grants = (() => {
+    try {
+      const raw = process.env.KEPOS_CLI_GRANTS;
+      if (!raw) return [] as Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>;
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch { return []; }
+  })();
+  const byCli = new Map(grants.map(grant => [String(grant.cli).toLowerCase(), grant]));
+
+  pi.registerTool({
+    name: 'kepos_cli',
+    label: '外部 CLI 会话',
+    description: '启动或管理外部 agent CLI 会话（如 codex / claude）。可同时开多个会话，各自独立推进；用 sessionId 区分。只有在总理授权并且人类批准过的 CLI 才能启动。任务结束后全部会话终止。',
+    parameters: {
+      type: 'object',
+      properties: {
+        action: { type: 'string', enum: ['start', 'write', 'read', 'list', 'close'] },
+        cli: { type: 'string', description: 'start 时指定白名单内的 CLI 名' },
+        args: { type: 'array', items: { type: 'string' }, description: 'start 时的参数；首个参数须匹配授权的前缀' },
+        sessionId: { type: 'string', description: 'write/read/close 时的会话 id' },
+        text: { type: 'string', description: 'write 时写入的输入' },
+      },
+      required: ['action'],
+    },
+    async execute(_id: string, params: any) {
+      if (!taskId) return { content: [{ type: 'text', text: '缺少任务标识，无法管理 CLI 会话。' }] };
+      if (params.action === 'list') {
+        const list = sessions.list(taskId).map(item => ({ id: item.id, cli: item.cli, exited: item.exited, exitCode: item.exitCode, startedAt: item.startedAt }));
+        return { content: [{ type: 'text', text: JSON.stringify({ sessions: list, granted: [...byCli.keys()] }) }] };
+      }
+      if (params.action === 'start') {
+        const name = String(params.cli || '').toLowerCase();
+        const grant = byCli.get(name);
+        if (!grant) {
+          return { content: [{ type: 'text', text: `未授权的外部 CLI：${name || '(未指定)'}。已授权：${[...byCli.keys()].join(', ') || '无'}。请先向总理申请，由人类批准。` }] };
+        }
+        const result = sessions.start({
+          taskId, cli: name,
+          entry: { label: name, envKey: grant.envKey, argPrefixes: grant.argPrefixes, addedAt: Date.now() },
+          args: Array.isArray(params.args) ? params.args.map(String) : [],
+          cwd: process.cwd(), env: process.env, archiveRoot: join(archiveRoot, taskId),
+        });
+        if (result.ok !== true) return { content: [{ type: 'text', text: `启动失败：${(result as { reason: string }).reason}` }] };
+        return { content: [{ type: 'text', text: `已启动 ${name} 会话：${(result as { sessionId: string }).sessionId}` }] };
+      }
+      if (params.action === 'write') {
+        const wrote = sessions.write(String(params.sessionId || ''), String(params.text || ''));
+        return { content: [{ type: 'text', text: wrote.ok ? '已写入。' : `写入失败：${wrote.reason}` }] };
+      }
+      if (params.action === 'read') {
+        const read = sessions.read(String(params.sessionId || ''));
+        if (read.ok !== true) return { content: [{ type: 'text', text: `读取失败：${(read as { reason: string }).reason}` }] };
+        const page = clampTurnOutput((read as { output: string }).output);
+        return { content: [{ type: 'text', text: `退出：${(read as { exited: boolean }).exited ? (read as { exitCode?: number }).exitCode ?? '—' : '进行中'}\n${page.output}` }] };
+      }
+      if (params.action === 'close') {
+        sessions.close(String(params.sessionId || ''));
+        return { content: [{ type: 'text', text: `已请求终止 ${params.sessionId}。` }] };
+      }
+      return { content: [{ type: 'text', text: `未知动作：${params.action}` }] };
+    },
+  });
+
+  // 进程退出时清理所有会话，避免外部 CLI 变成孤儿。
+  const cleanup = () => { try { sessions.closeAll(taskId); } catch { /* 已退出 */ } };
+  process.on('exit', cleanup);
+  process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+  void agentName;
 }
