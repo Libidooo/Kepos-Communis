@@ -336,6 +336,16 @@ export class Desk {
   if(global){const evidence=this.monitor?.evidence(global.id);return evidence||global;}
   return snapshot.tasks.find((t:any)=>t.id===taskId);
  }
+ /**
+  * 该代表派生的僚属（子任务）。主环不显示它们，只在这里按需展开。
+  * 按开始时间倒序：最近派发的排在最前，符合"关注当前"的阅读习惯。
+  */
+ deskWorkers(taskId:string|null):any[]{
+  if(!taskId)return[];
+  return (this.pool.tasks as any[])
+   .filter(t=>t.parentWorkerId===taskId)
+   .sort((a,b)=>(b.started||0)-(a.started||0));
+ }
  // 书案内嵌输入：选中即输入，Enter 直达该代表（运行中转发；已结束按原配置开新一轮）。
  deskSend(){
   const text=this.editor.getExpandedText().trim();if(!text){this.refresh();return;}
@@ -379,7 +389,24 @@ export class Desk {
    lines.push(row(`花费 ${this.spendText(task)}`,`text`));
    if(task.tool)lines.push(row(`工具 ${plainText(task.tool)}`,'dim'));
    if(task.checkpoint)lines.push(row(`进展 ${plainText(task.checkpoint)}`,'dim'));
-   if(task.error)for(const l of wrapTextWithAnsi('错误：'+plainText(task.error),inner).slice(0,2))lines.push(row(l,'error'));
+   if(task.error)for(const l of wrapTextWithAnsi(plainText(task.error),inner))lines.push(row(l,'error'));
+   // 僚属：主环不显示它们，只在这里列出。代表对这些僚属全权负责——
+   // 僚属失败时由代表修复或重派，所以失败项必须在这里显眼。
+   const workers=this.deskWorkers(task.id);
+   if(workers.length&&lines.length<height-3){
+    const running=workers.filter(w=>!terminalStates.has(w.status)).length;
+    const failed=workers.filter(w=>w.status==='失败').length;
+    const summary=`僚属 ${workers.length}${running?` · 运行${running}`:''}${failed?` · 失败${failed}`:''}`;
+    lines.push(row(summary,failed?'error':running?'accent':'dim'));
+    for(const worker of workers.slice(0,3)){
+     const mark=stateMark(worker);
+     const color=safeStateColor(stateColor(worker,0));
+     const label=`  ${mark} ${plainText(worker.status||worker.state||'—')} · ${plainText(worker.title||'')}`;
+     lines.push(row(label,color));
+     if(worker.error)for(const l of wrapTextWithAnsi(plainText(worker.error),inner-2).slice(0,1))lines.push(row('    '+l,'error'));
+    }
+    if(workers.length>3)lines.push(row(`  … 另有 ${workers.length-3} 个僚属`,'dim'));
+   }
   }
   // 产出区高度 = 面板高 - 头部 - 分隔线 - 输入框 - 底框；放不下就整体让给输入框。
   const cap=Math.max(0,height-lines.length-editorLines.length-2);

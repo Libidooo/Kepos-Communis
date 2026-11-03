@@ -35,9 +35,11 @@ test('wide council keeps the ring compact and uses a right-side inspector', () =
 test('council seats expose the task a cancel action should target', () => {
   const view = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING' }] }, 100, 32, 0, 1, theme);
   assert.equal(view.hits.find(hit => hit.id === 'agent:a')?.taskId, 'task-a');
-  const sub = renderGraph({ agents, tasks: [{ id: 'sub', agent: 'X', state: 'RUNNING', parentWorkerId: 'task-a' }] }, 100, 32, 1, 1, theme);
-  assert.equal(sub.hits.find(hit => hit.id === 'task:sub')?.taskId, 'sub');
-  assert.equal(sub.hits.find(hit => hit.id === 'agent:a')?.taskId, undefined);
+  // 僚属（代表派生的子任务）不进主环：它由直属代表全权负责，
+  // 在书案里按需展开。主环只铺代表席位，避免被临时节点撑满。
+  const sub = renderGraph({ agents, tasks: [{ id: 'sub', agent: 'X', state: 'RUNNING', parentWorkerId: 'task-a' }] }, 100, 32, 0, 1, theme);
+  assert.equal(sub.hits.some(hit => hit.id === 'task:sub'), false, 'a subordinate worker never occupies a council seat');
+  assert.equal(sub.hits.length, 1 + agents.length, 'only the 总理 seat plus representatives');
 });
 
 test('council header and sidebar counts share one definition of active and pending', () => {

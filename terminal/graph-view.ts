@@ -301,14 +301,10 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
     const active = latest && isTaskCurrent(latest) ? latest : undefined;
     return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: latest, groupKey: active?.groupKey || 'default', index: 0, x: 0, y: 0, deputy: agent.deputy === true };
   });
-  for (const task of tasks) {
-    const agent = byAgent.get(task.agent);
-    if (agent && !task.parentWorkerId) continue;
-    // 子任务结束同样收线，不再留在环上。
-    if (!isTaskCurrent(task)) continue;
-    // 任务节点用标题做标签：同名代表派生的多个任务不再长成一对双胞胎。
-    realNodes.push({ id: `task:${task.id}`, label: plain(task.title || '') || task.agent, kind: 'task', task, groupKey: task.groupKey || task.parentWorkerId || `group-${Math.floor(realNodes.length / 12)}`, index: 0, x: 0, y: 0 });
-  }
+  // 主环只铺代表席位。僚属（代表派生的子任务）不占席位：
+  // 48 个代表各派生若干僚属时，环图会被几十个临时节点撑满，反而看不清组织。
+  // 僚属改在书案里按需展开，主界面保持干净。
+  // 这一取舍也符合职责链：代表对僚属全权负责，人类在代表这一层看到足够信息。
   // 只铺真实席位，不补空席。代表少的时候圆环本身就小，不需要占位符撑场面。
   // index 连续覆盖 0..n-1：键盘 ↑↓、点击命中和 Ctrl+X 都按 index 寻址
   //（hits[0] 是 index=-1 的总理座），漏赋值会让选中态整体错位。

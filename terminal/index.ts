@@ -26,6 +26,7 @@ import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APP
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
+import { validateGrantRequest, canDelegate, grantActive, describeForHuman, type GrantRequest } from './grant.ts';
 export { fit, historyLines };
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
 const DEFAULT_COUNCIL_ROLE_COUNT = 48;
@@ -289,6 +290,45 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   lines.push('请把以上结果原样转述给人类；是否执行（含是否终止任务）由人类决定。');
   if(desk){desk.notice=`表决 · ${params.question.slice(0,80)}：赞成${tally.yes} 反对${tally.no} 弃权${tally.abstain}${params.main?` · 主Agent（分派方）：${VOTE_LABELS[params.main.choice]}`:''}`;scheduleRepaint();}
   return{content:[{type:'text',text:boundedText(lines.join('\n'),1600)}],details:record};
+ }});
+ pi.registerTool({name:'kepos_grant',label:'权限申请与转授',description:'代表申请写权限，或把自身持有的权限转授给僚属。审批链：代表申请 → 代理总代转呈 → 总理批准 → 人类确认。授权绑定在这一次任务的进程上，任务结束即失效。转授不能超过自身持有范围。',parameters:Type.Object({action:Type.Union(['request','grant','status'].map(value=>Type.Literal(value))),tools:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'request: 申请的写权限（bash/powershell/edit/write）；grant: 要转授给僚属的子集'})),reason:Type.Optional(Type.String({maxLength:500,description:'request 必填：要改什么、为什么必须写'})),taskId:Type.Optional(Type.String({description:'申请者任务 id；缺省取当前会话最近的任务'})),member:Type.Optional(Type.String({description:'grant 时指定僚属名称或任务 id'})),grantId:Type.Optional(Type.String({description:'status/approve 时指定授权 id'})),approve:Type.Optional(Type.Boolean({description:'true 表示人类确认批准（严格模式下必须显式传）'})),note:Type.Optional(Type.String({maxLength:300,description:'批准或驳回的理由，写入审计'})),text:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
+  // 授权表：按任务 id 记，任务终态时由 sweepGrants 清掉，绝不跨任务保留。
+  const grants:any[]=(db() as any).get?.('grants')||[];
+  const saveGrants=()=>db().set('grants',grants.slice(-200));
+  if(params.action==='request'){
+   const checked=validateGrantRequest({tools:params.tools,reason:params.reason});
+   if(!checked.ok)throw Error(checked.reason);
+   const parent=ctx.sessionManager.getSessionId();
+   const taskId=params.taskId||pool.tasks.filter(t=>t.parentSessionId===parent&&!terminalStates.has(t.status)).at(-1)?.id;
+   if(!taskId)throw Error('找不到可申请的任务：请指定 taskId');
+   const request:GrantRequest={id:randomUUID(),taskId,agent:pool.tasks.find(t=>t.id===taskId)?.agent||'代表',tools:checked.tools,reason:checked.reason,state:'requested',requestedAt:Date.now()};
+   grants.push(request);saveGrants();
+   // 严格模式下必须人类确认；这里只登记申请，批准走 approve。
+   if(desk){desk.urgent(`权限申请待批准：${describeForHuman(request)}`);scheduleRepaint();}
+   return{content:[{type:'text',text:`已登记权限申请 ${request.id}\n${describeForHuman(request)}\n严格模式下需要人类确认后才会生效。`}],details:{request}};
+  }
+  if(params.action==='grant'){
+   const parent=ctx.sessionManager.getSessionId();
+   // 代表当前持有的权限：来自已批准且任务未结束的授权。
+   const holder=params.grantId?grants.find(g=>g.id===params.grantId):grants.filter(g=>g.state==='approved'&&!terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||'')).at(-1);
+   if(!holder)throw Error('没有可用的已批准权限：先 request 并通过批准');
+   const liveTask=pool.tasks.find(t=>t.id===holder.taskId);
+   if(!liveTask||terminalStates.has(liveTask.status))throw Error('该权限所属任务已结束，授权已失效');
+   const checked=canDelegate(holder.tools,params.tools||[]);
+   // strict:false 下联合类型不会按 !ok 收窄，用显式分支取值。
+   if(checked.ok!==true)throw Error((checked as {reason:string}).reason);
+   // 转授记录：绑定到僚属任务，同样随任务结束失效。
+   const target=params.member?pool.tasks.find(t=>t.id===params.member||t.agent===params.member):undefined;
+   if(!target)throw Error('找不到该僚属：请指定名称或任务 id');
+   grants.push({id:randomUUID(),taskId:target.id,agent:target.agent,tools:checked.tools,reason:`转授自 ${holder.agent}`,state:'approved',requestedAt:Date.now(),approvedAt:Date.now(),humanConfirmed:true,delegatedFrom:holder.id});
+   saveGrants();
+   return{content:[{type:'text',text:`已把 ${checked.tools.join(' / ')} 转授给僚属 ${target.agent}（任务 ${target.id}）。随该任务结束失效。`}],details:{tools:checked.tools,taskId:target.id}};
+  }
+  // status：列出本会话相关的授权。
+  const parent=ctx.sessionManager.getSessionId();
+  const ids=new Set(pool.tasks.filter(t=>t.parentSessionId===parent).map(t=>t.id));
+  const view=grants.filter(g=>ids.has(g.taskId)).map(g=>({id:g.id,taskId:g.taskId,agent:g.agent,tools:g.tools,state:g.state,active:grantActive(g,terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||''))}));
+  return{content:[{type:'text',text:JSON.stringify(view)}],details:{grants:view}};
  }});
  pi.registerTool({name:'kepos_attach',label:'读取附件',description:'读取本地文件并把内容作为证据返回：docx / pptx / xlsx / epub / zip 自动提取文本，pdf 需要可选解析器，图片返回为图像附件，纯文本直接读取。人类说"读一下某个文件"时用它，不要凭空猜测文件内容。凭据文件与 Kepos 数据目录会被拒绝。',parameters:Type.Object({paths:Type.Array(Type.String({maxLength:1000}),{minItems:1,maxItems:8,description:'要读取的绝对路径或相对项目根的路径'}),cwd:Type.Optional(Type.String({maxLength:1000,description:'解析相对路径的基准目录；默认当前项目'})),cursor:Type.Optional(Type.Integer({minimum:0,description:'上一页返回的 nextCursor；用于读取超长附件的后续段落'})),maxChars:Type.Optional(Type.Integer({minimum:500,maximum:120000,description:'每个文件返回的最大字符数，默认 20000'}))}),async execute(_id,params,_signal,_update,ctx){
   const base=params.cwd||ctx?.cwd||process.cwd();

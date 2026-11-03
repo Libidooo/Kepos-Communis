@@ -49,7 +49,7 @@ export function riskReason(risk: Risk): string {
 }
 
 /** Tools dropped from the main agent in readonly supervision mode. */
-const MUTATING_TOOLS = ['bash', 'powershell', 'edit', 'write'];
+export const MUTATING_TOOLS = ['bash', 'powershell', 'edit', 'write'];
 export function restrictTools(names: string[]): string[] {
   return names.filter(name => !MUTATING_TOOLS.includes(name));
 }
