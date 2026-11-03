@@ -259,3 +259,22 @@ test('human, 总理 and delegate messages are visually distinct in every theme',
     void speakerOf;
   }
 });
+
+// 工具信息默认折叠：40 行输出应压成一行摘要，但失败的工具必须强制展开，
+// 否则错误会被折叠藏起来。F5 切到 full 后完整输出恢复。
+test('tool output folds to one summary line but failures always stay expanded', async () => {
+  const { historyLines } = await import('../dist/terminal/desk.js');
+  const plainTheme = { fg: (_c, v) => v };
+  const longOutput = Array.from({ length: 40 }, (_, i) => `line-${i}`).join('\n');
+  const ok = [{ type: 'message', message: { role: 'toolResult', toolName: 'bash', content: [{ type: 'text', text: longOutput }] } }];
+  const failed = [{ type: 'message', message: { role: 'toolResult', toolName: 'bash', isError: true, content: [{ type: 'text', text: longOutput }] } }];
+
+  const summary = historyLines(ok, 80, 'summary', plainTheme);
+  const full = historyLines(ok, 80, 'full', plainTheme);
+  assert.ok(summary.length < full.length, 'summary is more compact than full');
+  assert.ok(summary.some(line => line.includes('F5 展开')), 'summary advertises how to expand');
+
+  const failedSummary = historyLines(failed, 80, 'summary', plainTheme);
+  assert.ok(failedSummary.length > summary.length, 'failed tool output is not collapsed');
+  assert.ok(failedSummary.some(line => line.includes('line-39')), 'failed output stays readable to the end');
+});

@@ -24,6 +24,8 @@ export interface Config {
   motion?: boolean;
   /** 代理总代：人类从现任代表中推选兼任，只存稳定 agentId，不占用代表编制。 */
   deputyAgentId?: string;
+  /** 工具输出展开状态：默认折叠为一行摘要；true 表示展开完整输出。 */
+  expandedTools?: boolean;
 }
 
 const snapshots = new WeakMap<Config, Config>();
