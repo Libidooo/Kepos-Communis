@@ -26,6 +26,9 @@ import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APP
 import { SpawnRequestPoller } from './spawn-poller.ts';
 import { credentialsReady } from './cli-runtime.ts';
 import { cliGrantUsable } from './cli-grant.ts';
+import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
+import { renderMemoryIndex } from './memory.ts';
+import { checkMandate, shieldOutput, EFFORT_GUIDE } from './mandate.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -77,6 +80,19 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 每开一个新任务 / 新对话都从 0 重新计算——不存在跨任务累计。
  const DEFAULT_TASK_TOKEN_BUDGET = 2_000_000;
  configureWorkerBudget(()=>({perTaskTokens:DEFAULT_TASK_TOKEN_BUDGET,...(config.budget||{})}));
+ // 记忆整理管道：模型由调用方注入。这里用主 Agent 的会话做一次轻量生成——
+ // 记忆整理只是一次短摘要，不值得为它单开一个 worker 进程。
+ const memoryPipeline=new ConsolidationPipeline(db(),async(prompt:string)=>{
+  const entries=await new Promise<string>((resolve,reject)=>{
+   try{
+    // 复用主 Agent 的模型做一次最小生成：不发工具、不改配置。
+    const result=current?.generateCompletion?.(prompt);
+    if(result&&typeof result.then==='function')result.then((text:string)=>resolve(String(text||'')),reject);
+    else resolve('');
+   }catch(error){reject(error);}
+  });
+  return entries;
+ },message=>{if(desk){desk.notice='记忆整理：'+message;scheduleRepaint();}});
  let baselineTools:string[]=[];
  const applyApprovalPolicy=()=>{if(!baselineTools.length)return;try{pi.setActiveTools(currentPolicy()==='readonly'?restrictTools(baselineTools):baselineTools);}catch(error){desk&&(desk.notice='审批模式切换失败：'+clean(error));scheduleRepaint();}};
  function initializeCrew(ctx:any){
@@ -104,6 +120,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    // 失败类终态与要求人类介入的事件必须"听得见"：此前失败只留一条 4 秒 notice，
    // 委派秒败时用户毫无感知（报错无阻拦）。错误原因带进 notice，不用翻任务详情。
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
+   // 任务终态后入队做记忆整理：只入队不执行，避免在结算路径上做模型调用。
+   if(event.type==='task_finished'){const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().catch(()=>{});}}
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
    if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
    // 僚属失败时把责任归到直属代表：代表对该僚属全权负责，必须由它去修或重派。
@@ -212,7 +230,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const plans=hasPlans?`A delegate plan longer than ${HUMAN_APPROVAL_THRESHOLD_SECONDS}s must be represented as an kepos_plan step and explicitly approved by a human before dispatch. Use kepos_plan for long dockets with bounded steps and human gates, and kepos_events with a cursor for incremental supervision. When the council must decide, have each delegate end its output with a VOTE: yes|no|abstain - one-line reason, then record the round with kepos_vote including your own recommendation in main, and relay the tally to the human.`:'';
   // 恒定的一句：无论是否推选过，都不该为代理总代创建编制。
   const seatRule='Never create a seat or a role for the deputy chair; it is an elected duty, not a representative seat.';
-  supervisionPrompt=[core,supervision,mcp,deputy,plans,seatRule,`Crew: ${crew}`].filter(Boolean).join(' ');
+  supervisionPrompt=[core,supervision,mcp,deputy,plans,seatRule,config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
  };
  const refreshSupervisionPrompt=()=>assembleSupervisionPrompt();refreshSupervisionPrompt();
  pi.on('before_agent_start',(event)=>{if(!supervisionPrompt)refreshSupervisionPrompt();event.systemPromptOptions.sections.kepos_supervision=supervisionPrompt;});
@@ -271,6 +289,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  async function resolveDelegateJob(task:any,ctx:any,skillPaths:Map<string,string>,names:Set<string>){
   if(!task.task?.trim())throw Error('任务内容不能为空；本批任务未启动');
+  // 委派四件套：缺项默认只警告（不阻断），KEPOS_MANDATE_STRICT=1 时硬拒绝。
+  // 规则下沉到校验层而非提示词——报告实测纯提示词约束时 5 次会漏 1 次。
+  const mandate=checkMandate(String(task.task),{strict:process.env.KEPOS_MANDATE_STRICT==='1'});
+  if(mandate.ok!==true)throw Error((mandate as {reason:string}).reason);
   if(task.seconds!==undefined&&(!Number.isInteger(task.seconds)||task.seconds<1||task.seconds>MAX_TASK_SECONDS))throw Error(`任务期限必须为 1–${MAX_TASK_SECONDS} 秒；本批任务未启动`);
   if(task.seconds!==undefined&&task.seconds>HUMAN_APPROVAL_THRESHOLD_SECONDS)throw Error(`超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的僚属 必须进入 kepos_plan 并等待人类批准；本批任务未启动`);
   if(task.budgetTokens!==undefined&&(!Number.isInteger(task.budgetTokens)||task.budgetTokens<1000))throw Error('budgetTokens 必须是不少于 1000 的整数；本批任务未启动');
@@ -308,7 +330,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    if(bound.length){desk&&(desk.notice='已从 skills.sh 安装并绑定 Skill：'+bound.join('、'));scheduleRepaint();}
    for(let index=0;index<resolved.length;index++){const override=overrides.get(resolved[index]);if(override)resolved[index]=override;}
   }
-  return {...task,crew,skills:resolved,mcp:false,mcpServers,tools};
+  // 记忆注入：把该代表此前有效记忆拼成索引，附在任务文本前面。
+  // 硬上限 200 行；结尾声明仅供参考——旧记忆不能覆盖本任务的实际证据。
+  const memoryIndex=renderMemoryIndex(memoryPipeline.list(crew.id||crew.name));
+  const launched=memoryIndex?{...task,task:`${memoryIndex}\n\n---\n\n${String(task.task||'')}`}:task;
+  return {...launched,crew,skills:resolved,mcp:false,mcpServers,tools};
  }
 
  const handleSchema=Type.Object({version:Type.Literal(1),workerId:Type.String(),parentSessionId:Type.String(),capability:Type.String()});
@@ -333,6 +359,28 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   lines.push('请把以上结果原样转述给人类；是否执行（含是否终止任务）由人类决定。');
   if(desk){desk.notice=`表决 · ${params.question.slice(0,80)}：赞成${tally.yes} 反对${tally.no} 弃权${tally.abstain}${params.main?` · 主Agent（分派方）：${VOTE_LABELS[params.main.choice]}`:''}`;scheduleRepaint();}
   return{content:[{type:'text',text:boundedText(lines.join('\n'),1600)}],details:record};
+ }});
+ pi.registerTool({name:'kepos_memory',label:'代表记忆',description:'查询或管理代表记忆。记忆由任务结束后自动整理产生，双时态保存：失效只标记不删除，可回溯历史上某个时刻相信什么。list 查当前有效记忆；search 按关键词检索；asof 查历史；invalidate 手动失效一条（不删除）。',parameters:Type.Object({action:Type.Union(['list','search','asof','invalidate'].map(value=>Type.Literal(value))),agent:Type.Optional(Type.String({maxLength:120,description:'代表名称或 ID'})),query:Type.Optional(Type.String({maxLength:200,description:'search 的关键词'})),at:Type.Optional(Type.Integer({description:'asof 的时间戳（毫秒）'})),id:Type.Optional(Type.String({maxLength:80,description:'invalidate 时的记忆 id'})),limit:Type.Optional(Type.Integer({minimum:1,maximum:200}))}),async execute(_id,params){
+  const limit=params.limit??50;
+  if(params.action==='invalidate'){
+   if(!params.id)throw Error('invalidate 需要 id');
+   const ok=memoryPipeline.invalidate(String(params.id));
+   const detail={id:params.id,invalidated:ok,memories:[] as any[]};
+   return{content:[{type:'text',text:ok?'已标记失效（记录保留，可回溯）':'该记忆已是失效状态或不存在'}],details:detail};
+  }
+  const member=config.agents.find(a=>a.id===params.agent||a.name===params.agent);
+  if(!member)throw Error('找不到该代表：'+(params.agent||'(未指定)'));
+  let rows;
+  if(params.action==='asof'){
+   if(!Number.isFinite(params.at))throw Error('asof 需要时间戳 at');
+   rows=memoryPipeline.asOf(member.id,Number(params.at));
+  }else if(params.action==='search'){
+   rows=memoryPipeline.search(member.id,String(params.query||''));
+  }else{
+   rows=memoryPipeline.list(member.id);
+  }
+  const data=rows.slice(0,limit).map(row=>({id:row.id,kind:row.kind,content:row.content,sourceWorkerId:row.sourceWorkerId,validFrom:row.validFrom,validTo:row.validTo}));
+  return{content:[{type:'text',text:JSON.stringify({agent:member.name,total:rows.length,memories:data,note:data.length?'':'该代表暂无记忆；任务完成后会自动整理。'})}],details:{memories:data}};
  }});
  pi.registerTool({name:'kepos_cli_grant',label:'外部 CLI 白名单与授权',description:'管理外部 agent CLI（codex / claude 等）的白名单与任务级授权。白名单存 config.json，由人类决定。授权绑定到某次任务，任务结束自动回收。代表只能在授权范围内启动 CLI。',parameters:Type.Object({action:Type.Union(['list','allow','remove','grant','status'].map(value=>Type.Literal(value))),cli:Type.Optional(Type.String({maxLength:40,description:'CLI 可执行名，如 codex'})),label:Type.Optional(Type.String({maxLength:60,description:'allow 时的显示名'})),envKey:Type.Optional(Type.String({maxLength:80,description:'该 CLI 需要的凭据环境变量名；只传这一个'})),argPrefixes:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'允许的首参数前缀，如 exec / -b / -P'})),taskId:Type.Optional(Type.String({description:'grant 时把授权绑定到该任务'})),note:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
   const allowlist=config.cliAllowlist||{};

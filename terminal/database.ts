@@ -26,6 +26,32 @@ export class KeposDatabase {
    CREATE INDEX IF NOT EXISTS worker_events_owner ON worker_events(worker_id,seq);
    CREATE INDEX IF NOT EXISTS messages_session ON messages(session_id,seq);
    CREATE TRIGGER IF NOT EXISTS immutable_receipt BEFORE UPDATE OF receipt ON workers WHEN OLD.receipt IS NOT NULL AND NEW.receipt IS NOT OLD.receipt BEGIN SELECT RAISE(ABORT,'terminal receipt is immutable'); END;
+   -- 代表记忆：双时态。失效只置 valid_to，永不物理删除——
+   -- 这样"某时刻我们相信什么"可以回溯，也避免整理管道误删后无法恢复。
+   CREATE TABLE IF NOT EXISTS representative_memories(
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'semantic',
+    content TEXT NOT NULL,
+    source_worker_id TEXT,
+    valid_from INTEGER NOT NULL,
+    valid_to INTEGER,
+    created_at INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_mem_agent_valid ON representative_memories(agent_id,valid_to);
+   -- 整理管道去重：同一任务只整理一次。
+   CREATE TABLE IF NOT EXISTS memory_consolidated(worker_id TEXT PRIMARY KEY,at INTEGER NOT NULL);
+   -- Watchdog 判定：模型对"是否仍在推进"的判断结果，用于事后算误报率。
+   CREATE TABLE IF NOT EXISTS watchdog_verdicts(
+    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+    worker_id TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    verdict TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    evidence_cursor INTEGER NOT NULL,
+    model TEXT NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_watchdog_worker ON watchdog_verdicts(worker_id,seq);
    PRAGMA user_version=1;
   `);});
   } catch(error) { this.sql.close(); throw error; }

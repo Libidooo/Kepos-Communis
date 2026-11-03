@@ -1,3 +1,4 @@
+import { shieldOutput } from './mandate.ts';
 export interface ResultPageOptions {
     cursor?: number;
     maxChars?: number;
@@ -19,6 +20,8 @@ export function outputPage(value: unknown, options: ResultPageOptions = {}) {
     if (end < text.length && end > cursor && /[\uD800-\uDBFF]/.test(text[end - 1]))
         end--;
     const output = text.slice(cursor, end);
+    // 分页数据保持原样：调用方按 cursor 逐页读取时必须能逐字节重建全文，
+    // 注入防御头只在最终呈现（receiptView）加一次。
     return { output, cursor, nextCursor: end < text.length ? end : null, totalCharacters: text.length, hasMore: end < text.length, kind: cursor === 0 && options.summaryOnly !== false ? 'excerpt' : 'evidence' };
 }
 export function receiptView(receipt: any, options: ResultPageOptions = {}) {
@@ -31,9 +34,12 @@ export function receiptView(receipt: any, options: ResultPageOptions = {}) {
     const page = structured && options.maxChars === undefined
         ? { output: structured, cursor: 0, nextCursor: null, totalCharacters: receipt.output.length, hasMore: true, kind: 'summary' }
         : outputPage(receipt.output, options);
+    // 产出注入防御：代表产出可能夹带「忽略之前指令」这类文本。
+    // 只在这一层加一次头——它是交付给上级的最终形态，不是分页数据本身。
+    const guarded = { ...page, output: shieldOutput(page.output) };
     return { version: receipt.version, workerId: receipt.workerId, parentSessionId: receipt.parentSessionId, state: receipt.state,
         started: receipt.started, ended: receipt.ended, error: receipt.error, resultHash: receipt.resultHash,
-        profileRevision: receipt.profileRevision, outputTruncated: receipt.outputTruncated, usage: receipt.usage, ...page };
+        profileRevision: receipt.profileRevision, outputTruncated: receipt.outputTruncated, usage: receipt.usage, ...guarded };
 }
 /**
  * 从产出末尾抽出结构化摘要（四个约定标题）。
