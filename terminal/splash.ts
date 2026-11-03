@@ -4,8 +4,9 @@ import { getCellDimensions, type CellDimensions, type Component } from '@earendi
 export const SPLASH_TIMING = {
   frameMs: 40,
   tableMs: 640,
-  lightStartMs: 720,
-  lightEndMs: 1520,
+  // Spread ignition over a longer window so the per-seat wave is actually visible.
+  lightStartMs: 680,
+  lightEndMs: 1780,
   wordmarkStartMs: 880,
   // A slower sweep: the highlight needs ~1.3s to cross, not 0.5s.
   sweepStartMs: 1080,
@@ -271,27 +272,63 @@ function computeLayout(W: number, H: number, cellAspect: number): SplashLayout |
   return null;
 }
 
-export function splashLight(elapsed: number): { x: number; y: number; z: number; progress: number } {
-  const progress = smooth((elapsed - SPLASH_TIMING.lightStartMs) / (SPLASH_TIMING.lightEndMs - SPLASH_TIMING.lightStartMs));
-  const azimuth = Math.PI * (1 - progress), elevation = Math.PI / 5;
-  return { x: Math.cos(azimuth) * Math.cos(elevation), y: Math.sin(azimuth) * Math.cos(elevation), z: Math.sin(elevation), progress };
+// One fixed lamp in world space at the upper right, exactly like the reference clip: the
+// camera and the light never move; the surfaces ignite one after another.
+export const LIGHT_DIR = (() => {
+  const azimuth = Math.PI * .28, elevation = Math.PI / 5;
+  return { x: Math.cos(azimuth) * Math.cos(elevation), y: Math.sin(azimuth) * Math.cos(elevation), z: Math.sin(elevation) };
+})();
+
+// Kept for callers that ask where the key light is; it no longer sweeps.
+export function splashLight(_elapsed: number): { x: number; y: number; z: number; progress: number } {
+  return { ...LIGHT_DIR, progress: 1 };
 }
 
+// Ignition order: seats light up one after another around the ring, like the reference clip's
+// facets catching light. Each seat ramps over a short window, so the wave reads as discrete
+// blocks igniting rather than one global fade.
 export function lecternProgress(elapsed: number, index: number): { desktop: number; plaque: number } {
-  const tablet = smooth((elapsed - index / (SEATS - 1) * (SPLASH_TIMING.tableMs - 260)) / 260);
-  // Light is a moving front, so plates read as illuminated rather than grown.
-  const facing = (Math.sin(index * Math.PI * 2 / SEATS) + 1) / 2;
-  const plaque = smooth((splashLight(elapsed).progress - facing * .62) / .38);
-  return { desktop: tablet, plaque };
+  const span = SPLASH_TIMING.lightEndMs - SPLASH_TIMING.lightStartMs;
+  const ramp = Math.max(160, span / SEATS * 2.8);
+  const start = SPLASH_TIMING.lightStartMs + (index / SEATS) * (span - ramp);
+  const lit = smooth((elapsed - start) / ramp);
+  return { desktop: lit, plaque: lit };
 }
 
-export function lecternLighting(elapsed: number, seat: SplashLectern): { desktop: number; plaque: number } {
-  const light = splashLight(elapsed);
-  // Plates are vertical signs: their brightness follows how squarely they face the light.
-  const plaque = Math.max(0, seat.outward.x * light.x + seat.outward.y * light.y);
-  // Tables are the only surface now, so the tonal spread has to come from them: a deeper
-  // shadow at the far side and a brighter lit rim near the light.
-  return { desktop: .12 + .92 * plaque + .12 * light.z, plaque };
+// Per-pixel shading: a tabletop tilts toward the lamp, so brightness depends on where a point
+// sits inside the seat, not just on which seat it is.
+// Cached per seat: each tabletop is normalised by its own extent, so the gradient spans the
+// whole surface instead of saturating within half a cell.
+const seatExtent = new WeakMap<SplashLectern, { hx: number; hy: number }>();
+function extentOf(seat: SplashLectern): { hx: number; hy: number } {
+  const cached = seatExtent.get(seat);
+  if (cached) return cached;
+  let maxX = .25, maxY = .25;
+  for (const sample of seat.samples) {
+    maxX = Math.max(maxX, Math.abs(sample.x / 2 - seat.center.x));
+    maxY = Math.max(maxY, Math.abs(sample.y / 2 - seat.center.y));
+  }
+  const found = { hx: maxX, hy: maxY };
+  seatExtent.set(seat, found);
+  return found;
+}
+
+export function surfaceShade(seat: SplashLectern, nx: number, ny: number, part: 'desktop' | 'plaque'): number {
+  const { hx, hy } = extentOf(seat);
+  // Local -1..1 coordinates across this desk, so the gradient always spans the full surface.
+  const gx = clamp((nx - seat.center.x) / hx), gy = clamp((ny - seat.center.y) / hy);
+  if (part === 'desktop') {
+    // Key light sits up-right: the +x / -y quadrant is brightest and the far corner falls away.
+    // A raised lip on the outer edge adds the specular spark that makes each desk read solid.
+    const facing = .5 + .5 * (gx * .60 - gy * .80);
+    const lip = Math.max(0, Math.hypot(gx * .8, gy) - .35) / .65;
+    // Bias upward: the ring should read as lit metal, with the gradient carried by the
+    // highlight rather than by crushing everything into shadow.
+    return clamp(.30 + .58 * facing + .30 * lip);
+  }
+  // Plates face outward; brightness follows how squarely they meet the light.
+  const square = Math.max(0, seat.outward.x * LIGHT_DIR.x + seat.outward.y * LIGHT_DIR.y);
+  return clamp(.10 + .86 * square);
 }
 
 // `painted` records membership in the geometry, independent of how bright a cell currently is.
@@ -316,22 +353,19 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
   // Ease-in exit: the first third must be visibly dimmer, otherwise 8-bit colour quantisation
   // makes the early fade frames byte-identical to the held frame.
   const fade = 1 - clamp((elapsed - exitAt) / SPLASH_TIMING.fadeMs) ** .55;
-  const light = splashLight(elapsed);
-  const lightScreen = { x: light.x * layout.cellAspect, y: light.y * SPLASH_VIEW.depth };
-  const lightLength = Math.hypot(lightScreen.x, lightScreen.y) || 1;
 
   if (fade > 0) [...layout.ring.lecterns].sort((a, b) => a.center.y - b.center.y).forEach(seat => {
-    const progress = lecternProgress(elapsed, seat.id), lighting = lecternLighting(elapsed, seat);
+    const progress = lecternProgress(elapsed, seat.id);
     for (const sample of seat.samples) {
       const opacity = progress[sample.part] * fade;
       if (opacity <= 0) continue;
-      const dx = (sample.x / 2 - seat.center.x) / (seat.slot * layout.cellAspect);
-      const dy = (sample.y / 2 - seat.center.y) / (seat.slot * SPLASH_VIEW.depth);
-      const rim = sample.part === 'desktop' ? Math.max(0, (dx * lightScreen.x + dy * lightScreen.y) / lightLength) ** 2 : 0;
-      const base = sample.part === 'desktop'
-        ? mix(SHADOW, LIT, lighting.desktop)
-        : mix(SHADOW, LIT, lighting.plaque);
-      const rgb = mix(base, RIM, rim * .8).map(channel => channel * fade);
+      // Every sub-cell is shaded from its own position inside the tabletop, so a seat reads as
+      // a lit solid rather than a flat silhouette.
+      const shade = surfaceShade(seat, sample.x / 2, sample.y / 2, sample.part);
+      const base = mix(SHADOW, LIT, shade);
+      // A hot rim on the lit corner separates neighbouring desks without drawing outlines.
+      const rim = sample.part === 'desktop' ? Math.max(0, shade - .78) / .22 : 0;
+      const rgb = mix(base, RIM, rim * .85).map(channel => channel * fade);
       // Coverage stays full during the exit: the cell keeps its place and only loses luminance,
       // so the silhouette never reshapes while fading out.
       paint(buffer, subWidth, subHeight, sample.x, sample.y, rgb, Math.min(1, opacity * sample.coverage));

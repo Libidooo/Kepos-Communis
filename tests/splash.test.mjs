@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSplashFrame, layoutSplash, createSplashComponent, playSplash, lecternProgress, lecternLighting, splashLight, SPLASH_TIMING, SPLASH_STEPS, SPLASH_VIEW } from '../dist/terminal/splash.js';
+import { buildSplashFrame, layoutSplash, createSplashComponent, playSplash, lecternProgress, surfaceShade, splashLight, LIGHT_DIR, SPLASH_TIMING, SPLASH_STEPS, SPLASH_VIEW } from '../dist/terminal/splash.js';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { stripVTControlCharacters } from 'node:util';
 
@@ -90,39 +90,51 @@ test('every lectern surface remains visible and draws inside its own bounds', ()
   }
 });
 
-test('tablets arrive first, plates are lit afterwards without moving', () => {
+test('desks are laid out first, then ignite in a ring wave without moving', () => {
+  // Geometry is complete before ignition starts: the layout never grows during the light show.
   for (let index = 0; index < 48; index++) {
     assert.deepEqual(lecternProgress(0, index), { desktop: 0, plaque: 0 });
-    assert.deepEqual(lecternProgress(SPLASH_TIMING.tableMs, index), { desktop: 1, plaque: 0 });
-    assert.equal(lecternProgress(SPLASH_TIMING.lightStartMs, index).plaque, 0);
-    assert.deepEqual(lecternProgress(SPLASH_TIMING.lightEndMs, index), { desktop: 1, plaque: 1 });
+    assert.equal(lecternProgress(SPLASH_TIMING.lightEndMs, index).desktop, 1);
+    // Monotonic per seat.
     let previous = 0;
     for (let ms = SPLASH_TIMING.lightStartMs; ms <= SPLASH_TIMING.lightEndMs; ms += 40) {
-      const value = lecternProgress(ms, index).plaque;
+      const value = lecternProgress(ms, index).desktop;
       assert.ok(value >= previous && value <= 1);
       previous = value;
     }
   }
+  // Not all seats ignite together: early seats lead late seats through the window.
   const middle = (SPLASH_TIMING.lightStartMs + SPLASH_TIMING.lightEndMs) / 2;
-  assert.ok(lecternProgress(middle, 36).plaque > lecternProgress(middle, 12).plaque, 'left is lit before right');
+  assert.ok(lecternProgress(middle, 6).desktop > lecternProgress(middle, 42).desktop,
+    'the wave travels around the ring');
+
   const layout = layoutSplash(120, 35);
   const snapshot = JSON.stringify(layout.ring.lecterns);
   for (const ms of [720, 1000, 1300, 1720]) frameAt(ms, 120, 35);
   assert.equal(JSON.stringify(layout.ring.lecterns), snapshot, 'no geometry changes during lighting');
 });
 
-test('the light sweeps left to right and finally rests on the right', () => {
-  assert.ok(splashLight(SPLASH_TIMING.lightStartMs).x < -.7, 'starts from the left');
-  const final = splashLight(SPLASH_TIMING.revealMs);
-  assert.ok(final.x > .8 && final.z > 0);
-  near(Math.hypot(final.x, final.y, final.z), 1);
-  assert.deepEqual(splashLight(9000), final, 'light is static during the hold');
+test('the lamp is fixed at the upper right and seats ignite one after another', () => {
+  // The reference clip keeps a single fixed key light: nothing sweeps, the surfaces light up.
+  assert.ok(LIGHT_DIR.x > 0 && LIGHT_DIR.y > 0 && LIGHT_DIR.z > 0, 'key light sits up-right');
+  near(Math.hypot(LIGHT_DIR.x, LIGHT_DIR.y, LIGHT_DIR.z), 1);
+  assert.deepEqual(splashLight(0), splashLight(9000), 'the light never moves');
+
+  // Ignition is a wave: the seat count strictly grows across the light window.
+  const litAt = ms => Array.from({ length: 48 }, (_, i) => lecternProgress(ms, i).desktop).filter(v => v > .5).length;
+  const samples = [SPLASH_TIMING.lightStartMs, 900, 1100, 1300, 1500, SPLASH_TIMING.lightEndMs].map(litAt);
+  assert.equal(samples[0], 0, 'nothing is lit when the window opens');
+  assert.equal(samples[samples.length - 1], 48, 'every seat is lit when the window closes');
+  for (let i = 1; i < samples.length; i++) assert.ok(samples[i] >= samples[i - 1], 'the wave only advances');
+  assert.ok(samples[2] > 0 && samples[2] < 48, 'the wave is mid-flight, not an instant switch');
+
+  // Within one desk the shading must actually vary, or it reads as a flat cut-out.
   const { lecterns } = layoutSplash(160, 45).ring;
-  const right = lecternLighting(SPLASH_TIMING.revealMs, lecterns[12]);
-  const left = lecternLighting(SPLASH_TIMING.revealMs, lecterns[36]);
-  assert.ok(right.plaque > left.plaque + .5, 'right-facing plates are strongly lit');
-  assert.ok(left.plaque < .05, 'far side stays in shadow rather than flat-lit');
-  assert.ok(right.plaque > .5);
+  const spans = lecterns.map(seat => {
+    const v = seat.samples.map(s => surfaceShade(seat, s.x / 2, s.y / 2, s.part));
+    return Math.max(...v) - Math.min(...v);
+  }).sort((a, b) => a - b);
+  assert.ok(spans[Math.floor(spans.length / 2)] > .2, 'median within-desk tonal span');
 });
 
 test('ring shading spans from deep shadow to a lit rim in the brand hue', () => {

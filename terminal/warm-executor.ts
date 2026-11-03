@@ -6,6 +6,7 @@ import { getAgentDir, getPackageDir } from '@earendil-works/pi-coding-agent';
 import { randomUUID } from 'node:crypto';
 import { dataRoot } from './paths.ts';
 import { sandboxEnv, type ReadScope } from './worker-sandbox.ts';
+import { ARCHIVE_DIR } from './archive.ts';
 import { workerEnv } from './worker-env.ts';
 export { workerEnv } from './worker-env.ts';
 
@@ -71,7 +72,13 @@ Put the detailed working above that summary. The transcript is still retained as
   // so the read-guard configuration must never ride on argv.
   const env = workerEnv(process.env, process.pid, { provider: profile.provider, model: profile.model,
    agentDir: process.env.PI_CODING_AGENT_DIR || process.env.KEPOS_AGENT_DIR || getAgentDir() });
-  Object.assign(env, sandboxEnv({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot] }));
+  // 必须同时挡两个地方：
+  //   dataRoot        —— 用户主目录下的 Kepos 数据（任务库、会话）
+  //   项目内 .kepos/  —— 归档区，里面有别的僚属的报告与代表的裁决
+  // 只挡前者时，readScope=project 会把项目根的 .kepos 一起放行，
+  // 僚属就能读到同项目其他僚属的结论——正是禁止的互读。
+  const archiveDir = join(profile.cwd, ARCHIVE_DIR);
+  Object.assign(env, sandboxEnv({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot, archiveDir] }));
   this.child = spawnWorker(process.execPath, [join(runtimeDir, 'worker-host.cjs'), ...args], {
    cwd: profile.cwd, env, windowsHide: true,
    detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'],
