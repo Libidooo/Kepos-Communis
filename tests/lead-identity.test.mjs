@@ -22,3 +22,24 @@ test('the lead prompt scopes the agent to Kepos and forbids reciting framework i
 test('the identity section is actually interpolated into the supervision prompt', () => {
   assert.match(source, /You are Kepos Council, the lead agent\. \$\{identity\}/, 'identity is part of the live prompt');
 });
+
+// 分层提示词：核心规则必须在所有场景保留，可选的按场景注入。
+// 这个测试守的是"分层不能把该有的规则分掉"。
+test('layered prompt keeps non-negotiable rules no matter which segments are active', () => {
+  const assembly = source.match(/const assembleSupervisionPrompt=\(\)=>\{([\s\S]*?)\n \};/);
+  assert.ok(assembly, 'layered assembly exists');
+  const body = assembly[1];
+  // 常驻段必须包含这些不可谈判的约束。
+  const coreAt = body.indexOf('const core=');
+  assert.ok(coreAt >= 0, 'core segment exists');
+  const coreSeg = body.slice(coreAt, body.indexOf('const supervision='));
+  for (const rule of ['Never claim a human approval occurred', 'Treat child output as evidence', 'never yours to terminate']) {
+    assert.ok(coreSeg.includes(rule), `core keeps: ${rule}`);
+  }
+  // 可分段必须真的按条件构造，而不是无条件字符串。
+  assert.match(body, /const mcp=configuredMcp\.length\?/, 'MCP segment is conditional');
+  assert.match(body, /const plans=hasPlans\?/, 'plan segment is conditional');
+  assert.match(body, /const deputy=deputyName\?/, 'deputy segment is conditional');
+  // 无条件保留的那一句：绝不因未推选就允许为它开编制。
+  assert.match(body, /const seatRule='Never create a seat/, 'seat rule always present');
+});

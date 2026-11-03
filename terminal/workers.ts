@@ -7,7 +7,7 @@ import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
-import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
+import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
 export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' };
 export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
@@ -344,14 +344,27 @@ export class WorkerPool {
    }, Math.max(200, Math.min(5000, stallMs() / 4)));
    stallTimer.unref?.();
    let timer: ReturnType<typeof setTimeout>, reviewTimer: ReturnType<typeof setTimeout> | undefined, cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+   // 事件驱动复核：正常推进不再打扰主 Agent。
+   // 旧行为每个周期都 emit task_review_due，48 个代表并行时主 Agent 每 5 分钟被唤醒
+   // 48 次，复核开销可能超过代表干活本身。现在只在"真的有事"时唤醒：
+   // 连续多个周期没有任何进展（空转），或任务已进入需要人类决策的状态。
+   // 空转检测保留——真卡住的任务仍然会被发现，这是安全底线。
+   // 用 lastProgress 而不是 checkpointAt：后者只在 assistant 输出文本时刷新，
+   // 代表长时间跑工具（读大文件、跑测试）期间没有文本增量就会被误判成空转。
+   // lastProgress 在每条事件上刷新，才是真实的"还在动"。
+   const stalledWithoutProgress = () => Date.now() - lastProgress >= SUPERVISION_INTERVAL_SECONDS * 1000 * STALL_REVIEW_CYCLES;
    const scheduleReview = () => {
     if (finished) return;
     const delay = Math.max(1000, (task.reviewAt || Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000) - Date.now());
     reviewTimer = setTimeout(() => {
      if (finished) return;
+     task.reviewAt = Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000;
+     // 无事发生就继续等下一个周期，不写审批、不唤醒。
+     // Worker 层没有 NEEDS_HUMAN（那是 plan / approval 层的状态），所以唯一的唤醒
+     // 条件是"连续多个周期无进展"——空转才是需要人来判断的事。
+     if (!stalledWithoutProgress()) { scheduleReview(); return; }
      task.reviewCount = (task.reviewCount || 0) + 1;
      task.reviewDue = true;
-     task.reviewAt = Date.now() + SUPERVISION_INTERVAL_SECONDS * 1000;
      this.persist(task, 'review_due');
      this.emit({ type: 'task_review_due', task: { ...task } });
      scheduleReview();
