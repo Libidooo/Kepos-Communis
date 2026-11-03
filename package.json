@@ -1,6 +1,6 @@
 {
   "name": "kepos-communis",
-  "version": "0.3.0-beta.6",
+  "version": "0.4.0",
   "description": "Kepos Communis terminal workspace, powered by the Pi runtime",
   "bin": {
     "kepos": "bin/kepos.cjs"

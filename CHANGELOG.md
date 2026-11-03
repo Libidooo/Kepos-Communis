@@ -1,5 +1,21 @@
 # Changelog
 
+## 0.4.0 — 2026-11-03
+
+Tool noise, communication cost, temporary work groups and unified scheduling:
+
+- **Tool output folds to one line by default.** A tool result renders as a single summary line with a row count; `F5` expands to the full output, and the choice now persists across restarts instead of resetting. Failures never fold — a result marked as an error, carrying an error message, or whose first line reads like an error is always expanded and tinted with the error colour, so folding cannot hide a problem.
+- **Reviews are event-driven instead of polled.** Every delegate used to fire a review point every five minutes, so 48 parallel delegates woke the lead 48 times per window — supervision could cost more than the work itself. Kepos now wakes the lead only when a delegate has produced no event for three consecutive cycles, or has entered a state needing a human decision. Stall detection stays as the safety floor. `lastProgress` is used rather than `checkpointAt`, because the latter only refreshes on assistant text and made delegates busy with long tool calls look stuck.
+- **Delegates return a structured summary.** Output ends with 结论 / 证据 / 置信度 / 需要, and `kepos_worker result` returns that summary by default. Passing `maxChars` or a cursor still pages the full transcript, and output without the headings falls back to ordinary paging rather than losing anything.
+- **The supervision prompt is assembled from segments.** Core rules and the identity boundary are always present; MCP governance appears only when servers are configured, deputy-chair governance only when one is elected, and plan/vote rules only when plans exist. A typical session drops from 2733 to 1453 characters while the full scenario stays slightly below the old size.
+- **Temporary work groups with evidence-only peer reads.** A group forms around one task and dissolves with it, so membership is a `groupId` on the task rather than a persistent roster. Same-group delegates may read each other's evidence but never conclusions or votes: sharing evidence removes duplicated work, while sharing conclusions turns independent judgement into agreement — the known failure mode when same-base models read each other. Output without the contract heading is treated entirely as evidence. Cross-group reads are refused and point at the escalation path (deputy chair reports, the prime minister authorises, the deputy chair carries the conversation).
+- **Debate runs three exchanges then a full-group poll.** Opening, rebuttal and closing, followed by a fourth round where every member states a position with a `VOTE:` line. The closing round requires each side to name what evidence would change its mind. The rebuttal and final rounds ask the human to watch.
+- **The approval mode is always visible.** The status bar shows `⛨ 严格` / `◐ 代理` / `○ 只读` instead of hiding the mode inside the F2 menu. A missing callback falls back to strict rather than silently widening authority.
+- **Attachments are addressable and pageable.** The attachment bar shows each item with its size and truncation marker; `/attach remove <n>` drops one item while `/attach remove` clears all. Long attachments use a cursor (`nextCursor` / `total` / `page` / `pages`) so the middle of a large document is reachable — previously only head and tail were returned.
+- **Daemon pool adapter (D4 Phase 2).** New dispatch can route through the daemon; when it is missing or unresponsive Kepos degrades to the local pool and says why, with a status-bar banner. Cancellation always reaches the local pool too, so a degraded daemon cannot leave orphans. Existing tasks stay readable because SQLite remains the source of truth.
+- **Installation-wide budget ledger (D4 Phase 4).** The daemon owns a ledger keyed by local calendar day, parent session and plan, fed from usage already recorded in receipts. `check()` reports measured spend and the configured action; it never kills a task, because termination stays a human decision.
+
+
 ## 0.3.0-beta.6 — 2026-11-02
 
 Native attachments, three-tier themes and council readability:
