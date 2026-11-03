@@ -25,11 +25,14 @@ import { readWorkerEvents } from './events.ts';
 import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
 import { SpawnRequestPoller } from './spawn-poller.ts';
 import { credentialsReady } from './cli-runtime.ts';
+import { cliGrantUsable } from './cli-grant.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
 import { validateGrantRequest, canDelegate, grantActive, describeForHuman, type GrantRequest } from './grant.ts';
 export { fit, historyLines };
+/** 存在 cli_grants 里的一条授权记录。 */
+type CliGrantRecord={id:string;taskId:string;cli:string;envKey?:string;argPrefixes?:string[];note?:string;grantedAt:number;expiresAt?:number;uses?:number;maxUses?:number};
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
 const DEFAULT_COUNCIL_ROLE_COUNT = 48;
 // 48 席显式种子：覆盖治理、代码、法律合规、文书、学术、政策、工具操作与产品。
@@ -238,7 +241,34 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  // 已批准的 CLI 授权：按当前会话过滤，下发给代表进程。
  // 代表只能启动这里列出的 CLI；任务结束父进程终止其全部会话。
- function activeCliGrants(){const all:any[]=(db() as any).get?.('cli_grants')||[];const parent=current?.sessionManager?.getSessionId?.();const ids=new Set(pool.tasks.filter(t=>!parent||t.parentSessionId===parent).map(t=>t.id));const seen=new Set<string>();const out:any[]=[];for(const g of all){if(seen.has(g.cli))continue;if(!terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||'')){seen.add(g.cli);out.push({cli:g.cli,envKey:g.envKey,argPrefixes:g.argPrefixes});}}return out;}
+ /**
+  * 已生效的外部 CLI 授权：只有当授权仍然有效时才下发给代表。
+  * 有效性由 cliGrantUsable 判定——已批准、人类确认、未过期、次数未用尽、
+  * 且所属任务仍在运行。任何一条不满足都不下发。
+  */
+ function activeCliGrants(){
+  const all:Array<CliGrantRecord>=(db() as any).get?.('cli_grants')||[];
+  const parent=current?.sessionManager?.getSessionId?.();
+  const visible=new Set(pool.tasks.filter(t=>!parent||t.parentSessionId===parent).map(t=>t.id));
+  const seen=new Set<string>();
+  const out:Array<{cli:string;envKey?:string;argPrefixes?:string[]}>=[];
+  for(const record of all){
+   if(seen.has(record.cli))continue;
+   if(!visible.has(record.taskId))continue;
+   const task=pool.tasks.find(t=>t.id===record.taskId);
+   // 任务已结束，授权视为失效。
+   if(!task||terminalStates.has(task.status||''))continue;
+   const usable=cliGrantUsable({
+    id:record.id,cli:record.cli,reason:record.note||'',state:'approved',
+    requestedAt:record.grantedAt,approvedAt:record.grantedAt,
+    expiresAt:record.expiresAt,humanConfirmed:true,uses:record.uses||0,maxUses:record.maxUses,
+   });
+   if(usable.ok!==true)continue;
+   seen.add(record.cli);
+   out.push({cli:record.cli,envKey:record.envKey,argPrefixes:record.argPrefixes});
+  }
+  return out;
+ }
  async function resolveDelegateJob(task:any,ctx:any,skillPaths:Map<string,string>,names:Set<string>){
   if(!task.task?.trim())throw Error('任务内容不能为空；本批任务未启动');
   if(task.seconds!==undefined&&(!Number.isInteger(task.seconds)||task.seconds<1||task.seconds>MAX_TASK_SECONDS))throw Error(`任务期限必须为 1–${MAX_TASK_SECONDS} 秒；本批任务未启动`);
@@ -334,7 +364,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    if(!ready.ok)throw Error(String(ready.reason));
    if(!params.taskId)throw Error('grant 需要 taskId：授权绑定到具体任务');
    const grants:any[]=(db() as any).get?.('cli_grants')||[];
-   grants.push({id:randomUUID(),taskId:String(params.taskId),cli:name,envKey:entry.envKey,argPrefixes:entry.argPrefixes,note:params.note?String(params.note):undefined,grantedAt:Date.now()});
+   // 授权带过期时间：默认 30 分钟，不得超过任务剩余时间太多，避免长期有效的隐性权限。
+   const grantedAt=Date.now();const expiresAt=grantedAt+30*60*1000;
+   grants.push({id:randomUUID(),taskId:String(params.taskId),cli:name,envKey:entry.envKey,argPrefixes:entry.argPrefixes,note:params.note?String(params.note):undefined,grantedAt,expiresAt,uses:0});
    db().set('cli_grants',grants.slice(-200));
    if(desk){desk.notice=`已授权 ${name} 给任务 ${String(params.taskId).slice(0,8)}（任务结束回收）`;scheduleRepaint();}
    return{content:[{type:'text',text:`已授权 ${name} 给任务 ${params.taskId}。代表可在该任务内启动该 CLI 的多个会话；任务结束全部终止。`}],details:{cli:name,taskId:params.taskId}};

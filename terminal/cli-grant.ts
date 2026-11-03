@@ -15,14 +15,29 @@
 //   - 只允许白名单里的可执行文件，不接受任意命令字符串。
 //   - 参数由总理组装，代表不能拼 shell；避免注入。
 //   - 每次调用都记审计条目，含调用者、参数、退出码。
-import { existsSync } from 'node:fs';
 
-/** 允许外部驱动的 agent CLI。新增条目需要人类确认后写进代码。 */
-export const EXTERNAL_CLI_ALLOWLIST: Readonly<Record<string, { label: string; help: string }>> = {
-  codex: { label: 'Codex CLI', help: 'OpenAI Codex 命令行' },
-  'claude': { label: 'Claude Code', help: 'Anthropic Claude Code 命令行' },
-  'gemini': { label: 'Gemini CLI', help: 'Google Gemini 命令行' },
+/**
+ * 白名单来自 config.cliAllowlist（人类决定，总理可增删），不再写死在源码里。
+ * 这里只保留一个用于提示的内置推荐清单——真正是否允许由配置决定。
+ */
+export const SUGGESTED_CLIS: Readonly<Record<string, string>> = {
+  codex: 'OpenAI Codex 命令行',
+  claude: 'Anthropic Claude Code 命令行',
+  gemini: 'Google Gemini 命令行',
 };
+
+/** 从配置里取白名单键名。配置为空时返回空数组——不内置任何默认权限。 */
+export function allowlistedClis(allowlist: Readonly<Record<string, unknown>> | undefined): string[] {
+  return Object.keys(allowlist || {}).map(name => name.toLowerCase()).sort();
+}
+
+/** 校验一个名字是否在配置的白名单里。 */
+export function cliAllowed(name: unknown, allowlist: Readonly<Record<string, unknown>> | undefined): string | null {
+  const value = String(name ?? '').trim().toLowerCase();
+  if (!value) return null;
+  const keys = allowlistedClis(allowlist);
+  return keys.includes(value) ? value : null;
+}
 
 export type CliGrant = {
   id: string;
@@ -64,17 +79,17 @@ export type CliGrantDecision =
   | { ok: true; grant: CliGrant }
   | { ok: false; reason: string };
 
-/** 只接受白名单内的可执行名。 */
-export function normalizeCli(name: unknown): string | null {
-  const value = String(name ?? '').trim().toLowerCase();
-  return Object.hasOwn(EXTERNAL_CLI_ALLOWLIST, value) ? value : null;
+/** 只接受配置白名单内的可执行名。 */
+export function normalizeCli(name: unknown, allowlist: Readonly<Record<string, unknown>> | undefined): string | null {
+  return cliAllowed(name, allowlist);
 }
 
-/** 申请是否成立：必须指名白名单内的 CLI，并说明理由。 */
-export function validateCliRequest(input: { cli?: unknown; reason?: unknown }): { ok: true; cli: string; reason: string } | { ok: false; reason: string } {
-  const cli = normalizeCli(input.cli);
+/** 申请是否成立：必须指名配置白名单内的 CLI，并说明理由。 */
+export function validateCliRequest(input: { cli?: unknown; reason?: unknown; allowlist?: Readonly<Record<string, unknown>> }): { ok: true; cli: string; reason: string } | { ok: false; reason: string } {
+  const cli = normalizeCli(input.cli, input.allowlist);
   if (!cli) {
-    return { ok: false, reason: `只允许白名单内的外部 CLI：${Object.keys(EXTERNAL_CLI_ALLOWLIST).join(' / ')}` };
+    const known = allowlistedClis(input.allowlist);
+    return { ok: false, reason: known.length ? `只允许配置白名单内的外部 CLI：${known.join(' / ')}` : '白名单为空：请先在设置里添加允许的 CLI' };
   }
   const reason = String(input.reason ?? '').trim();
   if (!reason) return { ok: false, reason: '必须说明为什么需要这个外部 CLI：要解决什么问题、为什么现有工具不够' };
@@ -96,28 +111,11 @@ export function cliGrantUsable(grant: CliGrant | undefined, now = Date.now(), ta
   return { ok: true };
 }
 
-/**
- * 参数安全校验：代表不能借此拼 shell。
- * 拒绝项：shell 元字符、换行、超长参数、试图指定另一个可执行文件。
- */
-export function safeCliArgs(args: readonly unknown[]): { ok: true; args: string[] } | { ok: false; reason: string } {
-  const out: string[] = [];
-  for (const raw of args) {
-    const arg = String(raw ?? '');
-    if (!arg) continue;
-    if (arg.length > 2000) return { ok: false, reason: '参数过长（上限 2000 字符）' };
-    // 这些元字符在有 shell 参与的路径上会改变语义；即使我们现在不经过 shell，也不接受。
-    if (/[;&|`$<>]/.test(arg) || /[\r\n]/.test(arg)) {
-      return { ok: false, reason: `参数含 shell 元字符，已拒绝：${arg.slice(0, 60)}` };
-    }
-    out.push(arg);
-  }
-  return { ok: true, args: out };
-}
 
 /** 人类审批时看到的一行说明。 */
 export function describeCliGrant(grant: CliGrant): string {
-  const target = EXTERNAL_CLI_ALLOWLIST[grant.cli]?.label || grant.cli;
+  const description = SUGGESTED_CLIS[grant.cli];
+  const target = description ? `${grant.cli}（${description}）` : grant.cli;
   const expiry = grant.expiresAt ? new Date(grant.expiresAt).toLocaleString() : '未设定';
   const uses = grant.maxUses !== undefined ? `${grant.uses}/${grant.maxUses}` : `${grant.uses}`;
   return `${grant.reason}\n目标：${target} · 到期：${expiry} · 已用：${uses} 次`;
@@ -137,8 +135,8 @@ export function auditLine(record: CliCallRecord): string {
 }
 
 /** 可执行文件是否在本机存在——总理准备阶段用，避免授权了却跑不起来。 */
-export function cliAvailable(name: string, which: (cmd: string) => string | null): boolean {
-  const cli = normalizeCli(name);
+export function cliAvailable(name: string, allowlist: Readonly<Record<string, unknown>> | undefined, which: (cmd: string) => string | null): boolean {
+  const cli = normalizeCli(name, allowlist);
   if (!cli) return false;
   return Boolean(which(cli));
 }

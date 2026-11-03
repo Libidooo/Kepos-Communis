@@ -2,10 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 const {
-  EXTERNAL_CLI_ALLOWLIST, normalizeCli, validateCliRequest, cliGrantUsable,
-  safeCliArgs, describeCliGrant, revokeOnTaskEnd, cliAvailable, auditLine,
+  SUGGESTED_CLIS, allowlistedClis, cliAllowed, normalizeCli, validateCliRequest, cliGrantUsable,
+  describeCliGrant, revokeOnTaskEnd, cliAvailable, auditLine,
 } = await import('../dist/terminal/cli-grant.js');
 const { cliTurnFile, renderCliTurn, clampTurnOutput, listCliTurns, summarizeCliTurn } = await import('../dist/terminal/cli-dialog.js');
+
+const ALLOWLIST = { codex: { addedAt: 0 }, claude: { addedAt: 0 }, gemini: { addedAt: 0 } };
 
 const baseGrant = () => ({
   id: 'g1', cli: 'codex', reason: '需要更强的代码理解', state: 'approved',
@@ -14,26 +16,29 @@ const baseGrant = () => ({
 
 // 外部 CLI 等于任意命令执行能力，所以只认白名单。
 test('only allowlisted CLIs are accepted', () => {
-  assert.equal(normalizeCli('codex'), 'codex');
-  assert.equal(normalizeCli('CODEX'), 'codex');
-  assert.equal(normalizeCli('claude'), 'claude');
+  assert.equal(normalizeCli('codex', ALLOWLIST), 'codex');
+  assert.equal(normalizeCli('CODEX', ALLOWLIST), 'codex');
+  assert.equal(normalizeCli('claude', ALLOWLIST), 'claude');
   // 任意命令一律拒绝——这是外部 CLI 授权的核心边界。
-  assert.equal(normalizeCli('rm'), null);
-  assert.equal(normalizeCli('bash'), null);
-  assert.equal(normalizeCli('codex; rm -rf /'), null);
-  assert.equal(normalizeCli(''), null);
+  assert.equal(normalizeCli('rm', ALLOWLIST), null);
+  assert.equal(normalizeCli('bash', ALLOWLIST), null);
+  assert.equal(normalizeCli('codex; rm -rf /', ALLOWLIST), null);
+  assert.equal(normalizeCli('', ALLOWLIST), null);
+  // 白名单为空时不内置任何默认权限。
+  assert.deepEqual(allowlistedClis(undefined), []);
+  assert.equal(cliAllowed('codex', undefined), null);
 });
 
 test('a request needs an allowlisted CLI and a reason', () => {
-  const wrong = validateCliRequest({ cli: 'bash', reason: '想跑命令' });
+  const wrong = validateCliRequest({ cli: 'bash', reason: '想跑命令', allowlist: ALLOWLIST });
   assert.equal(wrong.ok, false);
   assert.match(wrong.reason, /白名单/);
 
-  const noReason = validateCliRequest({ cli: 'codex' });
+  const noReason = validateCliRequest({ cli: 'codex', allowlist: ALLOWLIST });
   assert.equal(noReason.ok, false);
   assert.match(noReason.reason, /必须说明/);
 
-  const ok = validateCliRequest({ cli: 'codex', reason: '需要跨文件重构建议' });
+  const ok = validateCliRequest({ cli: 'codex', reason: '需要跨文件重构建议', allowlist: ALLOWLIST });
   assert.equal(ok.ok, true);
   assert.equal(ok.cli, 'codex');
 });
@@ -52,25 +57,13 @@ test('a grant must be approved, human-confirmed, unexpired, unused-up and unclai
   assert.equal(cliGrantUsable(undefined).ok, false);
 });
 
-// 代表不能借参数注入。
-test('arguments carrying shell metacharacters are refused', () => {
-  assert.equal(safeCliArgs(['--help']).ok, true);
-  assert.equal(safeCliArgs(['--prompt', '重构这个模块']).ok, true);
-
-  const injection = safeCliArgs(['--prompt', 'x; rm -rf /']);
-  assert.equal(injection.ok, false);
-  assert.match(String(injection.reason), /shell 元字符/);
-
-  assert.equal(safeCliArgs(['a && b']).ok, false);
-  assert.equal(safeCliArgs(['$(whoami)']).ok, false);
-  assert.equal(safeCliArgs(['line\nbreak']).ok, false);
-  assert.equal(safeCliArgs(['x'.repeat(2001)]).ok, false);
-});
+// 参数校验统一在 cli-runtime.validateArgs（此处不再重复实现）。
 
 test('the human sees target, expiry and usage before approving', () => {
   const text = describeCliGrant(baseGrant());
   assert.match(text, /需要更强的代码理解/);
-  assert.match(text, /Codex CLI/);
+  assert.match(text, /codex/);
+  assert.match(text, /OpenAI Codex 命令行/);
   assert.match(text, /到期/);
   assert.match(text, /已用/);
 });
@@ -91,9 +84,9 @@ test('a finished task releases its claim but keeps the grant if still valid', ()
 });
 
 test('availability check tells the prime minister whether preparation is even possible', () => {
-  assert.equal(cliAvailable('codex', () => '/usr/bin/codex'), true);
-  assert.equal(cliAvailable('codex', () => null), false);
-  assert.equal(cliAvailable('nonsense', () => '/bin/x'), false, 'an unlisted name is never available');
+  assert.equal(cliAvailable('codex', ALLOWLIST, () => '/usr/bin/codex'), true);
+  assert.equal(cliAvailable('codex', ALLOWLIST, () => null), false);
+  assert.equal(cliAvailable('nonsense', ALLOWLIST, () => '/bin/x'), false, 'an unlisted name is never available');
 });
 
 test('audit lines never carry credentials, only the call shape', () => {
@@ -138,5 +131,5 @@ test('the desk summary is one line and never the full body', () => {
 test('turns are listed in order per CLI', () => {
   // 仅验证解析规则；实际文件由运行期写入。
   assert.deepEqual(listCliTurns('T:/definitely-not-a-real-dir'), []);
-  void EXTERNAL_CLI_ALLOWLIST;
+  void SUGGESTED_CLIS;
 });

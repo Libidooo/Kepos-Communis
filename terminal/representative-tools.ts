@@ -163,7 +163,7 @@ export default function representativeTools(pi: any) {
 
   // 外部 CLI：多会话管理。授权与白名单由总理下发到本进程的环境变量，
   // 代表只在授权范围内启动；任务结束父进程会终止全部会话。
-  registerCliTool(pi, { archiveRoot, agentName: agent });
+  registerCliTool(pi, { archiveRoot });
 }
 
 /**
@@ -173,8 +173,8 @@ export default function representativeTools(pi: any) {
  * 形如 [{"cli":"codex","envKey":"OPENAI_API_KEY","argPrefixes":["exec"]}]。
  * 代表只能启动清单里的名字；清单为空时任何调用都被拒绝。
  */
-export function registerCliTool(pi: any, options: { archiveRoot: string; agentName: string }) {
-  const { archiveRoot, agentName } = options;
+export function registerCliTool(pi: any, options: { archiveRoot: string }) {
+  const { archiveRoot } = options;
   const sessions = new CliSessions({ maxPerTask: 4 });
   const taskId = String(process.env.KEPOS_TASK_ID || '');
   const grants = (() => {
@@ -245,5 +245,4 @@ export function registerCliTool(pi: any, options: { archiveRoot: string; agentNa
   const cleanup = () => { try { sessions.closeAll(taskId); } catch { /* 已退出 */ } };
   process.on('exit', cleanup);
   process.on('SIGTERM', () => { cleanup(); process.exit(0); });
-  void agentName;
 }

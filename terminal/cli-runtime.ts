@@ -97,7 +97,13 @@ export class CliSessions {
 
   list(taskId?: string): CliSession[] {
     const all = [...this.sessions.values()];
-    return (taskId ? all.filter(item => item.taskId === taskId) : all).map(({ taskId, ...rest }) => (void taskId, rest));
+    const selected = taskId ? all.filter(item => item.taskId === taskId) : all;
+    // 去掉内部字段 taskId：调用方只关心会话本身。
+    return selected.map(item => {
+      const session: CliSession & { taskId?: string } = { ...item };
+      delete session.taskId;
+      return session;
+    });
   }
 
   /** 启动一个会话。调用方必须先通过授权与白名单校验。 */
