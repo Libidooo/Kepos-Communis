@@ -60,6 +60,33 @@ export function agentRisk(tasks:readonly RepresentativeTaskHistory[],name:string
  return representativeRisk(tasks,{id:agentId,name});
 }
 
+// ── Watchdog 判定的只读投影 ─────────────────────────────────────────────
+// 界面上"为什么认为它空转"必须能查到，否则模型判定就是一个黑盒否决。
+// 这一层只读：写入由 index.ts 的 judgeReview 负责。
+
+/** 某任务最近的判定摘要，供书案与 F3 详情显示。 */
+export function watchdogNotes(database:KeposDatabase,workerId:string,limit=3){
+ try{
+  const rows=database.prepare('SELECT seq,at,verdict,reason,model FROM watchdog_verdicts WHERE worker_id=? ORDER BY seq DESC LIMIT ?').all(workerId,limit) as any[];
+  return rows.map(row=>({seq:Number(row.seq),at:Number(row.at),verdict:String(row.verdict),reason:String(row.reason),model:String(row.model)}));
+ }catch{return[];}
+}
+
+/**
+ * 误报率：被判为 deviated/looping 的任务里，最终真的失败/超时的比例。
+ *
+ * 只有这个数字能回答"这个 watchdog 值不值得信"。判成 progress 的一律不计——
+ * 它不是"正确判断"，只是没有介入。
+ */
+export function watchdogAccuracy(database:KeposDatabase){
+ const rows=database.prepare(`SELECT v.verdict AS verdict, json_extract(w.task,'$.state') AS state
+  FROM watchdog_verdicts v JOIN workers w ON w.id=v.worker_id
+  WHERE v.verdict IN ('deviated','looping')`).all() as any[];
+ const total=rows.length;
+ const wrong=rows.filter(row=>row.state==='SUCCEEDED').length;
+ return {alarms:total,wrong,falsePositiveRate:total?Number((wrong/total).toFixed(3)):null};
+}
+
 // ── 「等你处理」的单一判定源 ────────────────────────────────────────────
 // 环图的 ⚠、顶栏徽章、F3/F8 等待区三处曾各自计算"待处理"，口径一漂移就会出现
 // "徽章说 2 个、打开列表只有 1 个"的矛盾。这里只留一个选择器，三处都调它。

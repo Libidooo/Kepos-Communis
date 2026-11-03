@@ -31,6 +31,12 @@ export interface Config {
    * 不写死在源码里——人类加什么，总理就能用什么。
    */
   cliAllowlist?: Record<string, CliAllowEntry>;
+  /**
+   * Watchdog 判定用哪次模型调用。缺省复用主 Agent。
+   * 单独立字段是为了让人类能把"判断是否空转"换成更便宜/更严的模型，
+   * 而不必同时改主 Agent。阶段①只观察，不触发终止。
+   */
+  watchdogModel?: { provider?: string; model: string };
 }
 
 export type CliAllowEntry = {

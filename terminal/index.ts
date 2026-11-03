@@ -17,7 +17,7 @@ import { outputPage, receiptView } from './result-view.ts';
 import { agentRevision } from './profiles.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
 import { MissionScheduler } from './scheduler.ts';
-import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk } from './monitor.ts';
+import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk, watchdogNotes } from './monitor.ts';
 import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
 import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
@@ -30,6 +30,7 @@ import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
+import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -94,6 +95,34 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   });
   return entries;
  },message=>{if(desk){desk.notice='记忆整理：'+message;scheduleRepaint();}});
+ // Watchdog 判定器：与记忆整理共用一次最小生成，不额外开进程。
+ // 阶段① 只落库 + 一行提示；progress 静默，绝不终止任务。
+ const watchdogStore=new WatchdogStore(db());
+ const watchdogJudge:WatchdogJudge=async(prompt:string)=>{
+  const result=current?.generateCompletion?.(prompt);
+  return result&&typeof result.then==='function'?String(await result||''):'';
+ };
+ /** 对一次"到复核点"的任务做一次模型判定。失败静默——watchdog 不能影响任务本身。 */
+ const judgeReview=async(task:any)=>{
+  try{
+   // 证据只取上次判定之后的事件：重复判同一段没有意义，也白花钱。
+   const before=watchdogStore.state(task.id);
+   const page=readWorkerEvents(db(),{cursor:before.cursor,parentSessionId:task.parentSessionId,limit:200});
+   const mine=page.events.filter(event=>event.workerId===task.id);
+   const cursor=mine.length?mine[mine.length-1].seq:page.nextCursor;
+   if(!shouldJudge({eventCount:mine.length,cursor,lastCursor:before.cursor,outputTail:String(task.output||'')}))return;
+   const raw=await watchdogJudge(watchdogPrompt({
+    workerId:task.id,cursor:before.cursor,goal:String(task.title||''),
+    events:mine.map(event=>({type:event.type,tool:typeof event.payload.tool==='string'?event.payload.tool:undefined,checkpoint:typeof event.payload.checkpoint==='string'?event.payload.checkpoint:undefined,at:event.created})),
+    outputTail:String(task.output||''),elapsedMs:Date.now()-(task.started||Date.now()),
+   }));
+   const {verdict,reason}=parseVerdict(raw);
+   const record=watchdogStore.record({workerId:task.id,verdict,reason,evidenceCursor:cursor,model:config.watchdogModel?.model||current?.model?.id||'principal'});
+   const notice=verdictNotice(record);
+   // 阶段① observe：只提示，不进 urgent，不触发任何终止。
+   if(notice&&desk){desk.notice=`${task.agent} ${notice}`;scheduleRepaint();}
+  }catch{/* 判定失败不影响任务；下一次复核会再试 */}
+ };
  let baselineTools:string[]=[];
  const applyApprovalPolicy=()=>{if(!baselineTools.length)return;try{pi.setActiveTools(currentPolicy()==='readonly'?restrictTools(baselineTools):baselineTools);}catch(error){desk&&(desk.notice='审批模式切换失败：'+clean(error));scheduleRepaint();}};
  function initializeCrew(ctx:any){
@@ -124,6 +153,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    // 任务终态后入队做记忆整理：只入队不执行，避免在结算路径上做模型调用。
    if(event.type==='task_finished'){const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().catch(()=>{});}}
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
+   // 到复核点：先让模型判断"还在推进吗"。这是 observe 阶段，判定结果只提示，不终止。
+   if(event.type==='task_review_due')void judgeReview(event.task);
    if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
    // 僚属失败时把责任归到直属代表：代表对该僚属全权负责，必须由它去修或重派。
    // 主环不显示僚属，所以这条通知是发现问题的唯一入口，必须写明"谁该负责"。
@@ -841,7 +872,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  try{await playSplash(ctx,config,ready);}catch{}
  await ready;if(initialFailed){ctx.ui.notify(clean(initialError),'error');return;}
  while(true){let sessions:any[];try{sessions=firstSessions??await loadSessions();firstSessions=undefined;}catch(e){ctx.ui.notify(clean(e),'error');return;}
- let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db())};
+ let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogNotes(db(),id)};
   // 代表派生请求：代表进程写文件，这里轮询接手。僚属由代表发起、代表负责，
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
   spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{try{const rep=pool.tasks.find(t=>t.id===taskId);if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,request.skills?Array.from(READ_ONLY_TOOLS):Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});return{ok:true};}catch(error){return{ok:false,reason:clean(error)};}}});
