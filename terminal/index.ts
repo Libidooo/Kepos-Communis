@@ -17,7 +17,7 @@ import { outputPage, receiptView } from './result-view.ts';
 import { agentRevision } from './profiles.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
 import { MissionScheduler } from './scheduler.ts';
-import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk } from './monitor.ts';
+import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk, awaitingHuman } from './monitor.ts';
 import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
 import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
@@ -33,7 +33,7 @@ import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
-import { BriefingStore, BRIEFING_HEADER, premierBriefing, upwardReport } from './briefing.ts';
+import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -121,6 +121,35 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const watchdogStore=new WatchdogStore(db());
  // 人类在执行途中改变需求的记录：界面显示"已加急"必须有对应的真实送达。
  const briefingStore=new BriefingStore(db());
+ // ── 代表改道后的两段式上报 ─────────────────────────────────────────────
+ // 上级判定只有这一处：有代理总代就是总代，否则是总理。
+ const superiorOf=():{name:string;role:'deputy'|'premier'}=>{
+  const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
+  return deputy?{name:deputy.name,role:'deputy'}:{name:'总理',role:'premier'};
+ };
+ // 待补的收尾结论：变更下达时记一笔，任务结算时补报。
+ const pendingUpward=new Map<string,{agent:string;briefing:string;superior:{name:string;role:'deputy'|'premier'}}>();
+ /** 把一段汇报交给上级：总代没有自己的会话，只能通过执行任务"听到"。 */
+ const deliverUpward=(report:string,superior:{name:string;role:'deputy'|'premier'},prefix:string)=>{
+  try{
+   if(superior.role==='deputy'){
+    const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
+    const instruction=`你是代理总代「${superior.name}」。${report}\n\n请用两三句话给出处置意见（是否同意改道、原计划哪一步需要调整），然后转呈总理。不要自行派发新任务。`;
+    if(deputy){const session=current?.sessionManager?.getSessionFile?.()||'';const parent=current?.sessionManager?.getSessionId?.()||'';if(parent)pool.launch({...deputy},instruction,current.cwd,session,140,undefined,parent,['read'],[],false);}
+    if(desk){desk.notice=`${prefix}代理总代「${superior.name}」转呈`;scheduleRepaint();}
+   }else{
+    void pi.sendUserMessage(report,{deliverAs:'steer'});
+    if(desk){desk.notice=`${prefix}总理`;scheduleRepaint();}
+   }
+  }catch(error){desk&&(desk.notice='改道汇报失败：'+clean(error));}
+ };
+ /** 任务结算时补报改道代表的真实结论。他人任务不受影响。 */
+ const flushUpward=(task:any)=>{
+  const pending=pendingUpward.get(String(task?.id));
+  if(!pending)return;
+  pendingUpward.delete(String(task.id));
+  deliverUpward(upwardReport({agent:pending.agent,taskId:String(task.id),briefing:pending.briefing,conclusion:String(task.output||task.checkpoint||'')}),pending.superior,`${pending.agent} 改道结论 · 已报`);
+ };
  const watchdogJudge:WatchdogJudge=minimalCompletion;
  /** 对一次"到复核点"的任务做一次模型判定。失败静默——watchdog 不能影响任务本身。 */
  const judgeReview=async(task:any)=>{
@@ -171,7 +200,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    // 委派秒败时用户毫无感知（报错无阻拦）。错误原因带进 notice，不用翻任务详情。
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
    // 任务终态后入队做记忆整理：只入队不执行，避免在结算路径上做模型调用。
-   if(event.type==='task_finished'){const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}}
+   if(event.type==='task_finished'){flushUpward(event.task);const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}}
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
    // 到复核点：先让模型判断"还在推进吗"。这是 observe 阶段，判定结果只提示，不终止。
    if(event.type==='task_review_due')void judgeReview(event.task);
@@ -956,35 +985,34 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   spawnPoller.start(()=>pool.tasks.filter(t=>!terminalStates.has(t.status||'')).map(t=>t.id),ctx.cwd);
   // 给总理的加急指令：带上当前规模与"先看进度再重排"的顺序要求。
   // 人多时明确交给代理总代分担派发——那是治理规则，不是建议。
+  // 这里只拼文案，不落库：拼装和在途统计都可能被反复调用，落库只在真的送达时做。
   desk.briefingForPremier=(text:string)=>{
    const running=pool.tasks.filter(t=>!terminalStates.has(t.status||'')).length;
-   const waiting=pool.tasks.filter(t=>t.reviewDue||t.stalled).length;
+   // "待处理"读全库唯一的判定源：这里自己数 reviewDue||stalled 会漏掉门禁，
+   // 于是通知里说的规模和徽章上的数字对不上。
+   const waiting=awaitingHuman(pool.tasks).length;
    const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
-   const payload=premierBriefing(text,{running,waiting,hasDeputy:Boolean(deputy),deputyName:deputy?.name});
-   // 附录一：落库用原文，附给模型的是拼好的完整指令。
-   try{briefingStore.record({target:'premier',targetName:'总理',text,delivery:'queued',note:`${running} 运行 / ${waiting} 待处理`});}catch{}
-   return payload;
+   return premierBriefing(text,{running,waiting,hasDeputy:Boolean(deputy),deputyName:deputy?.name});
   };
-  // 代表因人类变更而改道后：落库，并向其上级转呈汇报。
-  // 上级判定写在一处：有代理总代就报给总代，没有就报给总理。
-  // "报给总代"必须落成一个任务——总代没有自己的会话，它只能通过执行任务来"听到"；
-  // 它的结论会自动作为任务产出回到总理手里，所以总理不会因此失去监督。
+  desk.superiorOf=superiorOf;
+  // 送达确认：只有进队成功才记 queued；失败也记下来，别让「已加急」变成没有出处的提示。
+  desk.briefingDelivered=(delivery,text)=>{
+   try{briefingStore.record({target:'premier',targetName:'总理',text,delivery});}catch{}
+  };
+  // 代表因人类变更而改道：**两段式**上报。
+  //
+  // 第一段在变更下达时立刻发：上级手里的计划此刻已经过期，晚报一小时，
+  // 它就多按旧方向安排一小时。这一段只说"变更已下达、结论待补"。
+  // 第二段在任务真正结算后补：那时才有代表的真实结论可转。
+  // 只发第一段等于把旧 checkpoint 冒充成结论；只发第二段等于让上级干等。
   desk.briefingSent=(taskId:string,text:string)=>{
    try{
     const task=pool.tasks.find(t=>t.id===taskId);
-    const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
-    briefingStore.record({target:'representative',targetName:task?.agent||taskId,taskId,text,delivery:'forwarded',note:deputy?`上级：代理总代 ${deputy.name}`:'上级：总理'});
+    const superior=superiorOf();
+    briefingStore.record({target:'representative',targetName:task?.agent||taskId,taskId,text,delivery:'forwarded',note:`上级：${superior.role==='deputy'?`代理总代 ${superior.name}`:'总理'}`});
     if(!task?.agent)return;
-    const report=upwardReport({agent:task.agent,taskId,briefing:text,conclusion:String(task.checkpoint||task.output||'').slice(-800)});
-    if(deputy){
-     // 总代的任务很短：只做转呈与复核，不重新执行代表的活。
-     const instruction=`你是代理总代。${report}\n\n请用两三句话给出处置意见（是否同意改道、原计划哪一步需要调整），然后转呈总理。不要自行派发新任务。`;
-     pool.launch({...deputy},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',140,undefined,ctx.sessionManager.getSessionId(),['read'],[],false);
-     if(desk){desk.notice=`${task.agent} 已改道 · 已报代理总代「${deputy.name}」转呈`;scheduleRepaint();}
-    }else{
-     void pi.sendUserMessage(report,{deliverAs:'steer'});
-     if(desk){desk.notice=`${task.agent} 已改道 · 已报总理`;scheduleRepaint();}
-    }
+    deliverUpward(briefingIssued({agent:task.agent,taskId,briefing:text}),superior,`${task.agent} 已改道 · 已报`);
+    pendingUpward.set(taskId,{agent:task.agent,briefing:text,superior});
    }catch(error){desk&&(desk.notice='改道汇报失败：'+clean(error));}
   };
   desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}

@@ -11,7 +11,7 @@ import { loadAttachment, attachmentToPrompt, looksLikeFilePaths, isAttached } fr
 import { dataRoot } from './paths.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, stateColor, stateMark, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
 import { taskBuckets, WAITING_LABEL } from './monitor.ts';
-import { BRIEFING_HEADER } from './briefing.ts';
+import { deliveryNote, representativeBriefing } from './briefing.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
@@ -136,6 +136,10 @@ export class Desk {
  briefingSent?:(taskId:string,text:string,outcome:any)=>void;
  /** 给总理的加急指令抬头与重排纪律，由外层拼装（需要知道运行任务数与有无代理总代）。 */
  briefingForPremier?:(text:string)=>string;
+ /** 总理侧加急指令的送达结果；只在真的进队后才记 queued。 */
+ briefingDelivered?:(delivery:'queued'|'failed',text:string)=>void;
+ /** 代表的上级是谁：有代理总代就是总代，否则是总理。判定只在外层一处。 */
+ superiorOf?:()=>{name:string;role:'deputy'|'premier'};
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
  private evidenceCache:{id:string;ended:any;output:any;value:any}|undefined;
@@ -307,7 +311,16 @@ export class Desk {
   // 它会当成"补充信息"继续按原计划跑，而不是停下来重排。
   const payload=this.briefingForPremier?.(text)??text;
   const result=this.submit(payload,undefined,{deliverAs:'steer'});
-  if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.editor.setText(text);this.notice='加急送达失败（原稿已恢复）：'+clean(error);this.refresh();});
+  // 送达结果只在真的进队之后才算成功。先报"已加急"再等 promise，
+  // 失败时提示已经显示过一遍成功——那正是要消除的"看起来送达"。
+  this.notice='正在加急送达…';
+  if(result&&typeof result.then==='function'){
+   result.then(()=>{if(!this.alive)return;this.briefingDelivered?.('queued',text);this.notice='已加急：总理做完当前这一步就读取并重排；Ctrl+X 中止。';this.refresh();},
+    error=>{if(!this.alive)return;this.editor.setText(text);this.briefingDelivered?.('failed',text);this.notice='加急送达失败（原稿已恢复）：'+clean(error);this.refresh();});
+   this.refresh();return;
+  }
+  // 同步返回（老签名）：拿不到确认，只能如实说未确认。
+  this.briefingDelivered?.('queued',text);
   this.notice='已加急：总理做完当前这一步就读取并重排；Ctrl+X 中止。';this.refresh();return;}
  const route=routeCommand(text,this.commands);if(route.kind==='unknown'){this.editor.setText(text);this.notice='未知命令 /'+route.name+'，未发送给模型。输入 / 选择；发送字面斜线请用 //。';this.refresh();return;}
  if(route.kind==='native'||route.kind==='registered'&&route.source==='extension'){this.editor.setText(this.savedDraftBeforeCommand);this.finish({kind:route.kind==='native'?'native-command':'dispatch-command',text});return;}
@@ -442,11 +455,13 @@ export class Desk {
   const handle=taskId?this.pool.liveHandle?.(taskId,parent):undefined;
   if(handle){
    // 加急指令带抬头：没有它，代表会把"改需求"读成"补充信息"，继续跑完原来的事。
-   const payload=`${BRIEFING_HEADER}\n\n${text}\n\n## 你现在要做的\n1. **停下**当前目标：不要为了做完手头这步而延迟，已完成的产出保留。\n2. 判断这条变更让原任务是作废、缩小还是转向。\n3. 在结论里写清：原来做到哪、因这条变更停了什么、按新安排接下来做什么。这份结论会转给你的上级。`;
-   void this.pool.sendMessage(handle,parent,payload).then(async(outcome:any)=>{
-    if(!outcome.delivered){this.editor.setText(text);this.notice='加急送达失败：'+(outcome.error||'未知原因')+'（原稿保留）';this.refresh();return;}
+   // 文案来自 briefing.ts，与汇报文案同一处——界面不再手写第二份。
+   const payload=representativeBriefing(text,this.superiorOf?.()??{name:'总理',role:'premier'});
+   void this.pool.sendMessage(handle,parent,payload).then((outcome:any)=>{
+    const name=outcome.agent||task?.agent||taskId;
+    if(!outcome.delivered){this.editor.setText(text);this.notice=deliveryNote('failed',name)+'：'+(outcome.error||'未知原因')+'（原稿保留）';this.refresh();return;}
     this.editor.setText('');this.savedDraftBeforeCommand='';
-    this.notice=`已加急送达 ${outcome.agent||task?.agent||taskId}：它做完当前工具批次就停下改道`;
+    this.notice=deliveryNote(outcome.queued?'woken':'forwarded',name);
     this.briefingSent?.(taskId,text,outcome);
     this.refresh();
    });

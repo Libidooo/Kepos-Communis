@@ -14,7 +14,7 @@ import type { KeposDatabase } from './database.ts';
 export type BriefingTarget = 'premier' | 'representative';
 
 /** 加急指令的送达结果。失败必须是一个真实的取值，不能静默消失。 */
-export type BriefingDelivery = 'queued' | 'forwarded' | 'new-task' | 'failed';
+export type BriefingDelivery = 'queued' | 'forwarded' | 'woken' | 'new-task' | 'failed';
 
 export type BriefingRecord = {
   id: string;
@@ -90,6 +90,27 @@ export function representativeBriefing(text: string, superior: { name: string; r
   ].join('\n');
 }
 
+/**
+ * 代表刚收到变更时的即时转呈。
+ *
+ * 为什么不能等它跑完再报：上级手里的计划此刻已经过期了，
+ * 越晚报出，上级基于旧计划做的安排越多。所以先报"变更已下达"，
+ * 结论等代表真正改道完成后再补一份。
+ */
+export function briefingIssued(input: { agent: string; taskId: string; briefing: string }): string {
+  return [
+    '## 代表改道通知（结论待补）',
+    '',
+    `代表「${input.agent}」已收到人类变更，正在停止原目标（任务 ${input.taskId}）。`,
+    '',
+    '### 人类的变更',
+    input.briefing.trim().slice(0, 800) || '（未记录内容）',
+    '',
+    '### 现在需要你知道的',
+    '这条变更可能已经让你手上的计划失效一部分。在收到该代表的收尾结论前，不要基于它的旧方向继续安排。',
+  ].join('\n');
+}
+
 /** 代表改道后，向上级转呈的汇报。 */
 export function upwardReport(input: { agent: string; taskId: string; briefing: string; conclusion: string }): string {
   return [
@@ -155,8 +176,12 @@ export class BriefingStore {
 /** 送达结果的一句话说明，界面与工具共用。 */
 export function deliveryNote(delivery: BriefingDelivery, targetName: string): string {
   switch (delivery) {
+    // queued 是总理这一侧：它正在执行，消息插进当前回合并等它读完重排。
     case 'queued': return `已加急插入 ${targetName} 的当前回合：工具调用结束后立刻处理`;
+    // forwarded 是代表已经在跑：它做完当前工具批次就改道。
     case 'forwarded': return `已转给 ${targetName}：它会在当前工具批次结束后停下并改道`;
+    // woken 是代表还没轮到：这句把人从队列里提出来，抢占预留槽立刻启动。
+    case 'woken': return `已加急启动 ${targetName}：它还没轮到的任务现在开始跑`;
     case 'new-task': return `已按原配置为 ${targetName} 开新任务`;
     case 'failed': return `未能送达 ${targetName}`;
     default: return '';

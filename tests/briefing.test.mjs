@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 const {KeposDatabase}=await import('../dist/terminal/database.js');
 const {
-  premierBriefing, representativeBriefing, upwardReport, BriefingStore, deliveryNote,
+  premierBriefing, representativeBriefing, upwardReport, briefingIssued, BriefingStore, deliveryNote,
   BRIEFING_HEADER, MAX_BRIEFING_CHARS,
 }=await import('../dist/terminal/briefing.js');
 
@@ -102,7 +102,32 @@ test('the record refuses to grow past the size limit and states each delivery pl
     assert.equal(store.recent()[0].text.length,MAX_BRIEFING_CHARS);
     assert.match(deliveryNote('queued','总理'),/工具调用结束后立刻处理/);
     assert.match(deliveryNote('forwarded','审查官'),/当前工具批次结束后停下/);
+    // 排队中的任务被唤醒与"已在跑的代表改道"是两件不同的事，文案不能共用。
+    assert.match(deliveryNote('woken','审查官'),/还没轮到的任务现在开始跑/);
+    assert.notEqual(deliveryNote('woken','审查官'),deliveryNote('queued','审查官'));
     assert.match(deliveryNote('new-task','审查官'),/开新任务/);
     assert.match(deliveryNote('failed','审查官'),/未能送达/);
   }finally{db.close();}
+});
+
+// 两段式上报：变更下达时先报"结论待补"，结算后再报真实结论。
+// 只发第一段会把旧 checkpoint 冒充成结论——那是谎报进度。
+test('the immediate notice says the conclusion is still pending, not a stale one',()=>{
+  const notice=briefingIssued({agent:'审查官',taskId:'w1',briefing:'改为检查依赖'});
+  assert.match(notice,/代表改道通知（结论待补）/);
+  assert.match(notice,/正在停止原目标/);
+  assert.match(notice,/审查官/);
+  assert.match(notice,/改为检查依赖/);
+  // 关键：明确告诉上级不要按旧方向继续安排。
+  assert.match(notice,/不要基于它的旧方向继续安排/);
+  // 它不含"结论"小节——因为此刻还没有结论，编一个出来就是谎报。
+  assert.doesNotMatch(notice,/### 代表的结论/);
+});
+
+test('the follow-up report carries the real conclusion once the task settles',()=>{
+  const immediate=briefingIssued({agent:'审查官',taskId:'w1',briefing:'改为检查依赖'});
+  const final=upwardReport({agent:'审查官',taskId:'w1',briefing:'改为检查依赖',conclusion:'原任务完成 2/3 后停下；依赖检查已完成 4 处'});
+  assert.match(final,/### 代表的结论/);
+  assert.match(final,/2\/3/);
+  assert.notEqual(immediate,final,'the two phases are distinct messages');
 });
