@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { archivePaths, ensureArchive, writeArchiveDoc, upsertArchiveEntry, summarizeReport } from './archive.ts';
 import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
@@ -146,7 +147,39 @@ export class WorkerPool {
   this.resolvers.get(task.id)?.(structuredClone(task));
   this.resolvers.delete(task.id);
   this.completions.delete(task.id);
-  return existing ? JSON.parse(existing.receipt) : receipt;
+  const settled = existing ? JSON.parse(existing.receipt) : receipt;
+  // 归档：任务一结束就把产出写到项目的 .kepos 目录。
+  // 不依赖僚属自己写文件——写文件要权限、要审批，一旦被拒产出就只剩上下文，
+  // 会话一关全部消失。归档是运行时的职责，不是授权对象。
+  if (!existing) {
+   try { this.archiveTask(complete, settled); } catch { /* 归档失败不能影响任务结算 */ }
+  }
+  return settled;
+ }
+ /** 把一次任务的产出归档到项目目录。过程与结果分开存放。 */
+ private archiveTask(task: Task, receipt: Receipt): void {
+  const cwd = task.cwd;
+  if (!cwd) return;
+  ensureArchive(cwd);
+  const paths = archivePaths(cwd);
+  const files = paths.task(task.id);
+  const output = String(receipt.output ?? task.output ?? '');
+  // report 与 transcript：契约标记之前是过程，之后是结论。
+  const split = output.lastIndexOf('## 结论');
+  const transcript = split >= 0 ? output.slice(0, split).trim() : output;
+  const report = split >= 0 ? output.slice(split).trim() : '';
+  writeArchiveDoc(files.brief, `# 任务说明\n\n- 任务 ID：${task.id}\n- 执行者：${task.agent}\n- 状态：${task.status}\n- 开始：${new Date(task.started).toISOString()}\n${task.ended ? `- 结束：${new Date(task.ended).toISOString()}\n` : ''}${task.parentWorkerId ? `- 直属代表任务：${task.parentWorkerId}\n` : ''}\n## 授权事项\n\n${task.title}\n`);
+  if (transcript) writeArchiveDoc(files.transcript, `# 过程记录\n\n${transcript}\n`);
+  if (report) writeArchiveDoc(files.report, report);
+  else if (transcript) writeArchiveDoc(files.report, `# 结论\n\n（执行者未按输出契约给出结论；完整过程见 transcript.md。状态：${task.status}${task.error ? `，错误：${task.error}` : ''}）\n`);
+  if (task.error) writeArchiveDoc(files.decision, `# 代表裁决\n\n待定：任务以 ${task.status} 结束（${task.error}）。由直属代表决定是否修复或重派。\n`);
+  const parent = task.parentWorkerId ? this.tasks.find(item => item.id === task.parentWorkerId) : undefined;
+  upsertArchiveEntry(cwd, {
+   taskId: task.id, agent: task.agent, parentWorkerId: task.parentWorkerId,
+   representative: parent?.agent, title: task.title, state: task.state,
+   started: task.started, ended: receipt.ended,
+   summary: summarizeReport(report || transcript),
+  });
  }
  private authorize(handle: unknown, parent: string) {
   const value = handle as WorkerHandle;
