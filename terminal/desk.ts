@@ -11,6 +11,7 @@ import { loadAttachment, attachmentToPrompt, looksLikeFilePaths, isAttached } fr
 import { dataRoot } from './paths.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, stateColor, stateMark, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
 import { taskBuckets, WAITING_LABEL } from './monitor.ts';
+import { BRIEFING_HEADER } from './briefing.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
@@ -131,6 +132,10 @@ export class Desk {
  monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[];watchdog?:(id:string)=>any[]};
  /** 当前审批模式，用于状态栏常驻显示；由 index.ts 注入。 */
  approvalPolicy?:()=>'human'|'proxy'|'readonly';
+ /** 代表改道后由外层落库并向上级汇报；Desk 只负责把消息送达任务。 */
+ briefingSent?:(taskId:string,text:string,outcome:any)=>void;
+ /** 给总理的加急指令抬头与重排纪律，由外层拼装（需要知道运行任务数与有无代理总代）。 */
+ briefingForPremier?:(text:string)=>string;
  private monitorAt=0;private monitorTasksCache:any[]=[];private monitorPlansCache:any[]=[];
  private evidenceAt=0;
  private evidenceCache:{id:string;ended:any;output:any;value:any}|undefined;
@@ -202,7 +207,7 @@ export class Desk {
   const buckets=this.taskBucketsFor(tasks);
   return buckets.waiting.length?0:Math.max(0,buckets.order.length-1);
  }
- constructor(public tui:any,public theme:any,public ctx:any,public config:Config,public sessions:any[],public pool:WorkerPool,public submit:(text:string,images?:any[])=>void|Promise<void>,public done:(action?:Action)=>void,public commands:any[]=[],public clipboard:(text:string)=>Promise<void>=copyToClipboard,public onAction?:(action:Action)=>Promise<void>){
+ constructor(public tui:any,public theme:any,public ctx:any,public config:Config,public sessions:any[],public pool:WorkerPool,public submit:(text:string,images?:any[],options?:{deliverAs?:'steer'|'followUp'})=>void|Promise<void>,public done:(action?:Action)=>void,public commands:any[]=[],public clipboard:(text:string)=>Promise<void>=copyToClipboard,public onAction?:(action:Action)=>Promise<void>){
  this.sending=!ctx.isIdle();this.folded=new Set(config.folded);this.expandedTools=config.expandedTools===true;this.editor=new Editor(tui,{borderColor:(s:string)=>theme.fg('borderMuted',s),selectList:getSelectListTheme()},{paddingX:1});
  this.savedDraftBeforeCommand=config.drafts[this.sessionKey()]||'';this.editor.setText(this.savedDraftBeforeCommand);this.editor.focused=true;
  this.editor.setAutocompleteProvider(new CombinedAutocompleteProvider([...localCommands,...commands.filter((c:any)=>!localCommands.some(l=>l.name===c.name)).map((c:any)=>({name:c.name,description:c.description||''}))],ctx.cwd));
@@ -293,11 +298,17 @@ export class Desk {
  send(submitted?:string){const text=(submitted??this.editor.getExpandedText()).trim();if(!text)return;if(this.preview()){this.editor.setText(text);this.notice='这是只读预览：在会话列表按 Enter 进入后再发送。';this.refresh();return;}
  if(this.help||this.taskView||this.missionView){this.editor.setText(text);this.notice='当前为阅读模式。先按 F1/F3/F9 返回会话，再 Enter 发送。';this.refresh();return;}
  if(this.sending||!this.ctx.isIdle()){
-  // Pi queues submissions made mid-turn (followUp); hand the text over and say so.
+  // 人类在总理执行途中发指令：必须用 steer 投递。
+  // steer = 当前回合的工具批次结束后、下一次 LLM 调用之前插入——这就是"趁总理空闲的间隙
+  // 迅速送达让它改安排"。不带 deliverAs 时 Pi 直接抛 "Agent is already processing"，
+  // 而扩展层会吞掉这个错误，界面却显示"已排队"——消息就此消失。
   this.editor.addToHistory(text);this.editor.setText('');this.savedDraftBeforeCommand='';
-  const result=this.submit(text);
-  if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.editor.setText(text);this.notice='排队失败（原稿已恢复）：'+clean(error);this.refresh();});
-  this.notice='已排队：当前回合结束后自动发送；Ctrl+X 中止。';this.refresh();return;}
+  // 加急指令带抬头与重排纪律：模型读到的若是一段普通文本，
+  // 它会当成"补充信息"继续按原计划跑，而不是停下来重排。
+  const payload=this.briefingForPremier?.(text)??text;
+  const result=this.submit(payload,undefined,{deliverAs:'steer'});
+  if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.editor.setText(text);this.notice='加急送达失败（原稿已恢复）：'+clean(error);this.refresh();});
+  this.notice='已加急：总理做完当前这一步就读取并重排；Ctrl+X 中止。';this.refresh();return;}
  const route=routeCommand(text,this.commands);if(route.kind==='unknown'){this.editor.setText(text);this.notice='未知命令 /'+route.name+'，未发送给模型。输入 / 选择；发送字面斜线请用 //。';this.refresh();return;}
  if(route.kind==='native'||route.kind==='registered'&&route.source==='extension'){this.editor.setText(this.savedDraftBeforeCommand);this.finish({kind:route.kind==='native'?'native-command':'dispatch-command',text});return;}
  if(route.kind==='local'){this.editor.setText(route.name==='reload'||route.name==='pi'?this.savedDraftBeforeCommand:'');switch(route.name){case 'help':this.help=true;break;case 'copy':void this.copyAnswer();break;case 'tasks':this.taskView=true;this.readStart=null;break;case 'attach':{const argument=text.trim().slice('/attach'.length).trim();this.finish({kind:'attach',text:argument});return;}case 'pi':this.finish({kind:'pi'});return;default:this.finish({kind:route.name});return;}this.refresh();return;}
@@ -419,13 +430,24 @@ export class Desk {
   const hit=this.graphHits.find(item=>item.index===this.graphSelected);
   const taskId=hit?.taskId??this.councilDeskTaskId;
   const task=this.pool.tasks.find(t=>t.id===taskId)||this.monitorData().tasks.find((t:any)=>t.id===taskId);
+  // 人类不能直接指挥僚属：责任链会断在中间——代表不知道自己的下属被改了方向，
+  // 也就无法对它负责。选中僚属时明确拒绝，并指出该找谁。
+  if(task?.parentWorkerId){
+   const owner=this.pool.tasks.find(t=>t.id===task.parentWorkerId);
+   this.notice=`僚属不接受人类直接指令 · 请发给其直属代表${owner?`「${owner.agent}」`:''}`;
+   this.refresh();return;
+  }
   const agentKey=task?.agentId||task?.agent||(hit?.id?.startsWith('agent:')?hit.id.slice(6):undefined);
   const parent=this.ctx.sessionManager.getSessionId();
   const handle=taskId?this.pool.liveHandle?.(taskId,parent):undefined;
   if(handle){
-   void this.pool.sendMessage(handle,parent,text).then((outcome:any)=>{
-    if(outcome.delivered){this.editor.setText('');this.savedDraftBeforeCommand='';this.notice=`已送达 ${outcome.agent||task?.agent||taskId}${outcome.queued?'（排队中）':''}`;}
-    else this.notice='转发失败：'+(outcome.error||'未知原因')+'（原稿保留）';
+   // 加急指令带抬头：没有它，代表会把"改需求"读成"补充信息"，继续跑完原来的事。
+   const payload=`${BRIEFING_HEADER}\n\n${text}\n\n## 你现在要做的\n1. **停下**当前目标：不要为了做完手头这步而延迟，已完成的产出保留。\n2. 判断这条变更让原任务是作废、缩小还是转向。\n3. 在结论里写清：原来做到哪、因这条变更停了什么、按新安排接下来做什么。这份结论会转给你的上级。`;
+   void this.pool.sendMessage(handle,parent,payload).then(async(outcome:any)=>{
+    if(!outcome.delivered){this.editor.setText(text);this.notice='加急送达失败：'+(outcome.error||'未知原因')+'（原稿保留）';this.refresh();return;}
+    this.editor.setText('');this.savedDraftBeforeCommand='';
+    this.notice=`已加急送达 ${outcome.agent||task?.agent||taskId}：它做完当前工具批次就停下改道`;
+    this.briefingSent?.(taskId,text,outcome);
     this.refresh();
    });
    this.refresh();return;

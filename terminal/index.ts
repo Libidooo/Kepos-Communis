@@ -33,6 +33,7 @@ import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
+import { BriefingStore, BRIEFING_HEADER, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -118,6 +119,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // Watchdog 判定器：与记忆整理共用同一次最小生成，不额外开进程。
  // 阶段① 只落库 + 一行提示；progress 静默，绝不终止任务。
  const watchdogStore=new WatchdogStore(db());
+ // 人类在执行途中改变需求的记录：界面显示"已加急"必须有对应的真实送达。
+ const briefingStore=new BriefingStore(db());
  const watchdogJudge:WatchdogJudge=minimalCompletion;
  /** 对一次"到复核点"的任务做一次模型判定。失败静默——watchdog 不能影响任务本身。 */
  const judgeReview=async(task:any)=>{
@@ -273,13 +276,15 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const mcp=configuredMcp.length?`MCP governance: the human owns the server configuration (${configuredMcp.length} configured: ${configuredMcp.join(', ')}); you may grant configured servers per delegation via tasks[].mcp (true = all configured, or an explicit list) — grants are per-task, audited and expire with the worker.`:'';
   // ── 按需：代理总代治理只在人类真的推选过时才注入完整规则；
   // 未推选时只留一句"不要为它开席位"，否则每轮白烧 400 字符。 ──
-  const deputy=deputyName?`Deputy chair governance: the deputy chair is an elected part-time duty, not a representative seat — the human elected ${deputyName}. When a governance decision needs a second opinion (tool and MCP grant approvals, batched reviews), delegate a review task to that member, require its VOTE line, record the round with kepos_vote, then set tasks[].mcp accordingly. Never create a seat or a role for the deputy chair.`:'';
+  const deputy=deputyName?`Deputy chair governance: the deputy chair is an elected part-time duty, not a representative seat — the human elected ${deputyName}. When a governance decision needs a second opinion (tool and MCP grant approvals, batched reviews), delegate a review task to that member, require its VOTE line, record the round with kepos_vote, then set tasks[].mcp accordingly. When the human changes requirements mid-flight and re-briefing means touching many representatives at once, hand the dispatch work to the deputy chair and keep the judgement and the report to the human yourself — holding 48 re-briefings in your own context crowds out the judgement the human is actually asking for. Never create a seat or a role for the deputy chair.`:'';
+  // 人类加急改变需求：重排纪律单列，因为它与"再来一个任务"是相反的次序。
+  const replan=`When the human changes requirements or goals while work is in flight, the message arrives marked as an urgent human change. Do not treat it as an additional request: first read what is already finished and keep it, then work out which planned steps the change makes unnecessary, then re-plan. Explicitly cancel tasks the change replaced instead of letting them run to completion and discarding the result. Finish by telling the human in one sentence which steps continue, which stopped, and what changed.`;
   // ── 按需：计划门禁与表决只在确实存在长程计划时才注入。 ──
   const hasPlans=(()=>{try{return scheduler.list().length>0;}catch{return false;}})();
   const plans=hasPlans?`A delegate plan longer than ${HUMAN_APPROVAL_THRESHOLD_SECONDS}s must be represented as an kepos_plan step and explicitly approved by a human before dispatch. Use kepos_plan for long dockets with bounded steps and human gates, and kepos_events with a cursor for incremental supervision. When the council must decide, have each delegate end its output with a VOTE: yes|no|abstain - one-line reason, then record the round with kepos_vote including your own recommendation in main, and relay the tally to the human.`:'';
   // 恒定的一句：无论是否推选过，都不该为代理总代创建编制。
   const seatRule='Never create a seat or a role for the deputy chair; it is an elected duty, not a representative seat.';
-  supervisionPrompt=[core,supervision,mcp,deputy,plans,seatRule,config.agents.length?OPENING_STEPS:'',config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
+  supervisionPrompt=[core,supervision,mcp,deputy,replan,plans,seatRule,config.agents.length?OPENING_STEPS:'',config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
  };
  const refreshSupervisionPrompt=()=>assembleSupervisionPrompt();refreshSupervisionPrompt();
  pi.on('before_agent_start',(event)=>{if(!supervisionPrompt)refreshSupervisionPrompt();event.systemPromptOptions.sections.kepos_supervision=supervisionPrompt;});
@@ -394,7 +399,24 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(!handle&&params.taskId){const task=pool.tasks.find(item=>item.id===params.taskId&&item.parentSessionId===parent);if(!task)throw Error('当前会话没有该任务：'+params.taskId);handle={version:1,workerId:task.id,parentSessionId:parent,capability:'task'};}
   if(!handle)throw Error('需要 handle 或当前会话内的 taskId');
   let result:any;
-  switch(params.action){case 'status':result=pool.status(handle,parent);break;case 'wait':result=await pool.wait(handle,parent,params.seconds??2);break;case 'review':result=pool.review(handle,parent);break;case 'cancel':result=pool.cancelHandle(handle,parent);break;case 'reconnect':result=pool.reconnect(handle,parent);break;case 'message':{if(!params.text?.trim())throw Error('message 需要 text');const outcome=await pool.sendMessage(handle,parent,params.text.trim());if(!outcome.delivered)throw Error(outcome.error||'转发失败');result={state:outcome.state,delivered:true,agent:outcome.agent};break;}default:result=pool.result(handle,parent);}
+  switch(params.action){
+   case 'message':{
+    if(!params.text?.trim())throw Error('message 需要 text');
+    // 人类不直接指挥僚属：责任链会断在中间。这条限制落在工具层，
+    // 不只是界面层——总理也不该绕过代表去改下属的方向。
+    const target=pool.tasks.find(t=>t.id===handle.workerId);
+    if(target?.parentWorkerId)throw Error(`taskId ${handle.workerId} 是僚属任务，不接受直接指令。请改为向其直属代表「${pool.tasks.find(t=>t.id===target.parentWorkerId)?.agent||'—'}」下达。`);
+    const outcome=await pool.sendMessage(handle,parent,params.text.trim());
+    if(!outcome.delivered)throw Error(outcome.error||'转发失败');
+    result={state:outcome.state,delivered:true,agent:outcome.agent};break;
+   }
+   case 'status':result=pool.status(handle,parent);break;
+   case 'wait':result=await pool.wait(handle,parent,params.seconds??2);break;
+   case 'review':result=pool.review(handle,parent);break;
+   case 'cancel':result=pool.cancelHandle(handle,parent);break;
+   case 'reconnect':result=pool.reconnect(handle,parent);break;
+   default:result=pool.result(handle,parent);
+  }
   // 结果被读取的事件：kepos_metrics 的"二次追问率"分子只能从这里来。
   // 写在这里而不是 pool 内部，因为"被读过"是调用方的行为，不是任务的属性。
   if(['result','wait'].includes(params.action)){
@@ -927,11 +949,44 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  try{await playSplash(ctx,config,ready);}catch{}
  await ready;if(initialFailed){ctx.ui.notify(clean(initialError),'error');return;}
  while(true){let sessions:any[];try{sessions=firstSessions??await loadSessions();firstSessions=undefined;}catch(e){ctx.ui.notify(clean(e),'error');return;}
- let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3)};
+ let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images,options)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true,...options}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3)};
   // 代表派生请求：代表进程写文件，这里轮询接手。僚属由代表发起、代表负责，
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
   spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{try{const rep=pool.tasks.find(t=>t.id===taskId);if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,request.skills?Array.from(READ_ONLY_TOOLS):Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});return{ok:true};}catch(error){return{ok:false,reason:clean(error)};}}});
   spawnPoller.start(()=>pool.tasks.filter(t=>!terminalStates.has(t.status||'')).map(t=>t.id),ctx.cwd);
+  // 给总理的加急指令：带上当前规模与"先看进度再重排"的顺序要求。
+  // 人多时明确交给代理总代分担派发——那是治理规则，不是建议。
+  desk.briefingForPremier=(text:string)=>{
+   const running=pool.tasks.filter(t=>!terminalStates.has(t.status||'')).length;
+   const waiting=pool.tasks.filter(t=>t.reviewDue||t.stalled).length;
+   const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
+   const payload=premierBriefing(text,{running,waiting,hasDeputy:Boolean(deputy),deputyName:deputy?.name});
+   // 附录一：落库用原文，附给模型的是拼好的完整指令。
+   try{briefingStore.record({target:'premier',targetName:'总理',text,delivery:'queued',note:`${running} 运行 / ${waiting} 待处理`});}catch{}
+   return payload;
+  };
+  // 代表因人类变更而改道后：落库，并向其上级转呈汇报。
+  // 上级判定写在一处：有代理总代就报给总代，没有就报给总理。
+  // "报给总代"必须落成一个任务——总代没有自己的会话，它只能通过执行任务来"听到"；
+  // 它的结论会自动作为任务产出回到总理手里，所以总理不会因此失去监督。
+  desk.briefingSent=(taskId:string,text:string)=>{
+   try{
+    const task=pool.tasks.find(t=>t.id===taskId);
+    const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
+    briefingStore.record({target:'representative',targetName:task?.agent||taskId,taskId,text,delivery:'forwarded',note:deputy?`上级：代理总代 ${deputy.name}`:'上级：总理'});
+    if(!task?.agent)return;
+    const report=upwardReport({agent:task.agent,taskId,briefing:text,conclusion:String(task.checkpoint||task.output||'').slice(-800)});
+    if(deputy){
+     // 总代的任务很短：只做转呈与复核，不重新执行代表的活。
+     const instruction=`你是代理总代。${report}\n\n请用两三句话给出处置意见（是否同意改道、原计划哪一步需要调整），然后转呈总理。不要自行派发新任务。`;
+     pool.launch({...deputy},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',140,undefined,ctx.sessionManager.getSessionId(),['read'],[],false);
+     if(desk){desk.notice=`${task.agent} 已改道 · 已报代理总代「${deputy.name}」转呈`;scheduleRepaint();}
+    }else{
+     void pi.sendUserMessage(report,{deliverAs:'steer'});
+     if(desk){desk.notice=`${task.agent} 已改道 · 已报总理`;scheduleRepaint();}
+    }
+   }catch(error){desk&&(desk.notice='改道汇报失败：'+clean(error));}
+  };
   desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;
  try{

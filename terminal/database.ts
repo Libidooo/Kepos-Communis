@@ -52,6 +52,20 @@ export class KeposDatabase {
     model TEXT NOT NULL
    );
    CREATE INDEX IF NOT EXISTS idx_watchdog_worker ON watchdog_verdicts(worker_id,seq);
+   -- 人类在执行途中改变需求：加急指令必须留下记录。
+   -- 界面显示"已加急"时要能对应一条真实送达，而不是"看起来很成功"。
+   -- task_id 为空表示发给总理的整盘重排；有值表示发给某位代表。
+   CREATE TABLE IF NOT EXISTS human_briefings(
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    target TEXT NOT NULL,
+    target_name TEXT NOT NULL,
+    task_id TEXT,
+    text TEXT NOT NULL,
+    delivery TEXT NOT NULL,
+    note TEXT
+   );
+   CREATE INDEX IF NOT EXISTS idx_briefing_task ON human_briefings(task_id,at);
    PRAGMA user_version=1;
   `);});
   } catch(error) { this.sql.close(); throw error; }

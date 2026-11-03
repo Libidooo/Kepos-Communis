@@ -257,7 +257,11 @@ export class WorkerPool {
   if (!executor) return { state: task.state, delivered: false, error: '执行器不可达，请稍后重试或终止任务' };
   this.emit({ type: 'task_message_forwarded', task: { ...task } });
   let outcome: any = { disposition: 'pending' };
-  const requestPromise = executor.request('prompt', { message: text }, 120000)
+  // streamingBehavior 必传：Pi 在流式期间没有它就直接抛 "Agent is already processing"，
+  // 错误会一路变成"转发失败"——这正是运行中代表收不到人类消息的原因。
+  // 用 steer 而不是 followUp：steer 在当前回合的工具批次结束后、下一次 LLM 调用之前
+  // 插入，也就是"做完手头这一步就改道"；followUp 要等整轮跑完，那时任务可能已经做完了。
+  const requestPromise = executor.request('prompt', { message: text, streamingBehavior: 'steer' }, 120000)
    .then((result: any) => { outcome = result || { disposition: 'started' }; }, (error: Error) => { outcome = { disposition: 'failed', error: error.message }; });
   await Promise.race([requestPromise, new Promise(resolve => setTimeout(resolve, 1500))]);
   if (outcome.disposition === 'failed') return { state: task.state, delivered: false, error: outcome.error };

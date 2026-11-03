@@ -125,6 +125,25 @@ test('sending to an already running worker still forwards without touching the q
  f.pool.cancel(running.workerId);await turn();
 });
 
+// 回归：不带 streamingBehavior 时 Pi 在流式期间直接抛 "Agent is already processing"，
+// 而错误一路变成"转发失败"——运行中的代表因此收不到人类的加急指令。
+test('a mid-turn message is delivered as steer so the worker changes course',async t=>{
+ const f=fixture(t);
+ const calls=[];
+ // 替换成记录完整参数的假执行器：这里要断言的正是那个被漏掉的字段。
+ const realRequest=f.executors.length;void realRequest;
+ const handle=f.launch('running','a');await turn();
+ const executor=f.executors[0];
+ executor.request=async(type,args)=>{calls.push({type,args});return{disposition:'queued'};};
+ const outcome=await f.pool.sendMessage(handle,'a','改成检查依赖');
+ assert.equal(outcome.delivered,true);
+ const prompt=calls.find(call=>call.type==='prompt');
+ assert.ok(prompt,'the message goes through the prompt RPC');
+ assert.equal(prompt.args.streamingBehavior,'steer','steer = finish this tool batch, then change course');
+ assert.ok(String(prompt.args.message).includes('改成检查依赖'));
+ f.pool.cancel(handle.workerId);await turn();
+});
+
 test('queued configuration is a frozen snapshot and receipt keeps its revision',async t=>{
  const f=fixture(t);f.launch('active');const config={...crew};const h=f.launch('waiting','b',{crew:config});
  config.role='changed';config.model='changed';const queued=f.pool.tasks.at(-1);
