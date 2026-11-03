@@ -1,6 +1,8 @@
 import { truncateToWidth, visibleWidth } from '@earendil-works/pi-tui';
 import { stripVTControlCharacters } from 'node:util';
 import { TASK_ACTIVE_STATES, isTaskActive, isTaskCurrent, isTaskPending, taskElapsedText, taskState, type TaskStateLike } from './task-state.ts';
+// 等待判定只有 monitor 一处实现：环图 ⚠、顶栏徽章、F3 等待区都从这里取。
+import { awaitingHuman } from './monitor.ts';
 
 export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string; deputy?: boolean };
 export type GraphViewTask = TaskStateLike & { id: string; agent: string; agentId?: string; purpose?: 'delegation' | 'configuration'; internal?: boolean; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; error?: string; groupKey?: string; started?: number; ended?: number };
@@ -14,7 +16,8 @@ type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: Gr
 // 活跃=正在执行；NEEDS_HUMAN 归入“待处理”。终态残留的复核/停滞标记不再报警。
 export const activeStates = TASK_ACTIVE_STATES;
 export const countActive = (tasks: GraphViewTask[]) => tasks.filter(isTaskActive).length;
-export const countPending = (tasks: GraphViewTask[]) => tasks.filter(isTaskPending).length;
+// 环图 ⚠ 与顶栏徽章、F3 等待区读同一个选择器：三处各算一遍必然漂移。
+export const countPending = (tasks: GraphViewTask[]) => awaitingHuman(tasks).length;
 const filterName = (filter: CouncilFilter) => filter === 'active' ? '活跃' : filter === 'pending' ? '待处理' : '全部';
 // 待审批符号与 desk 徽章、F1 帮助文案保持一致。
 export const stateMark = (task: GraphViewTask) => {
@@ -26,7 +29,7 @@ export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter,
   const q = query.trim();
   return (snapshot.tasks || []).filter(task => {
     if (filter === 'active' && !activeStates.has(task.state || '')) return false;
-    if (filter === 'pending' && !(task.state === 'NEEDS_HUMAN' || task.reviewDue)) return false;
+    if (filter === 'pending' && (task.ended || !isTaskPending(task))) return false;
     if (q && !plain(task.title || '').includes(q) && !plain(task.agent).includes(q)) return false;
     return true;
   });

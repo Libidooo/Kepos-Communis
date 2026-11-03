@@ -7,7 +7,8 @@ import {fileURLToPath} from 'node:url';
 const home=mkdtempSync(join(tmpdir(),'kepos-monitor-'));process.env.ORBITAL_HOME=join(home,'orbital');
 const {Desk,KEY_HINTS,keyBytes}=await import('../dist/terminal/desk.js');
 const {KeposDatabase}=await import('../dist/terminal/database.js');
-const {taskSummaries,taskEvidence}=await import('../dist/terminal/monitor.js');
+const {taskSummaries,taskEvidence,awaitingHuman}=await import('../dist/terminal/monitor.js');
+const {countPending}=await import('../dist/terminal/graph-view.js');
 const {initTheme}=await import('@earendil-works/pi-coding-agent');initTheme('dark');
 const {visibleWidth}=await import('@earendil-works/pi-tui');
 test('monitor list queries omit full output/profile while selected evidence remains available',()=>{
@@ -225,6 +226,64 @@ test('side-panel rows always set a foreground colour so tinted panels stay reada
     assert.ok(/38;2;\d+;\d+;\d+m/.test(row), `tinted row has text but no foreground: ${JSON.stringify(plain.slice(0, 40))}`);
   }
   desk.dispose();
+});
+
+test('the task view puts "waiting on you" above work, and healthy tasks never expand', () => {
+  const ctx = { cwd: home, isIdle: () => true, model: undefined, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => [], getEntries: () => [] } };
+  const task = (id, state, extra = {}) => ({ id, agent: 'Agent-' + id, state, status: state, cwd: home, parentSessionId: 'local', title: 'TASK_' + id, started: 100, limit: 300, output: 'OUTPUT_' + id, ...extra });
+  const tasks = [
+    task('done', 'SUCCEEDED', { ended: 200 }),
+    task('run', 'RUNNING'),
+    task('gate', 'NEEDS_HUMAN'),
+    task('stall', 'RUNNING', { stalled: true, reviewDue: true }),
+    task('boom', 'FAILED', { ended: Date.now() + 1000, error: '认证失败' }),
+  ];
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, { fg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, [], { tasks, children: new Map() }, () => {}, () => {});
+  desk.taskView = true;
+  const frame = desk.render(120).join('\n');
+  // 等待区在顶：门禁（最急）先于空转，空转先于失败。
+  assert.ok(frame.indexOf('TASK_gate') < frame.indexOf('TASK_stall'), 'approval gate comes before a stall');
+  assert.ok(frame.indexOf('TASK_stall') < frame.indexOf('TASK_boom'), 'a stall comes before a settled failure');
+  assert.ok(frame.includes('等你处理 3'), 'the waiting section counts only pending items');
+  assert.ok(frame.includes('F2 审批'), 'each waiting item carries its direct action');
+  // 计数行只报工作中/已完成，健康任务不展开正文。
+  assert.ok(frame.includes('工作中 2 · 已完成 1'), 'counts use the single口径');
+  assert.ok(!frame.includes('OUTPUT_run') || desk.taskIndex === 1, 'the selected task expands, others do not');
+
+  // 选中顺序：0 是门禁。Ctrl+→ 走到空转，再走到失败。
+  desk.taskIndex = 0;
+  assert.ok(desk.render(120).join('\n').includes('TASK_gate'), 'index 0 selects the approval gate');
+  desk.handleInput('\x1b[1;5C');
+  assert.ok(desk.render(120).join('\n').includes('TASK_stall'));
+  // 确认失败项后它落回历史，不再占等待区。
+  desk.taskIndex = 2;
+  desk.handleInput('\r');
+  const after = desk.render(120).join('\n');
+  assert.ok(!after.includes('等你处理 3'), 'an acknowledged failure leaves the waiting section');
+  assert.ok(after.includes('历史'), 'history remains reachable');
+  desk.dispose();
+});
+
+test('settled failures from before the desk existed never re-raise as waiting', () => {
+  const ctx = { cwd: home, isIdle: () => true, model: undefined, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => [], getEntries: () => [] } };
+  // 启动时加载的历史失败：ended 早于 Desk 创建时刻。
+  const tasks = [{ id: 'old', agent: 'Agent-old', state: 'FAILED', status: '失败', cwd: home, parentSessionId: 'local', title: 'OLD_FAILURE', started: 1, ended: 2, limit: 300, output: 'OLD_OUTPUT' }];
+  const desk = new Desk({ terminal: { rows: 40 }, requestRender() {} }, { fg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, [], { tasks, children: new Map() }, () => {}, () => {});
+  desk.taskView = true;
+  const frame = desk.render(120).join('\n');
+  assert.ok(frame.includes('没有等你处理的事项'), 'old failures are history, not a pending gate');
+  assert.ok(frame.includes('历史 1 条'), 'still counted, just not raised');
+  desk.dispose();
+});
+
+test('the ring badge and the waiting section use one pending selector', () => {
+  const tasks = [
+    { id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', status: '等待人类审批', title: 'g', started: 1 },
+    { id: 'done', agent: 'B', state: 'SUCCEEDED', status: '完成', title: 'd', started: 1, ended: 2 },
+    { id: 'fail', agent: 'C', state: 'FAILED', status: '失败', title: 'f', started: 1, ended: 2 },
+  ];
+  assert.equal(countPending(tasks), 1, 'settled tasks never count as pending');
+  assert.equal(awaitingHuman(tasks).length, 1);
 });
 
 test('human, 总理 and delegate messages are visually distinct in every theme', async () => {

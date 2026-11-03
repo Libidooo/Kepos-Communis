@@ -10,6 +10,7 @@ import { PRODUCT_NAME, sessionUsage, usageText, formatTokens, cacheHitPercent } 
 import { loadAttachment, attachmentToPrompt, looksLikeFilePaths, isAttached } from './attachments.ts';
 import { dataRoot } from './paths.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, stateColor, stateMark, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
+import { taskBuckets, WAITING_LABEL } from './monitor.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
@@ -135,6 +136,67 @@ export class Desk {
  private evidenceCache:{id:string;ended:any;output:any;value:any}|undefined;
  private monitorData(){if(Date.now()-this.monitorAt>1000){this.monitorAt=Date.now();try{this.monitorTasksCache=this.monitor?.tasks()||this.pool.tasks;this.monitorPlansCache=this.monitor?.plans()||[];}catch(error){this.notice='监控读取暂不可用：'+clean(error);}}return{tasks:this.monitorTasksCache,plans:this.monitorPlansCache};}
  panelTasks(){return this.taskScope==='all'?this.monitorData().tasks:this.sessionTasks();}
+ // 书案基线：Desk 创建时刻。比这更早结算的失败属于历史，不重新挂进等待区。
+ taskBaseline=Date.now();
+ handledTaskIds=new Set<string>();
+ /**
+  * F3/F8 的两段式分桶。等待区只在"本次打开 Kepos 之后"才结算的失败里挂人；
+  * 人工按 Enter 确认过的项落回历史，不重复占位。
+  */
+ taskBucketsFor(tasks:any[]=this.panelTasks()){return taskBuckets(tasks,{freshSince:this.taskBaseline,handled:this.handledTaskIds});}
+ /** 等待区清单 + 进行区一行一条：等待项带原因与直达动作，健康任务不展开正文。 */
+ waitingSection(buckets:any,width:number):string[]{
+  const scope=this.taskScope==='all'?'全局':'本会话';
+  const counts=buckets.counts;
+  const head=`议会任务 · ${scope} · 工作中 ${counts.working} · 已完成 ${counts.done}`;
+  const lines:string[]=[truncateFit(head,width)];
+  if(!buckets.waiting.length)lines.push(this.theme.fg('dim','没有等你处理的事项'));
+  else{
+   lines.push(this.theme.fg('warning',`等你处理 ${buckets.waiting.length}`));
+   let index=0;
+   for(const item of buckets.waiting){
+    const selected=index===this.taskIndex;index++;
+    const mark=stateMark(item.task);
+    const label=WAITING_LABEL[item.reason as keyof typeof WAITING_LABEL];
+    const body=`${clean(item.task.agent||'—')} · ${clean(item.task.title||'')}`;
+    lines.push(this.lineWithAction(selected,mark,label,body,item.action,width));
+   }
+  }
+  if(buckets.working.length){
+   const at=buckets.waiting.length;
+   lines.push(this.theme.fg('accent',`进行中 ${buckets.working.length}`));
+   buckets.working.forEach((task:any,offset:number)=>{
+    const selected=at+offset===this.taskIndex;
+    const elapsed=task.started?Math.max(0,Math.round((Date.now()-task.started)/1000))+'s':'';
+    lines.push(this.lineWithAction(selected,stateMark(task),elapsed,`${clean(task.agent||'—')} · ${clean(task.title||'')}`,task.status||'',width));
+   });
+  }
+  // 已完成 / 历史不逐条列出：要看历史按 Ctrl+→ 翻页，计数已经给了总量。
+  if(buckets.finished.length)lines.push(this.theme.fg('dim',`历史 ${buckets.finished.length} 条 · Ctrl+←/→ 翻看`));
+  return lines;
+ }
+ /** 一行条目：左侧选中标记 + 状态符 + 说明，右侧直达动作。
+  *  动作优先保留——它是这一行唯一能告诉你"该按什么"的信息；正文可以截，动作不能丢。 */
+ private lineWithAction(selected:boolean,mark:string,label:string,body:string,action:string,width:number):string{
+  const left=`${selected?'›':' '} ${mark} ${label} ${body}`;
+  const tail=action?`  ${action}`:'';
+  // 正文至少留 18 列才可读；留不下就连动作一起放弃，而不是把正文压成两个字。
+  const room=width-visibleWidth(tail);
+  if(tail&&room>=18)return this.theme.fg(selected?'accent':'text',truncateFit(left,room)+tail);
+  return this.theme.fg(selected?'accent':'text',truncateFit(left,width));
+ }
+ /** 任务 id 在分桶顺序里的位置，供列表跳转、代表席回车定位。 */
+ orderIndex(id:string|undefined,tasks:any[]=this.panelTasks()):number{
+  if(!id)return -1;return this.taskBucketsFor(tasks).order.findIndex((task:any)=>task.id===id);
+ }
+ /**
+  * 打开书案时停在哪一条：有等待项就停在最急的那条（它就是你需要处理的），
+  * 否则停在最近一条任务上。等待区在顶部，所以"最急"永远是索引 0。
+  */
+ focusTaskIndex(tasks:any[]=this.panelTasks()):number{
+  const buckets=this.taskBucketsFor(tasks);
+  return buckets.waiting.length?0:Math.max(0,buckets.order.length-1);
+ }
  constructor(public tui:any,public theme:any,public ctx:any,public config:Config,public sessions:any[],public pool:WorkerPool,public submit:(text:string,images?:any[])=>void|Promise<void>,public done:(action?:Action)=>void,public commands:any[]=[],public clipboard:(text:string)=>Promise<void>=copyToClipboard,public onAction?:(action:Action)=>Promise<void>){
  this.sending=!ctx.isIdle();this.folded=new Set(config.folded);this.expandedTools=config.expandedTools===true;this.editor=new Editor(tui,{borderColor:(s:string)=>theme.fg('borderMuted',s),selectList:getSelectListTheme()},{paddingX:1});
  this.savedDraftBeforeCommand=config.drafts[this.sessionKey()]||'';this.editor.setText(this.savedDraftBeforeCommand);this.editor.focused=true;
@@ -522,9 +584,12 @@ export class Desk {
 
  if((this.sending||this.activity.length||this.thinking)&&!this.help&&!this.taskView&&!this.missionView)history=[...history,'',...(this.thinking?['┊ 正在整理思路…']:[]),...this.activity];
  if(this.help)history=this.helpLines();
- if(this.taskView&&!this.help){const tasks=this.panelTasks();this.taskIndex=Math.max(0,Math.min(this.taskIndex,Math.max(0,tasks.length-1)));let task=tasks[Math.min(this.taskIndex,Math.max(0,tasks.length-1))];
+ if(this.taskView&&!this.help){const tasks=this.panelTasks();const buckets=this.taskBucketsFor(tasks);const order=buckets.order;this.taskIndex=Math.max(0,Math.min(this.taskIndex,Math.max(0,order.length-1)));let task=order[this.taskIndex];
  if(task&&this.taskScope==='all'&&this.monitor){if(!this.evidenceCache||this.evidenceCache.id!==task.id||this.evidenceCache.ended!==task.ended||(!task.ended&&Date.now()-this.evidenceAt>1000)){this.evidenceAt=Date.now();this.evidenceCache={id:task.id,ended:task.ended,output:task.output,value:this.monitor.evidence(task.id)};}task=this.evidenceCache.value||task;}
- history=task?[`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+tasks.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheHitPercent(task.usage)>0?' · 缓存命中'+cacheHitPercent(task.usage)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[this.taskScope==='all'?'全局任务 · 暂无僚属 任务':'本会话暂无僚属 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
+ // 等待区在顶、进行区在下：先给一段索引清单，再展开选中那条的完整书案。
+ // 等待项处理完就消失（审批完 / 确认后 / 重派后），所以这张清单不会越积越长。
+ const summary=this.waitingSection(buckets,Math.max(8,this.centerWidth-4));
+ history=task?[...summary,...(summary.length?['']:[]),`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+order.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheHitPercent(task.usage)>0?' · 缓存命中'+cacheHitPercent(task.usage)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[...summary,...(summary.length?['']:[]),this.taskScope==='all'?'全局任务 · 暂无僚属 任务':'本会话暂无僚属 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
  if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>[`${plan.state} · ${plan.completed}/${plan.total} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''])];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');}
  this.displayLines=history;
  // 框线面板：body 含顶底两行框，内容行 bodyHeight-2；标题嵌入顶框，焦点面板用 borderAccent。
@@ -572,7 +637,7 @@ export class Desk {
  this.footerRegions=[];let footerText='';
  for(const hint of this.footerHints()){const start=visibleWidth(footerText);footerText+=hint.label+'   ';this.footerRegions.push({start,end:visibleWidth(footerText),key:hint.key});}
  footerText+=this.taskView?'Ctrl+←/→ 切换任务':'Ctrl+X 中止';
- const status=this.missionView?'计划监控 · F9 返回 · F2 管理与审批':this.help?'帮助 / 阅读模式 · F1 关闭 · F6 切换面板':this.taskView?'任务详情 · F8 切换全局/会话 · Ctrl+←/→ 切任务 · PgUp/PgDn 滚动产出 · F3 返回会话':preview?'只读预览 · 发送目标见正文提示 · F6 返回当前对话输入':this.maximize?'专注阅读 · F11 或 Esc 恢复面板':this.readStart!==null?'阅读历史 · 已暂停跟随 · Ctrl+End 回最新':this.focus==='input'?'输入区 · Enter 发送 · F10 议会 · F6 管项目':this.focus==='projects'?'项目区 · Enter 折叠/切换 · '+clean((row as any)?.session?.cwd||row?.path||this.ctx.cwd):'代表席 · ↑↓ 选择 · Enter 任务/配置 · F2 分派任务';
+ const status=this.missionView?'计划监控 · F9 返回 · F2 管理与审批':this.help?'帮助 / 阅读模式 · F1 关闭 · F6 切换面板':this.taskView?'任务详情 · 等待区在上 · Enter 确认已处理 · Ctrl+←/→ 切任务 · F8 切换全局/会话 · F3 返回会话':preview?'只读预览 · 发送目标见正文提示 · F6 返回当前对话输入':this.maximize?'专注阅读 · F11 或 Esc 恢复面板':this.readStart!==null?'阅读历史 · 已暂停跟随 · Ctrl+End 回最新':this.focus==='input'?'输入区 · Enter 发送 · F10 议会 · F6 管项目':this.focus==='projects'?'项目区 · Enter 折叠/切换 · '+clean((row as any)?.session?.cwd||row?.path||this.ctx.cwd):'代表席 · ↑↓ 选择 · Enter 任务/配置 · F2 分派任务';
  if(this.metricsDirty){this.metrics=sessionUsage(this.ctx.sessionManager.getEntries?.()||this.ctx.sessionManager.getBranch());this.metricsDirty=false;}const contextUsage=this.ctx.getContextUsage?.();
  // 底栏两行：状态+短用量一行；临时 notice（4 秒自动退出）与按键提示一行。完整用量移入 F1 帮助。
  if(this._notice&&!this._noticeUrgent&&Date.now()-this.noticeAt>4000)this._notice='';
@@ -626,7 +691,7 @@ export class Desk {
  if(matchesKey(data,Key.f1)){this.help=!this.help;this.readStart=null;this.refresh();return;}
  if(matchesKey(data,Key.f2)){this.finish({kind:'menu'});return;}
  if(matchesKey(data,'ctrl+k')){this.finish({kind:'palette'});return;}
- if(matchesKey(data,Key.f3)){this.missionView=false;this.taskScope='session';this.taskView=!this.taskView;if(this.taskView)this.taskIndex=Math.max(0,this.sessionTasks().length-1);this.readStart=null;this.refresh();return;}
+ if(matchesKey(data,Key.f3)){this.missionView=false;this.taskScope='session';this.taskView=!this.taskView;if(this.taskView)this.taskIndex=this.focusTaskIndex(this.sessionTasks());this.readStart=null;this.refresh();return;}
  if(matchesKey(data,Key.f8)){this.missionView=false;this.taskScope=this.taskScope==='all'?'session':'all';this.taskView=true;this.taskIndex=0;this.monitorAt=0;this.readStart=0;this.refresh();return;}
  if(matchesKey(data,Key.f9)){this.missionView=!this.missionView;this.taskView=false;this.help=false;this.monitorAt=0;this.readStart=0;this.refresh();return;}
  if(matchesKey(data,Key.f5)){this.expandedTools=!this.expandedTools;this.config.expandedTools=this.expandedTools;this.historyCacheKey='';try{saveConfig(this.config);}catch{}this.notice=this.expandedTools?'工具完整输出已展开（F5 收起）':'工具输出已折叠为一行摘要（F5 展开）';this.refresh();return;}
@@ -642,7 +707,7 @@ export class Desk {
  if(this.graphView&&this.graphFocus==='list'&&data==='/'&&!this.councilSearch){this.councilSearch=true;this.notice='列表过滤：输入关键词 · Esc 结束';this.refresh();return;}
  // 列表 Enter 定位到图上对应坐席并打开详情；v 进入完整产出阅读层。
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.enter)){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const hit=task?this.graphHits.find(item=>item.taskId===task.id):undefined;if(hit){this.graphSelected=hit.index;this.graphSelectedId=hit.id;this.graphDetail=true;this.refresh();}else{this.notice='当前画面没有这个坐席 · 窄屏请 Tab 回环图';this.refresh();}return;}
- if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.panelTasks().findIndex(item=>item.id===task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
+ if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.orderIndex(task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
  // 议会内 Enter 只按焦点行事：席位焦点开详情（草稿不发送），输入焦点才发送。
  if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);if(hit?.taskId){this.councilDesk=true;this.councilDeskTaskId=hit.taskId;this.deskOffset=0;this.deskWrapKey='';this.graphDetail=false;this.councilList=false;this.graphFocus='input';this.editor.focused=this.focused;this.refresh();}else this.graphDetail=true;this.refresh();return;}
  // 书案 Enter：直接发给该代表（运行中转发；已结束按原配置开新一轮）。补全菜单打开时先让编辑器选词。
@@ -671,6 +736,7 @@ export class Desk {
  if(this.graphView&&this.graphFocus==='ring'&&(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown))){this.graphZoom=Math.max(.85,Math.min(1.6,this.graphZoom+(matchesKey(data,Key.pageUp)?0.1:-0.1)));this.refresh();return;}
  if(matchesKey(data,Key.pageUp)||matchesKey(data,Key.pageDown)){const lines=this.displayLines.length?this.displayLines:this.history(Math.max(8,this.centerWidth-4));this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(matchesKey(data,Key.pageUp)?-Math.max(1,this.bodyHeight-2):Math.max(1,this.bodyHeight-2)));if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return;}
  if(matchesKey(data,'ctrl+end')){this.readStart=null;this.refresh();return;}
+ if(this.taskView&&matchesKey(data,Key.enter)){const buckets=this.taskBucketsFor();const item=buckets.waiting[this.taskIndex];if(item&&(item.reason==='failed'||item.reason==='budget')){this.handledTaskIds.add(String(item.task.id));this.notice=`已确认 ${clean(item.task.agent||'该任务')} 的${item.reason==='budget'?'预算停止':'失败'} · 已归入历史，重派请用 F2`;this.taskIndex=Math.max(0,Math.min(this.taskIndex,Math.max(0,buckets.order.length-2)));this.refresh();return;}}
  if(this.taskView&&matchesKey(data,'ctrl+right')){this.taskIndex++;this.readStart=null;this.refresh();return;}
  if(this.taskView&&matchesKey(data,'ctrl+left')){this.taskIndex=Math.max(0,this.taskIndex-1);this.readStart=null;this.refresh();return;}
  // 粘贴文件路径自动识别：终端把拖入/粘贴的文件路径作为 bracketed paste 送来。
@@ -689,7 +755,7 @@ export class Desk {
  if(this.graphView?(this.councilDesk||this.graphFocus==='input'):this.focus==='input'){this.editor.focused=this.focused;this.editor.handleInput(data);return;}
  if(matchesKey(data,Key.up)){if(this.focus==='projects')this.selected=Math.max(0,this.selected-1);else this.crewIndex=Math.max(0,this.crewIndex-1);this.readStart=null;}
  if(matchesKey(data,Key.down)){if(this.focus==='projects')this.selected=Math.min(this.rows().length-1,this.selected+1);else this.crewIndex=Math.min(this.config.agents.length-1,this.crewIndex+1);this.readStart=null;}
- if(matchesKey(data,Key.enter)){if(this.focus==='crew'){const agent=this.config.agents[this.crewIndex];const tasks=this.sessionTasks();let last=-1;tasks.forEach((t,i)=>{if(t.agent===agent?.name)last=i;});if(last>=0){this.taskView=true;this.taskIndex=last;this.readStart=null;this.refresh();return;}this.finish({kind:'crew',id:agent?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch(error){this.notice='配置保存失败：'+clean(error);}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
+ if(matchesKey(data,Key.enter)){if(this.focus==='crew'){const agent=this.config.agents[this.crewIndex];const mine=this.sessionTasks().filter(t=>t.agent===agent?.name);const task=mine[mine.length-1];const at=this.orderIndex(task?.id,this.sessionTasks());if(at>=0){this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.finish({kind:'crew',id:agent?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch(error){this.notice='配置保存失败：'+clean(error);}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
  this.refresh();
  }
  handleMouse(e:any){if(e.shift)return;
@@ -712,6 +778,6 @@ export class Desk {
  if(e.type!=='press'&&e.type!=='click')return;
  if(e.y>=this.inputY&&e.y<this.inputY+this.editorHeight){this.setFocus('input');if(e.x>=this.leftWidth+(this.leftWidth?3:0)&&e.x<this.leftWidth+(this.leftWidth?3:0)+this.centerWidth)this.editor.handleMouse({...e,x:e.x-this.leftWidth-(this.leftWidth?3:0),y:e.y-this.inputY,width:this.centerWidth,height:this.editorHeight});return{handled:true,focus:true};}
  if(e.y>=3&&((this.rightWidth&&e.x>=this.width-this.rightWidth)||(!this.rightWidth&&this.focus==='projects'))){this.setFocus('projects');const index=e.y-5+this.rightOffset;if(index>=0&&index<this.rows().length){this.selected=index;if(e.type==='click'&&e.clickCount>=2)this.handleInput('\r');}this.refresh();return{handled:true,focus:true};}
- if(e.y>=3&&((this.leftWidth&&e.x<this.leftWidth)||(!this.leftWidth&&this.focus==='crew'))){this.setFocus('crew');const member=this.crewOffset+Math.floor((e.y-6)/3);if(member>=0&&member<this.config.agents.length){this.crewIndex=member;if(e.type==='click'&&e.clickCount>=2){const agent=this.config.agents[member];const tasks=this.sessionTasks();let last=-1;tasks.forEach((t,i)=>{if(t.agent===agent.name)last=i;});if(last>=0){this.taskView=true;this.taskIndex=last;this.readStart=null;this.refresh();}else this.finish({kind:'crew',id:agent.id});}}return{handled:true,focus:true};}this.setFocus('input');return{handled:true,focus:true};
+ if(e.y>=3&&((this.leftWidth&&e.x<this.leftWidth)||(!this.leftWidth&&this.focus==='crew'))){this.setFocus('crew');const member=this.crewOffset+Math.floor((e.y-6)/3);if(member>=0&&member<this.config.agents.length){this.crewIndex=member;if(e.type==='click'&&e.clickCount>=2){const agent=this.config.agents[member];const mine=this.sessionTasks().filter(t=>t.agent===agent.name);const at=this.orderIndex(mine[mine.length-1]?.id,this.sessionTasks());if(at>=0){this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();}else this.finish({kind:'crew',id:agent.id});}}return{handled:true,focus:true};}this.setFocus('input');return{handled:true,focus:true};
  }
 }

@@ -39,7 +39,25 @@ export function taskState(task: TaskStateLike): string | undefined {
 }
 export const isTaskActive = (task: TaskStateLike): boolean => TASK_ACTIVE_STATES.has(taskState(task) || '');
 export const isTaskTerminal = (task: TaskStateLike): boolean => TASK_TERMINAL_STATES.has(taskState(task) || '');
-export const isTaskPending = (task: TaskStateLike): boolean => !isTaskTerminal(task) && (taskState(task) === 'NEEDS_HUMAN' || task.reviewDue === true);
+/** 为什么会被人看见：门禁待批 / 到复核点 / 疑似空转。 */
+export type PendingReason = 'approval' | 'review' | 'stalled';
+
+/**
+ * 需要人类注意力：门禁待批、到复核点、空转待裁决。
+ *
+ * 终态一律不算——失败的"重派还是放弃"由 F3 等待区在本次运行内单独列出
+ * （见 desk.waitingFailures），历史失败不能永久把徽章顶成红色。
+ * 判定口径全库只此一处，环图 ⚠、徽章、等待区都调它。
+ */
+export function pendingReason(task: TaskStateLike): PendingReason | undefined {
+  if (isTaskTerminal(task)) return undefined;
+  const state = taskState(task);
+  if (state === 'NEEDS_HUMAN') return 'approval';
+  if (task.reviewDue === true) return 'review';
+  if (task.stalled === true) return 'stalled';
+  return undefined;
+}
+export const isTaskPending = (task: TaskStateLike): boolean => pendingReason(task) !== undefined;
 export const isTaskCurrent = (task: TaskStateLike): boolean => isTaskActive(task) || isTaskPending(task);
 
 const validTime = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
