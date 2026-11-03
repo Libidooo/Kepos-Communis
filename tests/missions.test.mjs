@@ -166,3 +166,56 @@ test('a fresh scheduler in the same process cancels through the pool live handle
  try{other.cancel(m.id,'parent');}finally{other.stop();}
  assert.deepEqual(f.cancelled,[f.dispatch[0].workerId]);
 });
+
+// B1：验收条目是计划里的结构化事实，不是正文里的散文。
+test('a plan step carries acceptance items that start unchecked',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'scan',agent,task:'scan',acceptance:['测试通过','无新增依赖']}]);
+ const job=f.scheduler.get(m.id).jobs[0];
+ assert.equal(job.acceptance.length,2);
+ assert.deepEqual(job.acceptance.map(item=>item.passes),[false,false],'a plan declares conditions, it does not claim them');
+ // 计划详情里能读到勾选状态。
+ const progress=f.scheduler.acceptanceProgress(m.id,'parent');
+ assert.deepEqual({total:progress.total,done:progress.done,complete:progress.complete},{total:2,done:0,complete:false});
+});
+
+test('acceptance can only be checked by naming items, one at a time',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'scan',agent,task:'scan',acceptance:['测试通过','无新增依赖']}]);
+ await f.scheduler.tick();f.done(0,'tests passed');
+ // 空数组不勾任何条目——"都完成了"不构成勾选。
+ assert.equal(f.scheduler.checkAcceptance(m.id,'parent','scan',[]).marked,0);
+ assert.equal(f.scheduler.acceptanceProgress(m.id,'parent').done,0);
+ // 点名第 1 条。
+ const first=f.scheduler.checkAcceptance(m.id,'parent','scan',[1]);
+ assert.equal(first.marked,1);
+ assert.equal(first.state,'pending');
+ assert.deepEqual(f.scheduler.get(m.id).jobs[0].acceptance.map(item=>item.passes),[true,false]);
+ // 再用原文勾第 2 条，全部勾满。
+ assert.equal(f.scheduler.checkAcceptance(m.id,'parent','scan',['无新增依赖']).state,'complete');
+ assert.equal(f.scheduler.acceptanceProgress(m.id,'parent').complete,true);
+});
+
+test('a succeeded step with unmet checks is recorded as premature_done',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'scan',agent,task:'scan',acceptance:['测试通过']}]);
+ await f.scheduler.tick();f.done(0,'everything is fine, trust me');await f.scheduler.tick();
+ assert.equal(f.scheduler.get(m.id).jobs[0].state,'SUCCEEDED','the step still succeeds');
+ const events=f.scheduler.events(m.id,'parent',0,200).events;
+ const premature=events.find(event=>event.type==='premature_done');
+ assert.ok(premature,'completion with unmet acceptance is a recorded event');
+ assert.deepEqual(premature.payload.unmet,['测试通过']);
+ // 勾满之后该步骤不再算 premature。
+ f.scheduler.checkAcceptance(m.id,'parent','scan',[1]);
+ assert.equal(f.scheduler.get(m.id).jobs[0].acceptance[0].passes,true);
+});
+
+test('acceptance survives a reload and old plans without the column still read',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'scan',agent,task:'scan',acceptance:['测试通过']}]);
+ await f.scheduler.tick();f.done(0);await f.scheduler.tick();f.scheduler.checkAcceptance(m.id,'parent','scan',[1]);
+ const reopened=new MissionScheduler(f.db,f.pool);
+ try{
+  const job=reopened.get(m.id,'parent').jobs[0];
+  assert.equal(job.acceptance[0].passes,true,'check state is durable');
+  // 老计划：没有 acceptance 的步骤照常工作，不因缺列报错。
+  const legacy=f.scheduler.enqueue({goal:'legacy',cwd:f.cwd,parentSessionId:'parent',jobs:[{agent,task:'plain'}]});
+  assert.equal(reopened.get(legacy.id,'parent').jobs[0].acceptance,undefined);
+ }finally{reopened.stop();}
+});

@@ -28,7 +28,8 @@ import { credentialsReady } from './cli-runtime.ts';
 import { cliGrantUsable } from './cli-grant.ts';
 import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
-import { checkMandate, shieldOutput, EFFORT_GUIDE } from './mandate.ts';
+import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
+import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -73,7 +74,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(process.platform==='win32')process.prependListener('SIGHUP',()=>{hardExit();process.exit(0);});
  }
  const scheduler:MissionScheduler=globalStore[missionKey]||(globalStore[missionKey]=new MissionScheduler(db(),pool));
- const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,dependsOn:j.dependsOn||[],checkpoint:j.checkpoint?.slice(0,500),error:j.error}))});
+ const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,dependsOn:j.dependsOn||[],checkpoint:j.checkpoint?.slice(0,500),error:j.error,...(j.acceptance?.length?{acceptance:j.acceptance,acceptanceState:acceptanceState(j.acceptance)}:{})}))});
  const save=()=>{saveConfig(config);refreshSupervisionPrompt?.();desk?.invalidate();};
  const currentPolicy=()=>normalizePolicy(config.approvalPolicy);
  // 每个代表任务默认 200 万 token 预算（未显式配置时）。预算是"单个任务"的额度，
@@ -230,7 +231,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const plans=hasPlans?`A delegate plan longer than ${HUMAN_APPROVAL_THRESHOLD_SECONDS}s must be represented as an kepos_plan step and explicitly approved by a human before dispatch. Use kepos_plan for long dockets with bounded steps and human gates, and kepos_events with a cursor for incremental supervision. When the council must decide, have each delegate end its output with a VOTE: yes|no|abstain - one-line reason, then record the round with kepos_vote including your own recommendation in main, and relay the tally to the human.`:'';
   // 恒定的一句：无论是否推选过，都不该为代理总代创建编制。
   const seatRule='Never create a seat or a role for the deputy chair; it is an elected duty, not a representative seat.';
-  supervisionPrompt=[core,supervision,mcp,deputy,plans,seatRule,config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
+  supervisionPrompt=[core,supervision,mcp,deputy,plans,seatRule,config.agents.length?OPENING_STEPS:'',config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
  };
  const refreshSupervisionPrompt=()=>assembleSupervisionPrompt();refreshSupervisionPrompt();
  pi.on('before_agent_start',(event)=>{if(!supervisionPrompt)refreshSupervisionPrompt();event.systemPromptOptions.sections.kepos_supervision=supervisionPrompt;});
@@ -496,7 +497,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }});
  pi.registerTool({name:'kepos_events',label:'增量任务事件',description:`按 cursor 读取当前父会话或项目的任务状态、工具调用、${SUPERVISION_INTERVAL_SECONDS/60}分钟复核点和完成事件，避免全量轮询。只读。`,parameters:Type.Object({cursor:Type.Optional(Type.Integer({minimum:0})),limit:Type.Optional(Type.Integer({minimum:1,maximum:200})),project:Type.Optional(Type.String())}),async execute(_id,params,_signal,_update,ctx){const data=readWorkerEvents(db(),{cursor:params.cursor??0,parentSessionId:ctx.sessionManager.getSessionId(),cwd:params.project||undefined,limit:params.limit??100});return{content:[{type:'text',text:JSON.stringify(data)}],details:data};}});
  pi.registerTool({name:'kepos_history',label:'会话历史代际',description:'只读查询当前会话的 SQLite 历史镜像。默认返回代际目录；提供 generation 可读取指定快照，query 可搜索所有保留消息。不会修改 Pi 上下文或恢复旧执行。',parameters:Type.Object({generation:Type.Optional(Type.Integer({minimum:1})),query:Type.Optional(Type.String({maxLength:200}))}),async execute(_id,params,_signal,_update,ctx){const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(!logical)return{content:[{type:'text',text:'当前会话尚未建立持久历史映射'}],details:undefined};let data:any=keposSessionStore.generations(logical);if(params.generation||params.query!==undefined){let records=params.generation?keposSessionStore.getGeneration(logical,params.generation):keposSessionStore.getMessages(logical,true);records=records.filter(m=>['user','assistant','toolResult'].includes(m.role)||['compaction','branch_summary'].includes(String(m.metadata.piType)));if(params.query!==undefined)records=records.filter(m=>(JSON.stringify(m.content)??'').toLowerCase().includes(params.query!.toLowerCase()));data=records.slice(-12).map(m=>({uid:m.messageUid,role:m.role,content:m.content,archived:m.archived}));}return{content:[{type:'text',text:boundedJson(data)}],details:{logicalSessionId:logical}};}});
- pi.registerTool({name:'kepos_plan',label:'长程任务计划',description:`建立或监督由只读步骤组成的 DAG 计划。每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核运行步骤；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的步骤自动进入人类门禁。默认严格审批：门禁只能由人类批准；代理审批模式下可用 action=approve+jobId 自主批准并留痕。`,parameters:Type.Object({action:Type.Union(['create','list','get','events','pause','cancel','approve'].map(x=>Type.Literal(x))),id:Type.Optional(Type.String()),goal:Type.Optional(Type.String()),jobs:Type.Optional(Type.Array(Type.Object({id:Type.String(),agent:Type.String(),task:Type.String(),dependsOn:Type.Optional(Type.Array(Type.String())),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS})),requiresHuman:Type.Optional(Type.Boolean()),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')])),readAllow:Type.Optional(Type.Array(Type.String()))}),{maxItems:100,minItems:1})),jobId:Type.Optional(Type.String()),cursor:Type.Optional(Type.Integer({minimum:0})),maxChars:Type.Optional(Type.Integer({minimum:200,maximum:6000}))}),async execute(_id,params,_signal,_update,ctx){
+ pi.registerTool({name:'kepos_plan',label:'长程任务计划',description:`建立或监督由只读步骤组成的 DAG 计划。每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核运行步骤；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的步骤自动进入人类门禁。默认严格审批：门禁只能由人类批准；代理审批模式下可用 action=approve+jobId 自主批准并留痕。步骤应带 acceptance（1-8 条可验证条目）：完成 ≠ 通过，用 action=check 逐条勾选，未勾满时完成会记为 premature_done。`,parameters:Type.Object({action:Type.Union(['create','list','get','events','pause','cancel','approve','check'].map(x=>Type.Literal(x))),id:Type.Optional(Type.String()),goal:Type.Optional(Type.String()),jobs:Type.Optional(Type.Array(Type.Object({id:Type.String(),agent:Type.String(),task:Type.String(),dependsOn:Type.Optional(Type.Array(Type.String())),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS})),requiresHuman:Type.Optional(Type.Boolean()),acceptance:Type.Optional(Type.Array(Type.Union([Type.String(),Type.Object({check:Type.String(),passes:Type.Optional(Type.Boolean())})]),{description:'1-8 条可在只读前提下验证的验收标准。完成不说完成，逐条拿出证据。',minItems:1,maxItems:8})),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')])),readAllow:Type.Optional(Type.Array(Type.String()))}),{maxItems:100,minItems:1})),jobId:Type.Optional(Type.String()),passed:Type.Optional(Type.Array(Type.Union([Type.String(),Type.Integer({minimum:1})]),{description:'action=check 时勾选的条目：序号（1 起）或条目原文；必须逐条点名'})),cursor:Type.Optional(Type.Integer({minimum:0})),maxChars:Type.Optional(Type.Integer({minimum:200,maximum:6000}))}),async execute(_id,params,_signal,_update,ctx){
   const parent=ctx.sessionManager.getSessionId();let result:any;
   if(params.action==='create'){
    if(!params.goal||!params.jobs?.length)throw Error('创建计划需要 goal 和 jobs');
@@ -511,14 +512,24 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    scheduler.approve(plan.id,parent,params.jobId);scheduler.start();
    desk&&desk.urgent(`代理审批留痕 · 模型批准了门禁 ${params.jobId} · ${clean(plan.goal).slice(0,100)}`);scheduleRepaint();
    result={approved:true,...planSummary(scheduler.get(plan.id,parent))};
+  }else if(params.action==='check'){
+   const plan=params.id&&scheduler.get(params.id,parent);if(!plan)throw Error('当前会话没有该计划');
+   if(!params.jobId)throw Error('check 需要指定 jobId');
+   const job=plan.jobs.find(j=>j.id===params.jobId);if(!job)throw Error('未知步骤');
+   // 勾选只能基于证据：没有产出就没有可对照的东西。
+   if(!job.output?.trim())throw Error('该步骤还没有产出，无法勾选验收条目');
+   // passed 逐条点名（序号或原文）；空数组不表示"全过"，只表示没勾。
+   const {marked,state}=scheduler.checkAcceptance(plan.id,parent,params.jobId,params.passed||[]);
+   result={jobId:params.jobId,marked,acceptanceState:state,acceptance:scheduler.get(plan.id,parent)?.jobs.find(j=>j.id===params.jobId)?.acceptance};
+   if(!marked)result.note='没有勾选任何条目：passed 需要逐条点名（序号或条目原文），"都完成了"不构成勾选。';
   }
   else{
    const plan=params.id&&scheduler.get(params.id,parent);if(!plan)throw Error('当前会话没有该计划');
    if(params.action==='events')result=scheduler.events(plan.id,parent,params.cursor??0);
    else if(params.action==='pause'){scheduler.pause(plan.id,parent);result=planSummary(scheduler.get(plan.id,parent));}
    else if(params.action==='cancel'){scheduler.cancel(plan.id,parent);result=planSummary(scheduler.get(plan.id,parent));}
-   else if(params.jobId){const job=plan.jobs.find(j=>j.id===params.jobId);if(!job)throw Error('未知步骤');result={id:job.id,state:job.state,...outputPage(job.output,{cursor:params.cursor,maxChars:params.maxChars})};}
-   else result=planSummary(plan);
+   else if(params.jobId){const job=plan.jobs.find(j=>j.id===params.jobId);if(!job)throw Error('未知步骤');result={id:job.id,state:job.state,...(job.acceptance?.length?{acceptance:job.acceptance,acceptanceState:acceptanceState(job.acceptance)}:{}),...(job.acceptance?.some(item=>!item.passes)&&job.state==='SUCCEEDED'?{prematureDone:true,reviewPrompt:acceptanceReviewPrompt(plan.goal,job.acceptance,String(job.output||'').slice(-2000))}:{}),...outputPage(job.output,{cursor:params.cursor,maxChars:params.maxChars})};}
+   else result={...planSummary(plan),acceptance:scheduler.acceptanceProgress(plan.id,parent)};
   }
   return{content:[{type:'text',text:boundedJson(result)}],details:undefined};
  }});

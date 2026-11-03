@@ -3,6 +3,7 @@ import type { KeposDatabase } from './database.ts';
 import { GraphStore } from './graph.ts';
 import type { WorkerPool } from './workers.ts';
 import { DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, READ_ONLY_TOOLS, MAX_TASK_SECONDS, profileRevision, type WorkerHandle } from './worker-contract.ts';
+import { acceptanceState, freshAcceptance, isPrematureDone, markPasses, normalizeAcceptance, unmetChecks, type AcceptanceCheck } from './acceptance.ts';
 export type MissionState = 'QUEUED' | 'RUNNING' | 'PAUSED' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export type JobState = 'QUEUED' | 'RUNNING' | 'WAITING' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export interface MissionJobInput {
@@ -12,6 +13,11 @@ export interface MissionJobInput {
     dependsOn?: string[];
     seconds?: number;
     requiresHuman?: boolean;
+    /**
+     * 可验证的验收条目，1-8 条。创建时一律从 passes:false 开始——
+     * 计划写下的是"怎样才算完成"，不是"已经完成了"。
+     */
+    acceptance?: unknown;
 }
 export interface MissionInput {
     id?: string;
@@ -38,6 +44,8 @@ export interface JobRecord {
     started?: number;
     ended?: number;
     checkpoint?: string;
+    /** 验收条目及勾选状态；老计划没有这一列时为空数组。 */
+    acceptance?: AcceptanceCheck[];
 }
 export interface MissionRecord {
     id: string;
@@ -94,11 +102,15 @@ export class MissionScheduler {
         this.concurrency = Math.max(1, Math.min(MAX_CONCURRENT_CHILDREN, Math.floor(options.concurrency || MAX_CONCURRENT_CHILDREN)));
         this.database.sql.exec(`
    CREATE TABLE IF NOT EXISTS missions(id TEXT PRIMARY KEY,goal TEXT NOT NULL,cwd TEXT NOT NULL,parent TEXT NOT NULL,session_file TEXT,state TEXT NOT NULL,created INTEGER NOT NULL,updated INTEGER NOT NULL,deadline INTEGER,meta TEXT NOT NULL);
-   CREATE TABLE IF NOT EXISTS mission_jobs(id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES missions(id),agent TEXT NOT NULL,task TEXT NOT NULL,depends TEXT NOT NULL,seconds INTEGER NOT NULL,requires_human INTEGER NOT NULL,state TEXT NOT NULL,handle TEXT,output TEXT,error TEXT,checkpoint TEXT,started INTEGER,ended INTEGER);
+   CREATE TABLE IF NOT EXISTS mission_jobs(id TEXT PRIMARY KEY,mission_id TEXT NOT NULL REFERENCES missions(id),agent TEXT NOT NULL,task TEXT NOT NULL,depends TEXT NOT NULL,seconds INTEGER NOT NULL,requires_human INTEGER NOT NULL,state TEXT NOT NULL,handle TEXT,output TEXT,error TEXT,checkpoint TEXT,started INTEGER,ended INTEGER,acceptance TEXT);
    CREATE TABLE IF NOT EXISTS mission_events(seq INTEGER PRIMARY KEY AUTOINCREMENT,mission_id TEXT NOT NULL,job_id TEXT,type TEXT NOT NULL,created INTEGER NOT NULL,payload TEXT NOT NULL);
    CREATE INDEX IF NOT EXISTS mission_jobs_mission ON mission_jobs(mission_id);
    CREATE INDEX IF NOT EXISTS mission_events_cursor ON mission_events(mission_id,seq);
   `);
+        // 老库补列：acceptance 是后加的，升级不能让已有计划读不出来。
+        const columns = (this.database.prepare('PRAGMA table_info(mission_jobs)').all() as any[]).map(column => column.name);
+        if (!columns.includes('acceptance'))
+            this.database.sql.exec('ALTER TABLE mission_jobs ADD COLUMN acceptance TEXT');
     }
     enqueue(input: MissionInput): MissionRecord {
         this.validate(input);
@@ -124,8 +136,10 @@ export class MissionScheduler {
                 agent.profileRevision = profileRevision(base);
                 const seconds = item.seconds ?? DEFAULT_TASK_SECONDS;
                 const requiresHuman = !!item.requiresHuman || seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS;
-                this.database.prepare('INSERT INTO mission_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(key, id, JSON.stringify(agent), item.task, JSON.stringify(item.dependsOn || []), seconds, requiresHuman ? 1 : 0, 'QUEUED', null, null, null, null, null, null);
-                this.event(id, key, 'job_queued', { state: requiresHuman ? 'NEEDS_HUMAN' : 'QUEUED', profileRevision: agent.profileRevision, requiresHuman, reason: seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS ? 'Long-running step requires human approval' : undefined });
+                // 验收条目在创建时固定下来：此后修改配置或换模型都不影响"这次承诺了什么"。
+                const acceptance = freshAcceptance(item.acceptance);
+                this.database.prepare('INSERT INTO mission_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(key, id, JSON.stringify(agent), item.task, JSON.stringify(item.dependsOn || []), seconds, requiresHuman ? 1 : 0, 'QUEUED', null, null, null, null, null, null, acceptance.length ? JSON.stringify(acceptance) : null);
+                this.event(id, key, 'job_queued', { state: requiresHuman ? 'NEEDS_HUMAN' : 'QUEUED', profileRevision: agent.profileRevision, requiresHuman, acceptance: acceptance.length, reason: seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS ? 'Long-running step requires human approval' : undefined });
             });
             this.event(id, null, 'mission_created', { state: 'QUEUED' });
         });
@@ -168,6 +182,9 @@ export class MissionScheduler {
             for (const dependency of job.dependsOn || [])
                 if (!ids.includes(dependency))
                     throw Error('Unknown job dependency: ' + dependency);
+            // 验收条目在这里就校验：坏条目要在计划落库前拒绝，而不是复核时才发现。
+            if (job.acceptance !== undefined)
+                normalizeAcceptance(job.acceptance);
         }
         const visiting = new Set<string>(), done = new Set<string>();
         const walk = (id: string) => { if (visiting.has(id))
@@ -231,6 +248,7 @@ export class MissionScheduler {
             agent: JSON.parse(job.agent), task: job.task, dependsOn: JSON.parse(job.depends), seconds: job.seconds,
             requiresHuman: !!job.requires_human, state: job.state, handle: job.handle ? JSON.parse(job.handle) : undefined,
             output: job.output || undefined, error: job.error || undefined, started: job.started || undefined, ended: job.ended || undefined, checkpoint: job.checkpoint || undefined,
+            acceptance: job.acceptance ? JSON.parse(job.acceptance) : undefined,
         }));
         return { id: row.id, goal: row.goal, cwd: row.cwd, parentSessionId: row.parent, sessionFile: row.session_file || undefined, state: row.state, created: row.created, updated: row.updated, deadline: row.deadline || undefined, jobs };
     }
@@ -264,8 +282,41 @@ export class MissionScheduler {
         });
         this.scheduleTick();
     }
-    /** Adjust the time limit of a not-yet-dispatched step. Existing human gates are never cleared here. */
-    reschedule(id: string, parent: string, jobId: string, seconds: number) {
+    /**
+     * 勾选验收条目。复核只认逐条点名——"都完成了"不是勾选。
+     * 返回更新后的步骤；计划已结束或步骤不在验收范围内时抛出。
+     */
+    checkAcceptance(id: string, parent: string, jobId: string, passed: unknown) {
+        const m = this.authorize(id, parent);
+        // 计划已结束后仍然可以勾选：复核本来就常发生在完成之后，
+        // 而 premature_done 记录的正是"完成时还没勾满"。拦掉只会让人无法补记。
+        const job = m.jobs.find(item => item.id === jobId);
+        if (!job)
+            throw Error('未知步骤');
+        if (!job.acceptance?.length)
+            throw Error('该步骤没有验收条目');
+        // 只允许对真的跑过或跑完的步骤勾选：排队中的步骤没有产出可对照。
+        if (!['RUNNING', 'SUCCEEDED', 'FAILED'].includes(job.state))
+            throw Error('只能对已派发或已完成的步骤勾选验收');
+        const { checks, marked } = markPasses(job.acceptance, passed);
+        if (!marked)
+            return { job, marked: 0, state: acceptanceState(checks) };
+        this.database.transaction(() => {
+            this.database.prepare('UPDATE mission_jobs SET acceptance=? WHERE id=?').run(JSON.stringify(checks), job.key);
+            this.event(id, job.key, 'acceptance_checked', { marked, state: acceptanceState(checks), unmet: unmetChecks(checks) });
+            this.graph.updateNode(id, job.key, job.state as any, { checkpoint: `验收 ${checks.filter(item => item.passes).length}/${checks.length}` });
+        });
+        return { job: { ...job, acceptance: checks }, marked, state: acceptanceState(checks) };
+    }
+    /** 计划内所有步骤的验收勾选进度。没有条目的步骤不计入——"没写验收"不是"通过"。 */
+    acceptanceProgress(id: string, parent: string) {
+        const m = this.authorize(id, parent);
+        const rows = m.jobs.filter(job => job.acceptance?.length);
+        const total = rows.reduce((sum, job) => sum + job.acceptance!.length, 0);
+        const done = rows.reduce((sum, job) => sum + job.acceptance!.filter(item => item.passes).length, 0);
+        return { jobs: rows.length, total, done, complete: total > 0 && done === total };
+    }
+    /** Adjust the time limit of a not-yet-dispatched step. Existing human gates are never cleared here. */    reschedule(id: string, parent: string, jobId: string, seconds: number) {
         const m = this.authorize(id, parent);
         if (terminal.has(m.state))
             throw Error('计划已结束，不能再修改');
@@ -440,6 +491,11 @@ export class MissionScheduler {
                     this.graph.updateNode(m.id, job.key, 'SUCCEEDED', { checkpoint: limitText(receipt.output, 1000) });
                     this.graph.artifact(m.id, { nodeId: job.key, kind: 'worker_receipt', summary: receipt.output || '', uri: receipt.resultHash });
                 });
+                // 完成但验收未勾选：不是失败，是一个要度量的事件。
+                // 记在步骤上而不是计划上——哪一条没兑现比"这个计划有点虚"有用得多。
+                if (isPrematureDone(job.acceptance, true)) {
+                    this.event(m.id, job.key, 'premature_done', { state: 'SUCCEEDED', unmet: unmetChecks(job.acceptance), acceptance: acceptanceState(job.acceptance) });
+                }
             }
             else
                 this.setJob(job, receipt.state === 'CANCELLED' ? 'CANCELLED' : 'FAILED', receipt.error || ('Worker ' + receipt.state + '; no automatic replay'));
