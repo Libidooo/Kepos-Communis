@@ -1,6 +1,5 @@
 import { readFile } from 'node:fs/promises';
 import { keposDatabaseFile } from '../terminal/paths.ts';
-import { join } from 'node:path';
 import type { CliOptions } from './cli/options.ts';
 import { activatePaths, preparePaths, type AppPaths } from './config.ts';
 import type { MissionRecord, MissionScheduler, MissionWorkerPool } from '../terminal/scheduler.ts';

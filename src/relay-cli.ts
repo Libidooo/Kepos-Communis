@@ -56,7 +56,7 @@ export async function relayCommand(options: any, paths: AppPaths): Promise<void>
       return;
     }
     case 'test': {
-      const { id, relay } = requireRelay(paths, name);
+      const { relay } = requireRelay(paths, name);
       const probe = await probeRelay(relay.baseUrl, resolveRelayKey(relay, options.key));
       printProbe(probe);
       if (!probe.ok) process.exitCode = 1;

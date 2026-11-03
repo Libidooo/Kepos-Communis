@@ -1,5 +1,5 @@
-import { join } from 'node:path';
-import { preparePaths, activatePaths, type AppPaths } from './config.ts';import { keposDatabaseFile } from '../terminal/paths.ts';
+import { preparePaths, activatePaths, type AppPaths } from './config.ts';
+import { keposDatabaseFile } from '../terminal/paths.ts';
 import { KeposDatabase } from '../terminal/database.ts';
 import { WorkerPool } from '../terminal/workers.ts';
 import { RemoteWorkerClient, RemoteWorkerPool } from '../terminal/remote-worker.ts';

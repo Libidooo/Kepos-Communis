@@ -12,6 +12,7 @@ import { extname, isAbsolute, resolve } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
 import { detectSupportedImageMimeTypeFromFile, resizeImage } from '@earendil-works/pi-coding-agent';
 import { readDenied, type SandboxPolicy } from './worker-sandbox.ts';
+import { truncateMiddle } from './presentation.ts';
 
 /** 单文件读取上限，与 worker-contract 的 MAX_OUTPUT_BYTES 保持一致。 */
 export const MAX_ATTACHMENT_BYTES = 8 * 1024 * 1024;
@@ -279,9 +280,11 @@ async function extractPdf(buf: Buffer): Promise<{ text: string; note: string }> 
 /** 把超长文本收敛到预算内，保留头尾并标注截断。 */
 export function clampAttachmentText(text: string, max = MAX_ATTACHMENT_TEXT): { text: string; truncated: boolean } {
   if (text.length <= max) return { text, truncated: false };
-  const head = Math.floor(max * 0.7);
-  const tail = max - head;
-  return { text: `${text.slice(0, head)}\n\n… [附件过长，中间已省略；用 kepos_attach 的 cursor 读取后续段落] …\n\n${text.slice(-tail)}`, truncated: true };
+  // 与 boundedText 共用同一截断算法，只有提示语不同。
+  return {
+    text: truncateMiddle(text, max, '\n\n… [附件过长，中间已省略；用 kepos_attach 的 cursor 读取后续段落] …\n\n', 0.7),
+    truncated: true,
+  };
 }
 
 /**

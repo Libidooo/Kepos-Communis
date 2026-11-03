@@ -7,7 +7,7 @@ import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
-import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,MAX_OUTPUT_BYTES,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
+import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
 export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration'; groupId?: string };
 export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };

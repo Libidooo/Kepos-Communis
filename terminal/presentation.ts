@@ -23,9 +23,11 @@ export function textRole(theme: any, role: TextRole, value: string): string {
 export const indent = (level: number, value: string) => ' '.repeat(Math.max(0, level) * 2) + value;
 export function sessionUsage(entries:any[]){let estimatedCost=0,input=0,output=0,cacheRead=0;for(const entry of entries){const m=entry.message;const u=entry.type==='usage'?entry.usage:m&&['assistant','toolResult'].includes(m.role)?m.usage:undefined;if(!u)continue;estimatedCost+=Number(u.cost?.total)||0;input+=Number(u.input)||0;output+=Number(u.output)||0;cacheRead+=Number(u.cacheRead)||0;}return{estimatedCost,input,output,cacheRead};}
 export const formatTokens=(n:number)=>n>=1000000?(n/1000000).toFixed(1)+'M':n>=1000?(n/1000).toFixed(1)+'k':String(Math.round(n));
+/** 缓存命中率（%）。usageText 与任务详情共用，避免两处公式漂移。 */
+export const cacheHitPercent=(usage:any):number=>{const read=Number(usage?.cacheRead)||0,input=Number(usage?.input)||0;return read>0?Math.round(read/Math.max(1,read+input)*100):0;};
 // 伪图形组件：上下文/预算等进度条，配色由调用方用 scrollbarThumb/Track 前景化。
 export const meter=(percent:number,width=10)=>{if(!Number.isFinite(percent))return '░'.repeat(width);const filled=Math.max(0,Math.min(width,Math.round(percent/100*width)));return '▓'.repeat(filled)+'░'.repeat(width-filled);};
-export function usageText(usage:ReturnType<typeof sessionUsage>,context:any,model:any){const window=context?.contextWindow||model?.contextWindow;const known=context?.tokens!==null&&context?.tokens!==undefined;const cacheShare=usage.cacheRead>0?Math.round(usage.cacheRead/Math.max(1,usage.cacheRead+usage.input)*100):0;return `  计价估算 ~$${usage.estimatedCost.toFixed(4)}  ·  上下文 ${known?formatTokens(context.tokens):'待返回'} / ${window?formatTokens(window):'未知'}${context?.percent!==null&&context?.percent!==undefined?' ('+context.percent.toFixed(1)+'%)':''}  ·  ↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)}${cacheShare>0?` · 缓存命中${cacheShare}%`:''}${model?.provider==='openai-codex'?' · 非订阅账单':''}`;}
+export function usageText(usage:ReturnType<typeof sessionUsage>,context:any,model:any){const window=context?.contextWindow||model?.contextWindow;const known=context?.tokens!==null&&context?.tokens!==undefined;const cacheShare=cacheHitPercent(usage);return `  计价估算 ~$${usage.estimatedCost.toFixed(4)}  ·  上下文 ${known?formatTokens(context.tokens):'待返回'} / ${window?formatTokens(window):'未知'}${context?.percent!==null&&context?.percent!==undefined?' ('+context.percent.toFixed(1)+'%)':''}  ·  ↑${formatTokens(usage.input)} ↓${formatTokens(usage.output)}${cacheShare>0?` · 缓存命中${cacheShare}%`:''}${model?.provider==='openai-codex'?' · 非订阅账单':''}`;}
 
 // Keep oversized tool responses parseable and mark the preview explicitly.
 export function boundedJson(value:unknown,max=12000):string{
@@ -37,4 +39,19 @@ export function boundedJson(value:unknown,max=12000):string{
  return encode(low);
 }
 
-export function boundedText(value:unknown,max=6000):string{const text=String(value??'');if(text.length<=max)return text;const head=Math.floor(max*0.75),tail=Math.max(0,max-head);return text.slice(0,head)+'\n… [摘要截断；完整证据按 taskId / kepos_worker result 读取] …\n'+text.slice(-tail);}
+/**
+ * 头尾保留式截断：中间才是可以牺牲的部分，所以保留 headRatio 比例的头部与剩余尾部。
+ * boundedText 与附件截断共用同一算法，只是提示语不同——两处各自的截断逻辑
+ * 曾经各写一遍，边界处理（max 为奇数、marker 长度）稍有差异就会不一致。
+ */
+export function truncateMiddle(value: unknown, max: number, marker: string, headRatio = 0.75): string {
+ const text = String(value ?? '');
+ if (text.length <= max) return text;
+ const head = Math.floor(max * headRatio);
+ const tail = Math.max(0, max - head);
+ return text.slice(0, head) + marker + text.slice(-tail);
+}
+
+export function boundedText(value:unknown,max=6000):string{
+ return truncateMiddle(value, max, '\n… [摘要截断；完整证据按 taskId / kepos_worker result 读取] …\n');
+}

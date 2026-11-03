@@ -1,6 +1,4 @@
-import {readFileSync} from 'node:fs';
 import { keposDatabaseFile } from '../terminal/paths.ts';
-import {join} from 'node:path';
 import type {AppPaths} from './config.ts';
 import {activatePaths,preparePaths} from './config.ts';
 export async function workerCommand(options:any,paths:AppPaths):Promise<void>{

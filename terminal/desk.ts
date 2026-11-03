@@ -1,4 +1,4 @@
-import { Editor, Markdown, CombinedAutocompleteProvider, matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn, CURSOR_MARKER } from '@earendil-works/pi-tui';
+import { Editor, Markdown, CombinedAutocompleteProvider, matchesKey, Key, truncateToWidth, visibleWidth, wrapTextWithAnsi, sliceByColumn } from '@earendil-works/pi-tui';
 import { SessionManager, getSelectListTheme, getMarkdownTheme, copyToClipboard } from '@earendil-works/pi-coding-agent';
 import { basename } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
@@ -6,7 +6,7 @@ import { clean, saveConfig, type Config } from './store.ts';
 import { terminalStates, type WorkerPool } from './workers.ts';
 import { routeCommand, localCommands } from './command-routing.ts';
 import { TimingWindow } from './metrics.ts';
-import { PRODUCT_NAME, sessionUsage, usageText, formatTokens, meter } from './presentation.ts';
+import { PRODUCT_NAME, sessionUsage, usageText, formatTokens, cacheHitPercent } from './presentation.ts';
 import { loadAttachment, attachmentToPrompt, looksLikeFilePaths, isAttached } from './attachments.ts';
 import { dataRoot } from './paths.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, stateColor, stateMark, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
@@ -104,7 +104,6 @@ export const keyBytes: Record<string, string> = {
   const result:string[]=[];
   // 先按引号抓取，再处理剩余的无引号片段。
   const quoted=/["']([^"']+)["']/g;
-  let match:RegExpExecArray|null;
   const leftovers=text.replace(quoted,(_all,inner)=>{result.push(inner);return' ';});
   for(const piece of leftovers.split(/\s+/)){
    const trimmed=piece.trim().replace(/,$/,'');
@@ -498,7 +497,7 @@ export class Desk {
  if(this.help)history=this.helpLines();
  if(this.taskView&&!this.help){const tasks=this.panelTasks();this.taskIndex=Math.max(0,Math.min(this.taskIndex,Math.max(0,tasks.length-1)));let task=tasks[Math.min(this.taskIndex,Math.max(0,tasks.length-1))];
  if(task&&this.taskScope==='all'&&this.monitor){if(!this.evidenceCache||this.evidenceCache.id!==task.id||this.evidenceCache.ended!==task.ended||(!task.ended&&Date.now()-this.evidenceAt>1000)){this.evidenceAt=Date.now();this.evidenceCache={id:task.id,ended:task.ended,output:task.output,value:this.monitor.evidence(task.id)};}task=this.evidenceCache.value||task;}
- history=task?[`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+tasks.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheRead>0?' · 缓存命中'+Math.round(task.usage.cacheRead/Math.max(1,task.usage.cacheRead+task.usage.input)*100)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[this.taskScope==='all'?'全局任务 · 暂无子 Agent 任务':'本会话暂无子 Agent 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
+ history=task?[`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+tasks.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheHitPercent(task.usage)>0?' · 缓存命中'+cacheHitPercent(task.usage)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[this.taskScope==='all'?'全局任务 · 暂无子 Agent 任务':'本会话暂无子 Agent 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
  if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>[`${plan.state} · ${plan.completed}/${plan.total} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''])];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');}
  this.displayLines=history;
  // 框线面板：body 含顶底两行框，内容行 bodyHeight-2；标题嵌入顶框，焦点面板用 borderAccent。

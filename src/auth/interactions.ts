@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline/promises';
-import { stdin, stdout, stderr } from 'node:process';
+import { stdin, stderr } from 'node:process';
 import { spawn } from 'node:child_process';
 import type { AuthInteraction, AuthPrompt, AuthEvent } from '@earendil-works/pi-ai';
 

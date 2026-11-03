@@ -22,7 +22,7 @@ import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
 import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
 import { readWorkerEvents } from './events.ts';
-import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, spentTokens, type WorkerHandle } from './workers.ts';
+import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
@@ -51,7 +51,7 @@ const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'dependency_engineer', 'incident_investigator',
 ];
 export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
- const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let tool='';let pulse=0;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';
+ const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
  // Windows console close kills the process without Pi's graceful shutdown (SIGHUP is
  // handled POSIX-only there), so session_shutdown never runs and warm executors would
@@ -136,7 +136,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  function install(ctx:any){current=ctx;if(ctx.mode!=='tui'||process.env.KEPOS_APP!=='1')return;
  ownTerminalTitle('Kepos Communis');ctx.ui.setHeader((_tui:any,theme:any)=>({invalidate(){},render(width:number){const title='  Kepos Communis';const line=(s:string,color:any)=>theme.fg(color,fit(s,width));return [line(title,'accent')];}}));
  ctx.ui.setWidget('kepos-model',(_tui:any,theme:any)=>({invalidate(){},render(width:number){const live=busy?'accent':current?.model?'success':'warning';const model=current?.model;const label=model?.id&&model.id!=='unknown'?`${model.provider?clean(model.provider)+'/':''}${clean(model.id)}`:'请先 /login';return[theme.fg(live,fit(`  · ${label} · ${busy?'执行中':model?'空闲':'待连接'}`,width))];}}));}
- for(const name of ['agent_start','agent_settled','message_start','message_update','message_end','tool_execution_start','tool_execution_update','tool_execution_end'] as const)pi.on(name as any,async(e:any,ctx:any)=>{current=ctx;if(name==='agent_start')busy=true;if(name==='agent_settled'){busy=false;tool='';}if(name==='tool_execution_start')tool=e.toolName;if(name==='tool_execution_end')tool='';if(name==='agent_settled'){const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(logical){try{keposSessionStore.syncPi(logical,ctx.sessionManager.getEntries(),ctx.sessionManager.buildContextEntries(),ctx.sessionManager.getSessionId());}catch(error){ctx.ui.notify('历史镜像失败（Pi 原始记录仍保留）：'+clean(error),'warning');}}}desk?.event(e);});
+ for(const name of ['agent_start','agent_settled','message_start','message_update','message_end','tool_execution_start','tool_execution_update','tool_execution_end'] as const)pi.on(name as any,async(e:any,ctx:any)=>{current=ctx;if(name==='agent_start')busy=true;if(name==='agent_settled')busy=false;if(name==='agent_settled'){const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(logical){try{keposSessionStore.syncPi(logical,ctx.sessionManager.getEntries(),ctx.sessionManager.buildContextEntries(),ctx.sessionManager.getSessionId());}catch(error){ctx.ui.notify('历史镜像失败（Pi 原始记录仍保留）：'+clean(error),'warning');}}}desk?.event(e);});
  pi.on('session_start',async(_e,ctx)=>{valid=true;generation++;bindPool();pool.change=scheduleRepaint;const sessionFile=ctx.sessionManager.getSessionFile();if(sessionFile&&!config.sessionLinks[sessionFile]){const linked=keposSessionStore.createSession({cwd:ctx.cwd,title:ctx.sessionManager.getSessionName()||'未命名对话',piSessionFile:sessionFile});config.sessionLinks[sessionFile]=linked.logicalSessionId;save();}if(sessionFile&&config.sessionLinks[sessionFile]){const logical=config.sessionLinks[sessionFile];try{keposSessionStore.syncPi(logical,ctx.sessionManager.getEntries(),ctx.sessionManager.buildContextEntries(),ctx.sessionManager.getSessionId());}catch(error){ctx.ui.notify('历史镜像同步失败，原始会话未修改：'+clean(error),'warning');}}initializeCrew(ctx);install(ctx);try{baselineTools=pi.getActiveTools();}catch{}applyApprovalPolicy();const pending=db().get<any>('ui_reload');if(pending?.pid===process.pid&&pending.sessionId===ctx.sessionManager.getSessionId()&&Date.now()-pending.at<30000){db().set('ui_reload',null);setTimeout(()=>{if(valid){reloadNotice=`扩展已重载 · ${config.agents.length} 位已配置成员 · 当前会话和草稿保留`;ctx.ui.notify(reloadNotice,'info');pi.sendUserMessage("/kepos",{expandPromptTemplates:true});}},100);}});pi.on('model_select',async(_e,ctx)=>{current=ctx;initializeCrew(ctx);if(desk)desk.ctx=ctx;repaint();});
  for(const eventName of ['session_compact','session_tree'] as const)pi.on(eventName as any,async(_event:any,ctx:any)=>{desk?.invalidate();const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(logical)try{keposSessionStore.syncPi(logical,ctx.sessionManager.getEntries(),ctx.sessionManager.buildContextEntries(),ctx.sessionManager.getSessionId());}catch(error){ctx.ui.notify('历史代际同步失败：'+clean(error),'warning');}});
  const gateRiskOf=(event:any)=>event?.toolName==='bash'||event?.toolName==='powershell'?commandRisk(String(event.input?.command||'')):event?.input&&typeof event.input.path==='string'?pathRisk(event.input.path,dataRoot):null;
@@ -353,14 +353,6 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(params.taskId){const task=tasks.find(t=>t.id===params.taskId);if(!task)throw Error('当前会话没有该任务');const data={id:task.id,agent:task.agent,state:task.state,error:task.error,profileRevision:task.profileRevision,outputTruncated:task.outputTruncated,checkpointAt:task.checkpointAt,stalled:task.stalled||undefined,mcpServers:task.mcpServers,budgetTokens:task.budgetTokens,...outputPage(task.output,{cursor:params.cursor,maxChars:params.maxChars})};return{content:[{type:'text',text:JSON.stringify(data)}],details:data};}
   const data=tasks.slice(-12).map(t=>({id:t.id,agent:t.agent,state:t.state,task:t.title.slice(0,200),tool:t.tool||null}));return{content:[{type:'text',text:JSON.stringify(data)}],details:undefined};
  }});
- // 模糊模型匹配：对 id/name/provider（含中转商自定义名）大小写不敏感子串匹配；resolved 供批量换模与单个分派共用。
- async function resolveFuzzyModel(ctx:any,query:string):Promise<{matched:any[];available:any[]}>{
-  const available=await ctx.modelRegistry.getAvailable();
-  const needle=query.trim().toLowerCase();
-  if(!needle)return{matched:available,available};
-  const matched=available.filter((m:any)=>[m.id,m.name,m.provider].some(field=>String(field||'').toLowerCase().includes(needle)));
-  return{matched,available};
- }
  pi.registerTool({name:'kepos_models',label:'模型目录与批量换模',description:'列出可用模型（标注官方/中转来源）；或按模糊名称批量更换代表的模型。匹配规则：对模型 id、名称、供应商做大小写不敏感子串匹配；唯一命中自动应用，多个命中返回候选让你确认，无命中明确报错。只影响后续新派发，不触碰运行中任务。',parameters:Type.Object({action:Type.Union(['list','apply'].map(x=>Type.Literal(x))),query:Type.Optional(Type.String({description:'模糊匹配片段，如 relay 名、glm、claude'})),targets:Type.Optional(Type.Union([Type.Literal('all'),Type.Array(Type.String({description:'代表名或 ID'}))],{description:'要更换的代表：all=全部；缺省=仅列出候选'})),model:Type.Optional(Type.String({description:'apply 时的目标模型 id；须在候选中唯一'}))}),async execute(_id,params,_signal,_update,ctx){
   const available=await ctx.modelRegistry.getAvailable();
   const needle=String(params.query||'').trim().toLowerCase();
@@ -500,7 +492,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const scopePick=await ctx.ui.select('读取范围（readScope）',['跟随分派（默认 project）','project · 仅任务目录','machine · 除敏感位置外可读']);if(scopePick===undefined)return;
  const memberScope=scopePick.startsWith('project')?'project':scopePick.startsWith('machine')?'machine':undefined;
  let memberMcp:string[]|undefined;
- if(old){const {names}=skillIndex();
+ if(old){skillIndex();
   const mcpInput=await ctx.ui.input('默认授权的 MCP 服务器（逗号分隔；须已在 mcp.json 配置；留空=不授权）',(old.mcpServers??[]).join(','));
   if(mcpInput===undefined)return;
   const requestedMcp=mcpInput.split(/[,，]/).map(s=>s.trim()).filter(Boolean);

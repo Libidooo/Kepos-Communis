@@ -1,5 +1,5 @@
 import {installService,serviceAction} from './service.ts';
-import {appPaths,preparePaths,type AppPaths} from './config.ts';
+import {preparePaths,type AppPaths} from './config.ts';
 export function serviceCommand(options:any,paths:AppPaths):void{
  const action=options.args[0]||'query';
  if(action==='install'){preparePaths(paths);console.log(installService(paths.home));return;}
