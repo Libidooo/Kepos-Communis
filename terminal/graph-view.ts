@@ -29,7 +29,8 @@ export function councilTasks(snapshot: GraphViewSnapshot, filter: CouncilFilter,
   const q = query.trim();
   return (snapshot.tasks || []).filter(task => {
     if (filter === 'active' && !activeStates.has(task.state || '')) return false;
-    if (filter === 'pending' && (task.ended || !isTaskPending(task))) return false;
+    // 待处理筛选与徽章、等待区同源：门禁、复核点、空转都算，终态不算。
+    if (filter === 'pending' && !isTaskPending(task)) return false;
     if (q && !plain(task.title || '').includes(q) && !plain(task.agent).includes(q)) return false;
     return true;
   });

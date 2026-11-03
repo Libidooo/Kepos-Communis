@@ -71,9 +71,10 @@ export class ConsolidationPipeline {
     this.memory = new RepresentativeMemory(database);
   }
 
-  /** 只入队，不立即执行——避免在任务结算路径上做网络调用。 */
+  /** 只入队，不立即执行——避免在任务结算路径上做网络调用。
+   *  是否"值得整理"由 shouldConsolidate 判定一次；这里只管队列内去重。 */
   enqueue(candidate: ConsolidationCandidate): boolean {
-    if (!shouldConsolidate({ id: candidate.workerId, agentId: candidate.agentId, output: candidate.output, checkpoint: candidate.checkpoint, error: candidate.error, failed: candidate.failed }, id => this.memory.consolidated(id))) return false;
+    if (!shouldConsolidate({ ...candidate, id: candidate.workerId }, id => this.memory.consolidated(id))) return false;
     if (this.queue.some(item => item.workerId === candidate.workerId)) return false;
     this.queue.push(candidate);
     return true;

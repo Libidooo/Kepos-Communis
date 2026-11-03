@@ -8,7 +8,8 @@ const {
   WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt,
   WATCHDOG_VERDICTS, MAX_REASON_CHARS,
 }=await import('../dist/terminal/watchdog.js');
-const {watchdogAccuracy, watchdogNotes}=await import('../dist/terminal/monitor.js');
+
+const {watchdogQuality}=await import('../dist/terminal/kpi.js');
 
 function fresh(){
  const dir=mkdtempSync(join(tmpdir(),'kepos-watchdog-'));
@@ -82,10 +83,10 @@ test('false-positive rate only counts alarms that ended in success',()=>{
   task('b','SUCCEEDED');store.record({workerId:'b',verdict:'deviated',reason:'y',evidenceCursor:1,model:'j'});
   task('c','FAILED');store.record({workerId:'c',verdict:'looping',reason:'z',evidenceCursor:1,model:'j'});
   task('d','FAILED');store.record({workerId:'d',verdict:'progress',reason:'ok',evidenceCursor:1,model:'j'});
-  const stats=watchdogAccuracy(db);
-  assert.equal(stats.alarms,3,'progress is not an alarm');
-  assert.equal(stats.wrong,2);
-  assert.equal(stats.falsePositiveRate,0.667);
+  const stats=watchdogQuality(db);
+  assert.equal(stats.denominator,3,'progress is not an alarm');
+  assert.equal(stats.numerator,2);
+  assert.equal(stats.value,'67%');
  }finally{db.close();}
 });
 
@@ -93,9 +94,9 @@ test('the desk can read back why a task was flagged',()=>{
  const db=fresh();
  try{
   const store=new WatchdogStore(db);
-  assert.deepEqual(watchdogNotes(db,'missing'),[]);
+  assert.deepEqual(new WatchdogStore(db).list('missing'),[]);
   store.record({workerId:'w',verdict:'looping',reason:'第三次读同一文件',evidenceCursor:7,model:'j'});
-  const notes=watchdogNotes(db,'w');
+  const notes=new WatchdogStore(db).list('w');
   assert.equal(notes.length,1);
   assert.match(notes[0].reason,/第三次读同一文件/);
  }finally{db.close();}

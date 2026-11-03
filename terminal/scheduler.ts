@@ -299,14 +299,15 @@ export class MissionScheduler {
         if (!['RUNNING', 'SUCCEEDED', 'FAILED'].includes(job.state))
             throw Error('只能对已派发或已完成的步骤勾选验收');
         const { checks, marked } = markPasses(job.acceptance, passed);
+        const state = acceptanceState(checks);
         if (!marked)
-            return { job, marked: 0, state: acceptanceState(checks) };
+            return { job, marked: 0, state };
         this.database.transaction(() => {
             this.database.prepare('UPDATE mission_jobs SET acceptance=? WHERE id=?').run(JSON.stringify(checks), job.key);
-            this.event(id, job.key, 'acceptance_checked', { marked, state: acceptanceState(checks), unmet: unmetChecks(checks) });
+            this.event(id, job.key, 'acceptance_checked', { marked, state, unmet: unmetChecks(checks) });
             this.graph.updateNode(id, job.key, job.state as any, { checkpoint: `验收 ${checks.filter(item => item.passes).length}/${checks.length}` });
         });
-        return { job: { ...job, acceptance: checks }, marked, state: acceptanceState(checks) };
+        return { job: { ...job, acceptance: checks }, marked, state };
     }
     /** 计划内所有步骤的验收勾选进度。没有条目的步骤不计入——"没写验收"不是"通过"。 */
     acceptanceProgress(id: string, parent: string) {
@@ -316,7 +317,8 @@ export class MissionScheduler {
         const done = rows.reduce((sum, job) => sum + job.acceptance!.filter(item => item.passes).length, 0);
         return { jobs: rows.length, total, done, complete: total > 0 && done === total };
     }
-    /** Adjust the time limit of a not-yet-dispatched step. Existing human gates are never cleared here. */    reschedule(id: string, parent: string, jobId: string, seconds: number) {
+    /** Adjust the time limit of a not-yet-dispatched step. Existing human gates are never cleared here. */
+    reschedule(id: string, parent: string, jobId: string, seconds: number) {
         const m = this.authorize(id, parent);
         if (terminal.has(m.state))
             throw Error('计划已结束，不能再修改');

@@ -51,7 +51,7 @@ export class WorkerPool {
  private executorsByTask = new Map<string, WorkerExecutor>();
  private completions = new Map<string, Promise<Task>>();
  private closed = false;
- private queued = new Map<string, { task: Task; handle: WorkerHandle; profile: WorkerProfile; instruction: string; signal?: AbortSignal; timer: ReturnType<typeof setTimeout>; abort: () => void; urgent?: boolean }>();
+ private queued = new Map<string, { task: Task; handle: WorkerHandle; profile: WorkerProfile; instruction: string; signal?: AbortSignal; timer: ReturnType<typeof setTimeout>; abort: () => void }>();
  private resolvers = new Map<string, (task: Task) => void>();
  // Raw capabilities of tasks this instance launched; the database only stores hashes.
  // Lets an in-process scheduler restart (MissionScheduler recreated, pool shared) recover handles.
@@ -246,12 +246,11 @@ export class WorkerPool {
   // 还没轮到的任务：人这一句直接并进任务说明并抢占加急槽，不然队列位置会把这句吞掉。
   const queued = this.queued.get(handle.workerId);
   if (queued) {
-   const appended = `${queued.instruction}\n\n## 人类补充（优先处理）\n${text}`;
-   queued.instruction = appended;
-   task.title = appended;
+   queued.instruction = `${queued.instruction}\n\n## 人类补充（优先处理）\n${text}`;
+   task.title = queued.instruction;
    this.persist(task, 'human_note');
    this.emit({ type: 'task_message_forwarded', task: { ...task }, urgent: true });
-   const woken = this.wakeByHuman(handle.workerId, text);
+   const woken = this.wakeByHuman(handle.workerId);
    return { state: task.state, delivered: true, queued: !woken, urgent: true, agent: task.agent };
   }
   const executor = this.executorsByTask.get(handle.workerId);
@@ -319,10 +318,9 @@ export class WorkerPool {
   */
  private humanAwake = new Set<string>();
  /** 人给排队任务发消息：标记加急并立刻尝试调度。返回任务是否已经离开队列。 */
- private wakeByHuman(id: string, _text: string): boolean {
+ private wakeByHuman(id: string): boolean {
   const entry = this.queued.get(id);
   if (!entry) return false;
-  entry.urgent = true;
   this.humanAwake.add(id);
   this.pump();
   return !this.queued.has(id);
@@ -636,7 +634,7 @@ export class WorkerPool {
     const parent = this.parentRotation[0];
     const entry = human || (parent && candidates.find(item => item.task.parentSessionId === parent)) || candidates[0];
     let executor: WorkerExecutor | undefined;
-    try { executor = this.executor(entry.profile, entry.urgent ? 1 : 0); }
+    try { executor = this.executor(entry.profile, this.humanAwake.has(entry.task.id) ? 1 : 0); }
     catch (error) {
      this.removeQueued(entry.task.id);
      this.settle(entry.task, 'FAILED', String(error));

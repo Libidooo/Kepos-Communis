@@ -147,28 +147,22 @@ export class Desk {
  /** 等待区清单 + 进行区一行一条：等待项带原因与直达动作，健康任务不展开正文。 */
  waitingSection(buckets:any,width:number):string[]{
   const scope=this.taskScope==='all'?'全局':'本会话';
-  const counts=buckets.counts;
-  const head=`议会任务 · ${scope} · 工作中 ${counts.working} · 已完成 ${counts.done}`;
-  const lines:string[]=[truncateFit(head,width)];
+  const {counts}=buckets;
+  const lines:string[]=[truncateFit(`议会任务 · ${scope} · 工作中 ${counts.working} · 已完成 ${counts.done}`,width)];
   if(!buckets.waiting.length)lines.push(this.theme.fg('dim','没有等你处理的事项'));
   else{
    lines.push(this.theme.fg('warning',`等你处理 ${buckets.waiting.length}`));
-   let index=0;
-   for(const item of buckets.waiting){
-    const selected=index===this.taskIndex;index++;
-    const mark=stateMark(item.task);
-    const label=WAITING_LABEL[item.reason as keyof typeof WAITING_LABEL];
+   buckets.waiting.forEach((item:any,index:number)=>{
     const body=`${clean(item.task.agent||'—')} · ${clean(item.task.title||'')}`;
-    lines.push(this.lineWithAction(selected,mark,label,body,item.action,width));
-   }
+    lines.push(this.lineWithAction(index===this.taskIndex,stateMark(item.task),WAITING_LABEL[item.reason as keyof typeof WAITING_LABEL],body,item.action,width));
+   });
   }
   if(buckets.working.length){
    const at=buckets.waiting.length;
    lines.push(this.theme.fg('accent',`进行中 ${buckets.working.length}`));
    buckets.working.forEach((task:any,offset:number)=>{
-    const selected=at+offset===this.taskIndex;
     const elapsed=task.started?Math.max(0,Math.round((Date.now()-task.started)/1000))+'s':'';
-    lines.push(this.lineWithAction(selected,stateMark(task),elapsed,`${clean(task.agent||'—')} · ${clean(task.title||'')}`,task.status||'',width));
+    lines.push(this.lineWithAction(at+offset===this.taskIndex,stateMark(task),elapsed,`${clean(task.agent||'—')} · ${clean(task.title||'')}`,task.status||'',width));
    });
   }
   // 已完成 / 历史不逐条列出：要看历史按 Ctrl+→ 翻页，计数已经给了总量。

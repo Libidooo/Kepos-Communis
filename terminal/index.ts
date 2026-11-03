@@ -17,7 +17,7 @@ import { outputPage, receiptView } from './result-view.ts';
 import { agentRevision } from './profiles.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
 import { MissionScheduler } from './scheduler.ts';
-import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk, watchdogNotes } from './monitor.ts';
+import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk } from './monitor.ts';
 import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
 import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
@@ -31,7 +31,7 @@ import { renderMemoryIndex } from './memory.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
-import { adoptProposal, discardProposal, listProposals, writeProposal, SKILL_TRIGGER_WORKERS } from './skill-proposal.ts';
+import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
@@ -84,19 +84,18 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 每开一个新任务 / 新对话都从 0 重新计算——不存在跨任务累计。
  const DEFAULT_TASK_TOKEN_BUDGET = 2_000_000;
  configureWorkerBudget(()=>({perTaskTokens:DEFAULT_TASK_TOKEN_BUDGET,...(config.budget||{})}));
- // 记忆整理管道：模型由调用方注入。这里用主 Agent 的会话做一次轻量生成——
- // 记忆整理只是一次短摘要，不值得为它单开一个 worker 进程。
- const memoryPipeline=new ConsolidationPipeline(db(),async(prompt:string)=>{
-  const entries=await new Promise<string>((resolve,reject)=>{
-   try{
-    // 复用主 Agent 的模型做一次最小生成：不发工具、不改配置。
-    const result=current?.generateCompletion?.(prompt);
-    if(result&&typeof result.then==='function')result.then((text:string)=>resolve(String(text||'')),reject);
-    else resolve('');
-   }catch(error){reject(error);}
-  });
-  return entries;
- },message=>{if(desk){desk.notice='记忆整理：'+message;scheduleRepaint();}});
+ /**
+  * 一次最小生成：复用主 Agent 的模型，不发工具、不改配置。
+  * 记忆整理与 watchdog 判定都需要它，两者都不值得为一次短问答单开 worker 进程。
+  * 失败向上抛，由各自的调用方决定"静默跳过"还是"显示原因"。
+  */
+ const minimalCompletion=async(prompt:string):Promise<string>=>{
+  const result=current?.generateCompletion?.(prompt);
+  return result&&typeof result.then==='function'?String(await result||''):'';
+ };
+ // 记忆整理管道：整理只是一次短摘要。
+ const memoryPipeline=new ConsolidationPipeline(db(),minimalCompletion,
+  message=>{if(desk){desk.notice='记忆整理：'+message;scheduleRepaint();}});
  /**
   * 记忆 → 技能：整理后检查该代表是否有够格的过程记忆（同一 slug 来自 ≥3 个不同任务）。
   * 只写提议，不装进 skills/——一份 SKILL.md 会改变后续每次分派的提示词，采纳必须是人。
@@ -110,19 +109,16 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
     // 已有同名提议就跳过：重复写只会反复覆盖同一份文件，提示一次就够。
     const existing=listProposals(skillAgentDir()).find(item=>item.slug===candidate.slug);
     if(existing)continue;
-    writeProposal(skillAgentDir(),{slug:candidate.slug,description:candidate.steps[0]?.slice(0,120)||candidate.slug,steps:candidate.steps,agent:member.name,workers:SKILL_TRIGGER_WORKERS});
+    writeProposal(skillAgentDir(),{slug:candidate.slug,description:candidate.steps[0]?.slice(0,120)||candidate.slug,steps:candidate.steps,agent:member.name});
     const total=listProposals(skillAgentDir()).length;
     if(desk){desk.notice=`${member.name} 的过程已重复到可固化为技能：${candidate.slug} · 共 ${total} 条提议技能待审阅（F2 → 审阅提议技能）`;scheduleRepaint();}
    }
   }catch{/* 提议失败不影响记忆本身 */}
  };
- // Watchdog 判定器：与记忆整理共用一次最小生成，不额外开进程。
+ // Watchdog 判定器：与记忆整理共用同一次最小生成，不额外开进程。
  // 阶段① 只落库 + 一行提示；progress 静默，绝不终止任务。
  const watchdogStore=new WatchdogStore(db());
- const watchdogJudge:WatchdogJudge=async(prompt:string)=>{
-  const result=current?.generateCompletion?.(prompt);
-  return result&&typeof result.then==='function'?String(await result||''):'';
- };
+ const watchdogJudge:WatchdogJudge=minimalCompletion;
  /** 对一次"到复核点"的任务做一次模型判定。失败静默——watchdog 不能影响任务本身。 */
  const judgeReview=async(task:any)=>{
   try{
@@ -399,6 +395,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(!handle)throw Error('需要 handle 或当前会话内的 taskId');
   let result:any;
   switch(params.action){case 'status':result=pool.status(handle,parent);break;case 'wait':result=await pool.wait(handle,parent,params.seconds??2);break;case 'review':result=pool.review(handle,parent);break;case 'cancel':result=pool.cancelHandle(handle,parent);break;case 'reconnect':result=pool.reconnect(handle,parent);break;case 'message':{if(!params.text?.trim())throw Error('message 需要 text');const outcome=await pool.sendMessage(handle,parent,params.text.trim());if(!outcome.delivered)throw Error(outcome.error||'转发失败');result={state:outcome.state,delivered:true,agent:outcome.agent};break;}default:result=pool.result(handle,parent);}
+  // 结果被读取的事件：kepos_metrics 的"二次追问率"分子只能从这里来。
+  // 写在这里而不是 pool 内部，因为"被读过"是调用方的行为，不是任务的属性。
+  if(['result','wait'].includes(params.action)){
+   try{db().prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(handle.workerId,params.action==='wait'?'wait_read':'result_read',Date.now(),JSON.stringify({state:String(result?.state??'')}));}catch{}
+  }
   const data=receiptView(result,{cursor:params.cursor,maxChars:params.maxChars});
   return{content:[{type:'text',text:JSON.stringify(data)}],isError:['UNKNOWN','UNKNOWN_HANDLE'].includes(result.state),details:data};
  }});
@@ -926,7 +927,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  try{await playSplash(ctx,config,ready);}catch{}
  await ready;if(initialFailed){ctx.ui.notify(clean(initialError),'error');return;}
  while(true){let sessions:any[];try{sessions=firstSessions??await loadSessions();firstSessions=undefined;}catch(e){ctx.ui.notify(clean(e),'error');return;}
- let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogNotes(db(),id)};
+ let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3)};
   // 代表派生请求：代表进程写文件，这里轮询接手。僚属由代表发起、代表负责，
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
   spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{try{const rep=pool.tasks.find(t=>t.id===taskId);if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,request.skills?Array.from(READ_ONLY_TOOLS):Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});return{ok:true};}catch(error){return{ok:false,reason:clean(error)};}}});

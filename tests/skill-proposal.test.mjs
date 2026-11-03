@@ -70,7 +70,7 @@ test('the same worker repeating a procedure never triggers a skill',()=>{
 
 test('a proposal is written to skills-proposed and never to skills',()=>{
   const agentDir=freshDir();
-  const proposal=writeProposal(agentDir,{slug:'fetch-build-log',description:'取出构建日志并过滤错误行',steps:['取日志','过滤错误行'],agent:'审查官',workers:3});
+  const proposal=writeProposal(agentDir,{slug:'fetch-build-log',description:'取出构建日志并过滤错误行',steps:['取日志','过滤错误行'],agent:'审查官'});
   assert.ok(existsSync(join(agentDir,'skills-proposed','fetch-build-log','SKILL.md')),'proposed, not installed');
   assert.equal(existsSync(join(agentDir,'skills','fetch-build-log')),false,'nothing lands in the live skill directory');
   const text=readFileSync(proposal.path,'utf8');
@@ -87,29 +87,29 @@ test('a proposal is written to skills-proposed and never to skills',()=>{
 
 test('adopting moves the proposal into skills and old names are never clobbered',()=>{
   const agentDir=freshDir();
-  writeProposal(agentDir,{slug:'a-skill',description:'x',steps:['s'],agent:'A',workers:3});
+  writeProposal(agentDir,{slug:'a-skill',description:'x',steps:['s'],});
   const installed=adoptProposal(agentDir,'a-skill');
   assert.equal(installed,join(agentDir,'skills','a-skill'));
   assert.ok(existsSync(join(installed,'SKILL.md')));
   assert.equal(listProposals(agentDir).length,0,'an adopted proposal leaves the review list');
   // 人的安装优先：同名再次采纳会被拒绝，不覆盖。
-  writeProposal(agentDir,{slug:'a-skill',description:'y',steps:['s2'],agent:'A',workers:3});
+  writeProposal(agentDir,{slug:'a-skill',description:'y',steps:['s2'],});
   assert.throws(()=>adoptProposal(agentDir,'a-skill'),/已经安装过/);
   assert.match(readFileSync(join(installed,'SKILL.md'),'utf8'),/1\. s\n/,'the installed copy is untouched');
 });
 
 test('discarding removes a proposal and bad slugs are refused',()=>{
   const agentDir=freshDir();
-  writeProposal(agentDir,{slug:'gone',description:'x',steps:[],agent:'A',workers:3});
+  writeProposal(agentDir,{slug:'gone',description:'x',steps:[],});
   assert.equal(discardProposal(agentDir,'gone'),true);
   assert.equal(discardProposal(agentDir,'gone'),false);
-  assert.throws(()=>writeProposal(agentDir,{slug:'../escape',description:'x',steps:[],agent:'A',workers:3}),/非法/);
+  assert.throws(()=>writeProposal(agentDir,{slug:'../escape',description:'x',steps:[],}),/非法/);
   assert.throws(()=>adoptProposal(agentDir,'../escape'),/非法/);
 });
 
 test('a hand-broken proposal file does not break the whole list',()=>{
   const agentDir=freshDir();
-  writeProposal(agentDir,{slug:'good',description:'ok',steps:['one'],agent:'A',workers:3});
+  writeProposal(agentDir,{slug:'good',description:'ok',steps:['one'],});
   const broken=join(agentDir,'skills-proposed','bad');
   mkdirSync(broken,{recursive:true});
   writeFileSync(join(broken,'SKILL.md'),'not a skill at all');

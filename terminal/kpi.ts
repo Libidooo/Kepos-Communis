@@ -21,6 +21,14 @@ export type MetricResult = {
   note?: string;
 };
 
+/**
+ * 比率格式化：分母为 0 时明说样本不足。
+ * 这是本模块唯一允许产生百分比的地方——各指标自己拼，迟早会有一处漏判空分母。
+ */
+function rate(numerator: number, denominator: number): string {
+  return denominator ? `${Math.round((numerator / denominator) * 100)}%` : '样本不足';
+}
+
 /** 任务标题指纹：去掉标点与空白，取前 40 字作为"同一件事"的判据。 */
 function fingerprint(title: unknown): string {
   return String(title ?? '')
@@ -54,7 +62,7 @@ export function duplicateDelegation(database: KeposDatabase): MetricResult {
   const total = groups.size;
   return {
     name: 'duplicate_delegation', label: '重复委派', numerator: duplicated, denominator: total,
-    value: total ? `${Math.round((duplicated / total) * 100)}%` : '样本不足',
+    value: rate(duplicated, total),
     note: `${duplicated}/${total} 组同标题任务被分给多个代表（按任务组计，不是任务数）`,
   };
 }
@@ -75,7 +83,7 @@ export function secondAsk(database: KeposDatabase): MetricResult {
   const asked = reads.filter(row => Number(row.n) >= 2).length;
   return {
     name: 'second_ask', label: '二次追问', numerator: asked, denominator: finished,
-    value: finished ? `${Math.round((asked / finished) * 100)}%` : '样本不足',
+    value: rate(asked, finished),
     note: `${asked}/${finished} 个已完成任务被重复读取；重复读通常意味着摘要没说清`,
   };
 }
@@ -99,7 +107,7 @@ export function prematureDone(database: KeposDatabase): MetricResult {
   }
   return {
     name: 'premature_done', label: '提前完成', numerator: unmet, denominator: total,
-    value: total ? `${Math.round((unmet / total) * 100)}%` : '样本不足',
+    value: rate(unmet, total),
     note: `${unmet}/${total} 个成功步骤仍有未勾选的验收条目；无验收条目的步骤不计入`,
   };
 }
@@ -119,7 +127,7 @@ export function watchdogQuality(database: KeposDatabase): MetricResult {
   const stalls = Number((database.prepare("SELECT COUNT(*) AS n FROM workers WHERE json_extract(task,'$.stalled')=1").get() as any)?.n ?? 0);
   return {
     name: 'watchdog', label: 'Watchdog 误报', numerator: wrong, denominator: total,
-    value: total ? `${Math.round((wrong / total) * 100)}%` : '暂无告警',
+    value: total ? rate(wrong, total) : '暂无告警',
     note: `${wrong}/${total} 次告警对应的任务最终成功；stalled 标记样本 ${stalls} 个。观察期数据足够前不要升级为终止通道`,
   };
 }
@@ -136,8 +144,9 @@ export function memoryQuality(database: KeposDatabase): MetricResult {
     FROM workers w WHERE w.receipt IS NOT NULL`).all() as any[];
   const withMemory = rows.filter(row => Number(row.injected) === 1);
   const without = rows.filter(row => Number(row.injected) !== 1);
-  const rate = (list: any[]) => list.length ? list.filter(row => row.state === 'SUCCEEDED').length / list.length : null;
-  const a = rate(withMemory), b = rate(without);
+  // 两组都要有样本才能对比；只有一组时如实说样本不足，而不是拿 0 当基准。
+  const successRate = (list: any[]) => list.length ? list.filter(row => row.state === 'SUCCEEDED').length / list.length : null;
+  const a = successRate(withMemory), b = successRate(without);
   if (a === null || b === null) {
     return { name: 'memory', label: '记忆质量', numerator: withMemory.length, denominator: rows.length, value: '样本不足', note: '需要同时存在注入过与未注入过记忆的已完成任务才能对比' };
   }

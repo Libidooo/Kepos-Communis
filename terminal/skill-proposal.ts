@@ -88,7 +88,8 @@ export function renderSkill(input: { slug: string; description: string; steps: s
   return `${head}${body}${tail}`;
 }
 
-export type SkillProposal = { slug: string; description: string; steps: string[]; agent: string; workers: number; path: string };
+/** 待审阅提议。agent/workers 不在磁盘上——提议正文里已经写明来源，读回时无需再存一份可能过期的元数据。 */
+export type SkillProposal = { slug: string; description: string; steps: string[]; path: string };
 
 /** 提议目录（<agentDir>/skills-proposed）。 */
 export function proposedRoot(agentDir: string): string {
@@ -99,14 +100,14 @@ export function proposedRoot(agentDir: string): string {
  * 写一份提议。已存在则覆盖——同一 slug 的提议只有一个，
  * 后一次的证据（更多任务）应当更新它而不是留下多份互相矛盾的副本。
  */
-export function writeProposal(agentDir: string, proposal: Omit<SkillProposal, 'path'>): SkillProposal {
+export function writeProposal(agentDir: string, proposal: Omit<SkillProposal, 'path'> & { agent?: string }): SkillProposal {
   if (!SLUG_PATTERN.test(proposal.slug)) throw Error(`非法的技能 slug：${proposal.slug}`);
   const root = proposedRoot(agentDir);
   const dir = join(root, proposal.slug);
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'SKILL.md');
   writeFileSync(path, renderSkill({ slug: proposal.slug, description: proposal.description, steps: proposal.steps, agent: proposal.agent }), 'utf8');
-  return { ...proposal, path };
+  return { slug: proposal.slug, description: proposal.description, steps: proposal.steps, path };
 }
 
 /** 列出全部待审阅提议。坏文件跳过——一份手写出错的 SKILL.md 不该让整个列表消失。 */
@@ -122,7 +123,7 @@ export function listProposals(agentDir: string): SkillProposal[] {
       const description = /^description:\s*(.+)$/m.exec(text)?.[1]?.trim() || slug;
       const steps = (text.split('## 步骤')[1] || '').split('## 边界')[0]
         .split('\n').map(line => /^\d+\.\s*(.+)$/.exec(line.trim())?.[1]).filter((line): line is string => !!line);
-      out.push({ slug, description, steps, agent: '', workers: 0, path });
+      out.push({ slug, description, steps, path });
     } catch { continue; }
   }
   return out;

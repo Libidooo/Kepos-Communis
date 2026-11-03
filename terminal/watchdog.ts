@@ -117,13 +117,20 @@ export class WatchdogStore {
 
   /** 某任务的全部判定，最新的在前——界面要显示"为什么认为它空转"。 */
   list(workerId: string, limit = 20): VerdictRecord[] {
-    const rows = this.database.prepare('SELECT seq,worker_id,at,verdict,reason,evidence_cursor,model FROM watchdog_verdicts WHERE worker_id=? ORDER BY seq DESC LIMIT ?').all(workerId, limit) as any[];
-    return rows.map(row => ({ seq: Number(row.seq), workerId: row.worker_id, at: Number(row.at), verdict: row.verdict, reason: row.reason, evidenceCursor: Number(row.evidence_cursor), model: row.model }));
+    return this.rows(workerId, limit);
   }
 
-  /** 全部判定，供 §6 误报率统计。 */
+  /** 全部判定。度量（kpi.ts）直接查表，这里留给调用方与测试做核对。 */
   all(limit = 500): VerdictRecord[] {
-    const rows = this.database.prepare('SELECT seq,worker_id,at,verdict,reason,evidence_cursor,model FROM watchdog_verdicts ORDER BY seq DESC LIMIT ?').all(limit) as any[];
+    return this.rows(undefined, limit);
+  }
+
+  /** list 与 all 只差一个过滤条件：共用一次查询映射，避免两处各自拼列。 */
+  private rows(workerId: string | undefined, limit: number): VerdictRecord[] {
+    const columns = 'seq,worker_id,at,verdict,reason,evidence_cursor,model';
+    const rows = (workerId
+      ? this.database.prepare(`SELECT ${columns} FROM watchdog_verdicts WHERE worker_id=? ORDER BY seq DESC LIMIT ?`).all(workerId, limit)
+      : this.database.prepare(`SELECT ${columns} FROM watchdog_verdicts ORDER BY seq DESC LIMIT ?`).all(limit)) as any[];
     return rows.map(row => ({ seq: Number(row.seq), workerId: row.worker_id, at: Number(row.at), verdict: row.verdict, reason: row.reason, evidenceCursor: Number(row.evidence_cursor), model: row.model }));
   }
 }
