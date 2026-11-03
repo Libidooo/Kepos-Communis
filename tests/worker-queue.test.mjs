@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {EventEmitter} from 'node:events';
-import {mkdtempSync} from 'node:fs';
+import {mkdtempSync,mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {WorkerPool,MAX_CONCURRENT_CHILDREN,DEFAULT_TASK_SECONDS,configureWorkerBudget} from '../dist/terminal/workers.js';
@@ -11,7 +11,7 @@ const crew={id:'expert',name:'Expert',role:'investigate',model:'fixture',provide
 const turn=()=>new Promise(resolve=>setImmediate(resolve));
 test('default worker policy exposes 48 slots and a five-minute review baseline',()=>{assert.equal(MAX_CONCURRENT_CHILDREN,48);assert.equal(DEFAULT_TASK_SECONDS,300);});
 test('main-agent review acknowledgement is scoped to the worker handle',async t=>{const f=fixture(t);const handle=f.launch('review');await turn();const review=f.pool.review(handle,'a');assert.equal(review.state,'STARTING');assert.equal(review.reviewDue,false);assert.equal(f.pool.review(handle,'wrong').state,'UNKNOWN_HANDLE');});
-test('copy delegation is one level and halves the parent budget',async t=>{const f=fixture(t);const parent=f.launch('parent','a',{seconds:5});assert.throws(()=>f.pool.launch(crew,'too long',t.name,'source',3,undefined,'a',[],[],false,1,parent.workerId),/half/);const child=f.pool.launch(crew,'copy',t.name,'source',2,undefined,'a',[],[],false,1,parent.workerId);assert.equal(f.pool.tasks.at(-1).delegationDepth,1);assert.equal(f.pool.tasks.at(-1).parentWorkerId,parent.workerId);f.pool.cancelHandle(child,'a');f.pool.cancelHandle(parent,'a');});
+test('copy delegation is one level and halves the parent budget',async t=>{const f=fixture(t);const parent=f.launch('parent','a',{seconds:5});assert.throws(()=>f.pool.launch(crew,'too long',f.dir,'source',3,undefined,'a',[],[],false,1,parent.workerId),/half/);const child=f.pool.launch(crew,'copy',f.dir,'source',2,undefined,'a',[],[],false,1,parent.workerId);assert.equal(f.pool.tasks.at(-1).delegationDepth,1);assert.equal(f.pool.tasks.at(-1).parentWorkerId,parent.workerId);f.pool.cancelHandle(child,'a');f.pool.cancelHandle(parent,'a');});
 function fixture(t,concurrency=1){
  configureWorkerBudget(()=>({}));
  const dir=mkdtempSync(join(tmpdir(),'kepos-queue-'));
@@ -31,11 +31,11 @@ function fixture(t,concurrency=1){
  const pool=new WorkerPool(database,create,{concurrency});
  const launch=(text,parent='a',extra={})=>pool.launch(extra.crew||crew,text,dir,'source',extra.seconds||5,extra.signal,parent,[],[],false);
  t.after(async()=>{pool.close();await turn();database.close();});
- return{pool,launch,executors,database,peak:()=>peak};
+ return{pool,launch,executors,database,dir,peak:()=>peak};
 }
 
 test('normal completion automatically dequeues and preserves the original run promise',async t=>{
- const f=fixture(t);const first=f.launch('first');const waiting=f.pool.run(crew,'second',t.name,'source',5,undefined,'a',[]);
+ const f=fixture(t);const altDir=join(f.dir,'alt');mkdirSync(altDir,{recursive:true});const first=f.launch('first');const waiting=f.pool.run(crew,'second',altDir,'source',5,undefined,'a',[]);
  // Different cwd forces a retiring idle executor rather than reuse.
  const second=f.pool.tasks.at(-1);assert.equal(second.state,'QUEUED');await turn();
  f.executors[0].succeed('first-result');await turn();await turn();

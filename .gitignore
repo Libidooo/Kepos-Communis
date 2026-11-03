@@ -60,3 +60,6 @@ themes/.brand-theme-hashes.json
 
 # 本地会话计划文件（ZCode 运行时产物，不入库）
 .zcode/
+
+# 归档目录：运行时产物，不随源码入库
+.kepos/

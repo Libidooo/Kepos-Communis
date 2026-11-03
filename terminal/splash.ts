@@ -23,8 +23,10 @@ const SEATS = 48;
 const SHADOW = [62, 14, 22] as const;
 const BRAND = [181, 47, 59] as const;
 const LIT = [238, 128, 102] as const;
-const RIM = [252, 190, 150] as const;
+const RIM = [255, 206, 164] as const;
 const AMBER = [255, 196, 120] as const;
+// Mid tone between shadow and highlight: the ring reads warmer than a pure red ramp.
+const EMBER = [214, 74, 74] as const;
 const WHITE = [255, 255, 255] as const;
 const QUADRANTS = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
 
@@ -272,21 +274,24 @@ function computeLayout(W: number, H: number, cellAspect: number): SplashLayout |
   return null;
 }
 
-// One fixed lamp in world space at the upper right, exactly like the reference clip: the
-// camera and the light never move; the surfaces ignite one after another.
-export const LIGHT_DIR = (() => {
-  const azimuth = Math.PI * .28, elevation = Math.PI / 5;
-  return { x: Math.cos(azimuth) * Math.cos(elevation), y: Math.sin(azimuth) * Math.cos(elevation), z: Math.sin(elevation) };
-})();
-
-// Kept for callers that ask where the key light is; it no longer sweeps.
-export function splashLight(_elapsed: number): { x: number; y: number; z: number; progress: number } {
-  return { ...LIGHT_DIR, progress: 1 };
+// The key light sweeps left to right while the seats ignite around the ring, so both motions
+// read at once: a wave in time (seat order) and a wave in space (lamp azimuth).
+export function splashLight(elapsed: number): { x: number; y: number; z: number; progress: number } {
+  const span = Math.max(1, SPLASH_TIMING.lightEndMs - SPLASH_TIMING.lightStartMs);
+  const progress = smooth((elapsed - SPLASH_TIMING.lightStartMs) / span);
+  // Azimuth travels from the left (PI) to the right (0); elevation rises slightly as it goes.
+  const azimuth = Math.PI * (1 - progress);
+  const elevation = Math.PI / 5 + Math.PI / 18 * progress;
+  return {
+    x: Math.cos(azimuth) * Math.cos(elevation),
+    y: Math.sin(azimuth) * Math.cos(elevation),
+    z: Math.sin(elevation),
+    progress,
+  };
 }
 
-// Ignition order: seats light up one after another around the ring, like the reference clip's
-// facets catching light. Each seat ramps over a short window, so the wave reads as discrete
-// blocks igniting rather than one global fade.
+// Ignition order: seats light up one after another around the ring, so the wave reads as
+// discrete blocks catching light rather than one global fade.
 export function lecternProgress(elapsed: number, index: number): { desktop: number; plaque: number } {
   const span = SPLASH_TIMING.lightEndMs - SPLASH_TIMING.lightStartMs;
   const ramp = Math.max(160, span / SEATS * 2.8);
@@ -295,8 +300,6 @@ export function lecternProgress(elapsed: number, index: number): { desktop: numb
   return { desktop: lit, plaque: lit };
 }
 
-// Per-pixel shading: a tabletop tilts toward the lamp, so brightness depends on where a point
-// sits inside the seat, not just on which seat it is.
 // Cached per seat: each tabletop is normalised by its own extent, so the gradient spans the
 // whole surface instead of saturating within half a cell.
 const seatExtent = new WeakMap<SplashLectern, { hx: number; hy: number }>();
@@ -313,24 +316,37 @@ function extentOf(seat: SplashLectern): { hx: number; hy: number } {
   return found;
 }
 
-export function surfaceShade(seat: SplashLectern, nx: number, ny: number, part: 'desktop' | 'plaque'): number {
-  const { hx, hy } = extentOf(seat);
-  // Local -1..1 coordinates across this desk, so the gradient always spans the full surface.
-  const gx = clamp((nx - seat.center.x) / hx), gy = clamp((ny - seat.center.y) / hy);
-  if (part === 'desktop') {
-    // Key light sits up-right: the +x / -y quadrant is brightest and the far corner falls away.
-    // A raised lip on the outer edge adds the specular spark that makes each desk read solid.
-    const facing = .5 + .5 * (gx * .60 - gy * .80);
-    const lip = Math.max(0, Math.hypot(gx * .8, gy) - .35) / .65;
-    // Bias upward: the ring should read as lit metal, with the gradient carried by the
-    // highlight rather than by crushing everything into shadow.
-    return clamp(.30 + .58 * facing + .30 * lip);
-  }
-  // Plates face outward; brightness follows how squarely they meet the light.
-  const square = Math.max(0, seat.outward.x * LIGHT_DIR.x + seat.outward.y * LIGHT_DIR.y);
-  return clamp(.10 + .86 * square);
+// Deterministic per-seat variation in [0,1]: stable across frames, so the ring looks faceted
+// rather than noisy.
+function facetOf(id: number): number {
+  const x = Math.sin((id + 1) * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
 }
 
+// Per-pixel shading driven by the sweeping lamp: a desk is brightest where its surface faces
+// the current azimuth, so the highlight physically travels across the ring.
+export function surfaceShade(seat: SplashLectern, nx: number, ny: number, part: 'desktop' | 'plaque', light = splashLight(0)): number {
+  const { hx, hy } = extentOf(seat);
+  // Local -1..1 coordinates across this desk, so the gradient spans the whole surface.
+  const gx = clamp((nx - seat.center.x) / hx), gy = clamp((ny - seat.center.y) / hy);
+  // How squarely this seat's outward normal faces the lamp: 1 = fully turned toward it.
+  const facingSeat = seat.outward.x * light.x + seat.outward.y * light.y;
+  if (part === 'desktop') {
+    // Within a tabletop the near corner toward the lamp is hottest, the far corner falls off.
+    const tilt = .5 + .5 * (gx * light.x * 1.35 - gy * light.y * 1.35);
+    const lip = Math.max(0, Math.hypot(gx * .85, gy) - .22) / .78;
+    // Seats on the lit side of the ring read brighter overall, so the sweep is unmistakable.
+    const side = .5 + .5 * facingSeat;
+    // A deterministic per-seat offset makes neighbouring blocks land on different tones,
+    // which is what gives the reference clip its crystalline look.
+    const facet = facetOf(seat.id);
+    // `side` carries the left-to-right sweep, so it dominates: without a strong term here the
+    // whole ring reads at one brightness and the travelling highlight is invisible.
+    return clamp(.02 + .62 * side + .26 * tilt + .22 * lip + .14 * facet);
+  }
+  // Plates face outward: light them by how squarely they meet the lamp.
+  return clamp(.05 + .92 * Math.max(0, facingSeat));
+}
 // `painted` records membership in the geometry, independent of how bright a cell currently is.
 type Buffer = { rgb: Float32Array; alpha: Float32Array; painted: Uint8Array };
 
@@ -354,15 +370,18 @@ function drawSplash(elapsed: number, layout: SplashLayout): string[] {
   // makes the early fade frames byte-identical to the held frame.
   const fade = 1 - clamp((elapsed - exitAt) / SPLASH_TIMING.fadeMs) ** .55;
 
+  const light = splashLight(elapsed);
   if (fade > 0) [...layout.ring.lecterns].sort((a, b) => a.center.y - b.center.y).forEach(seat => {
     const progress = lecternProgress(elapsed, seat.id);
     for (const sample of seat.samples) {
       const opacity = progress[sample.part] * fade;
       if (opacity <= 0) continue;
-      // Every sub-cell is shaded from its own position inside the tabletop, so a seat reads as
-      // a lit solid rather than a flat silhouette.
-      const shade = surfaceShade(seat, sample.x / 2, sample.y / 2, sample.part);
-      const base = mix(SHADOW, LIT, shade);
+      // Every sub-cell is shaded from its own position inside the tabletop, under the lamp's
+      // current azimuth, so a seat reads as a lit solid and the highlight travels across it.
+      const shade = surfaceShade(seat, sample.x / 2, sample.y / 2, sample.part, light);
+      // Three-stop ramp so the surface shifts hue as it brightens: deep wine -> vermilion ->
+      // warm orange. A two-stop ramp looked flat however the light moved.
+      const base = shade < .5 ? mix(SHADOW, EMBER, shade / .5) : mix(EMBER, LIT, (shade - .5) / .5);
       // A hot rim on the lit corner separates neighbouring desks without drawing outlines.
       const rim = sample.part === 'desktop' ? Math.max(0, shade - .78) / .22 : 0;
       const rgb = mix(base, RIM, rim * .85).map(channel => channel * fade);
