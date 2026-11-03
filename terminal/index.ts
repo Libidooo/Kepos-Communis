@@ -392,7 +392,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(desk){desk.notice=`表决 · ${params.question.slice(0,80)}：赞成${tally.yes} 反对${tally.no} 弃权${tally.abstain}${params.main?` · 主Agent（分派方）：${VOTE_LABELS[params.main.choice]}`:''}`;scheduleRepaint();}
   return{content:[{type:'text',text:boundedText(lines.join('\n'),1600)}],details:record};
  }});
- pi.registerTool({name:'kepos_memory',label:'代表记忆',description:'查询或管理代表记忆。记忆由任务结束后自动整理产生，双时态保存：失效只标记不删除，可回溯历史上某个时刻相信什么。list 查当前有效记忆；search 按关键词检索；asof 查历史；invalidate 手动失效一条（不删除）。',parameters:Type.Object({action:Type.Union(['list','search','asof','invalidate'].map(value=>Type.Literal(value))),agent:Type.Optional(Type.String({maxLength:120,description:'代表名称或 ID'})),query:Type.Optional(Type.String({maxLength:200,description:'search 的关键词'})),at:Type.Optional(Type.Integer({description:'asof 的时间戳（毫秒）'})),id:Type.Optional(Type.String({maxLength:80,description:'invalidate 时的记忆 id'})),limit:Type.Optional(Type.Integer({minimum:1,maximum:200}))}),async execute(_id,params){
+ pi.registerTool({name:'kepos_memory',label:'代表记忆与复盘笔记',description:'查询或管理代表记忆。记忆由任务结束后自动整理产生，双时态保存：失效只标记不删除，可回溯历史上某个时刻相信什么。list 查当前有效记忆；search 按关键词检索；asof 查历史；invalidate 手动失效一条（不删除）。失败/超时任务的记忆即"复盘笔记"：哪个环节出错、下次该怎么委派。',parameters:Type.Object({action:Type.Union(['list','search','asof','invalidate','lessons'].map(value=>Type.Literal(value))),agent:Type.Optional(Type.String({maxLength:120,description:'代表名称或 ID'})),query:Type.Optional(Type.String({maxLength:200,description:'search 的关键词'})),at:Type.Optional(Type.Integer({description:'asof 的时间戳（毫秒）'})),id:Type.Optional(Type.String({maxLength:80,description:'invalidate 时的记忆 id'})),limit:Type.Optional(Type.Integer({minimum:1,maximum:200}))}),async execute(_id,params){
   const limit=params.limit??50;
   if(params.action==='invalidate'){
    if(!params.id)throw Error('invalidate 需要 id');
@@ -408,11 +408,20 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    rows=memoryPipeline.asOf(member.id,Number(params.at));
   }else if(params.action==='search'){
    rows=memoryPipeline.search(member.id,String(params.query||''));
+  }else if(params.action==='lessons'){
+   // 复盘笔记来自失败任务的整理：按来源任务是否失败无法从记忆行判断，
+   // 所以用来源任务状态在读取时过滤——比在记忆里多存一个布尔可靠（状态是权威）。
+   rows=memoryPipeline.list(member.id).filter(row=>{
+    if(!row.sourceWorkerId)return false;
+    const task=pool.tasks.find(item=>item.id===row.sourceWorkerId);
+    return !!task&&['失败','超时','已中断'].includes(String(task.status||''));
+   });
   }else{
    rows=memoryPipeline.list(member.id);
   }
   const data=rows.slice(0,limit).map(row=>({id:row.id,kind:row.kind,content:row.content,sourceWorkerId:row.sourceWorkerId,validFrom:row.validFrom,validTo:row.validTo}));
-  return{content:[{type:'text',text:JSON.stringify({agent:member.name,total:rows.length,memories:data,note:data.length?'':'该代表暂无记忆；任务完成后会自动整理。'})}],details:{memories:data}};
+  const empty=params.action==='lessons'?'该代表暂无复盘笔记；失败/超时任务结束后会自动整理。':'该代表暂无记忆；任务完成后会自动整理。';
+  return{content:[{type:'text',text:JSON.stringify({agent:member.name,total:rows.length,memories:data,note:data.length?'':empty})}],details:{memories:data}};
  }});
  pi.registerTool({name:'kepos_cli_grant',label:'外部 CLI 白名单与授权',description:'管理外部 agent CLI（codex / claude 等）的白名单与任务级授权。白名单存 config.json，由人类决定。授权绑定到某次任务，任务结束自动回收。代表只能在授权范围内启动 CLI。',parameters:Type.Object({action:Type.Union(['list','allow','remove','grant','status'].map(value=>Type.Literal(value))),cli:Type.Optional(Type.String({maxLength:40,description:'CLI 可执行名，如 codex'})),label:Type.Optional(Type.String({maxLength:60,description:'allow 时的显示名'})),envKey:Type.Optional(Type.String({maxLength:80,description:'该 CLI 需要的凭据环境变量名；只传这一个'})),argPrefixes:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'允许的首参数前缀，如 exec / -b / -P'})),taskId:Type.Optional(Type.String({description:'grant 时把授权绑定到该任务'})),note:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
   const allowlist=config.cliAllowlist||{};

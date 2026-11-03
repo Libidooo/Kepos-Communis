@@ -192,8 +192,14 @@ export function parseConsolidationOps(raw: string): ConsolidationOp[] {
   return ops.slice(0, MAX_MEMORIES_PER_TASK);
 }
 
-/** 整理提示词：两阶段管道的第二段，要求严格 JSON。 */
-export function consolidationPrompt(input: { goal: string; checkpoint?: string; outputTail: string; memories: MemoryRow[]; failed?: boolean }): string {
+/**
+ * 整理提示词：两阶段管道的第二段，要求严格 JSON。
+ *
+ * 失败任务的问法不同（B3 复盘）：它要的不是"这次发现了什么"，
+ * 而是"下次同类任务该怎么委派"。这两种知识用途不同，混在一个问题里
+ * 模型只会复述失败经过——那对下一次派发毫无帮助。
+ */
+export function consolidationPrompt(input: { goal: string; checkpoint?: string; outputTail: string; memories: MemoryRow[]; failed?: boolean; error?: string }): string {
   const existing = input.memories.length
     ? input.memories.map(row => `- id=${row.id} :: ${row.content}`).join('\n')
     : '（暂无）';
@@ -204,14 +210,17 @@ export function consolidationPrompt(input: { goal: string; checkpoint?: string; 
     input.goal,
     '',
     ...(input.checkpoint ? ['## 过程检查点', input.checkpoint, ''] : []),
+    ...(input.failed && input.error ? ['## 失败原因', input.error, ''] : []),
     '## 产出末尾',
-    input.outputTail,
+    input.outputTail || '（无产出）',
     '',
     '## 该代表当前有效记忆',
     existing,
     '',
     '## 你的工作',
-    '只抽取"下次同类任务还有用"的事实或可复用步骤，不要复述本次任务细节。',
+    input.failed
+      ? '这是一次失败的任务。不要复述失败经过，抽取"下次同类任务该怎么委派或怎么做"的教训：'
+      : '只抽取"下次同类任务还有用"的事实或可复用步骤，不要复述本次任务细节。',
     '输出严格 JSON 数组，不要任何解释文字：',
     '[{"op":"ADD","content":"一句话事实"},{"op":"UPDATE","replacesId":"要替换的记忆 id","content":"修正后的事实"},{"op":"NOOP"}]',
     '',

@@ -18,30 +18,40 @@ export type ConsolidationCandidate = {
   checkpoint?: string;
   output: string;
   failed: boolean;
+  /** 失败原因。失败任务常常只有错误、没有产出，而错误本身正是复盘要记的东西。 */
+  error?: string;
 };
 
+// 失败类终态：这些任务即使没有产出也要复盘——"为什么没做成"本身就是可复用的经验。
+const FAILED_STATES = new Set(['失败', '超时', '已中断']);
+
 /** 是否值得为这个任务跑一次整理。 */
-export function shouldConsolidate(task: { id: string; agentId?: string; output?: string; checkpoint?: string; status?: string }, alreadyDone: (workerId: string) => boolean): boolean {
+export function shouldConsolidate(task: { id: string; agentId?: string; output?: string; checkpoint?: string; status?: string; error?: string; failed?: boolean }, alreadyDone: (workerId: string) => boolean): boolean {
   if (!task.agentId) return false;            // 临时代表没有稳定 id，记忆无处归属
   if (alreadyDone(task.id)) return false;
   const output = String(task.output ?? '').trim();
   const checkpoint = String(task.checkpoint ?? '').trim();
-  // 什么都没有的任务没有可沉淀内容。
+  const failed = task.failed ?? FAILED_STATES.has(String(task.status ?? ''));
+  // 失败任务有错误原因就值得复盘，哪怕产出为空。
+  if (failed && String(task.error ?? '').trim()) return true;
+  // 其余情况：什么都没有的任务没有可沉淀内容。
   if (!output && !checkpoint) return false;
   return true;
 }
 
 /** 从任务构造整理输入。产出只取末尾 4KiB——前面多为过程刷屏。 */
-export function candidateFromTask(task: { id: string; agentId?: string; title?: string; checkpoint?: string; output?: string; status?: string }): ConsolidationCandidate | null {
+export function candidateFromTask(task: { id: string; agentId?: string; title?: string; checkpoint?: string; output?: string; status?: string; error?: string }): ConsolidationCandidate | null {
   if (!task.agentId) return null;
   const output = String(task.output ?? '');
+  const failed = FAILED_STATES.has(String(task.status ?? ''));
   return {
     workerId: task.id,
     agentId: task.agentId,
     goal: String(task.title ?? ''),
     checkpoint: task.checkpoint,
     output: output.length > 4096 ? output.slice(-4096) : output,
-    failed: ['失败', '超时', '已中断'].includes(String(task.status ?? '')),
+    failed,
+    ...(failed && task.error ? { error: String(task.error).slice(0, 600) } : {}),
   };
 }
 
@@ -62,7 +72,7 @@ export class ConsolidationPipeline {
 
   /** 只入队，不立即执行——避免在任务结算路径上做网络调用。 */
   enqueue(candidate: ConsolidationCandidate): boolean {
-    if (!shouldConsolidate({ id: candidate.workerId, agentId: candidate.agentId, output: candidate.output, checkpoint: candidate.checkpoint }, id => this.memory.consolidated(id))) return false;
+    if (!shouldConsolidate({ id: candidate.workerId, agentId: candidate.agentId, output: candidate.output, checkpoint: candidate.checkpoint, error: candidate.error, failed: candidate.failed }, id => this.memory.consolidated(id))) return false;
     if (this.queue.some(item => item.workerId === candidate.workerId)) return false;
     this.queue.push(candidate);
     return true;
@@ -75,7 +85,7 @@ export class ConsolidationPipeline {
     const existing = this.memory.active(candidate.agentId, 20);
     const prompt = consolidationPrompt({
       goal: candidate.goal, checkpoint: candidate.checkpoint,
-      outputTail: candidate.output, memories: existing, failed: candidate.failed,
+      outputTail: candidate.output, memories: existing, failed: candidate.failed, error: candidate.error,
     });
     let ops: ConsolidationOp[] = [];
     try {
