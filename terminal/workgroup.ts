@@ -13,21 +13,10 @@
 export type GroupEvidence = {
   taskId: string;
   agent: string;
-  title: string;
   /** 工具调用与产出的证据段（不含结论）。 */
   evidence: string;
-  checkpoint?: string;
   updatedAt: number;
   state: string;
-};
-
-export type GroupConclusion = {
-  taskId: string;
-  agent: string;
-  /** 结论 / 置信度 / 需要 三段；投票单独记录。 */
-  conclusion: string;
-  vote?: 'yes' | 'no' | 'abstain';
-  voteReason?: string;
 };
 
 export type GroupMember = {
@@ -62,13 +51,19 @@ export function extractVote(conclusion: string): { vote?: 'yes' | 'no' | 'abstai
  * 同组可见视图：只暴露证据，结论与投票一律剔除。
  * 这是他人在同组内能看到的全部内容——结论必须各自独立形成。
  */
+/** 证据过长时保留头尾：中间才是可以牺牲的部分。 */
+const EVIDENCE_HEAD = 3000;
+const EVIDENCE_TAIL = 1000;
+
 export function visibleToPeer(member: GroupMember, output: string, now = Date.now()): GroupEvidence {
   const { evidence } = splitEvidenceAndConclusion(output);
+  const tooLong = evidence.length > EVIDENCE_HEAD + EVIDENCE_TAIL;
   return {
     taskId: member.taskId,
     agent: member.agent,
-    title: '',
-    evidence: evidence.length > 4000 ? `${evidence.slice(0, 3000)}\n… [证据过长已截断] …\n${evidence.slice(-1000)}` : evidence,
+    evidence: tooLong
+      ? `${evidence.slice(0, EVIDENCE_HEAD)}\n… [证据过长已截断] …\n${evidence.slice(-EVIDENCE_TAIL)}`
+      : evidence,
     updatedAt: now,
     state: member.state,
   };

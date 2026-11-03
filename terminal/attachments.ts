@@ -36,7 +36,10 @@ export type Attachment = {
   truncated?: boolean;
 };
 export type AttachmentResult = { ok: true; attachment: Attachment } | { ok: false; reason: string };
-/** 收窄辅助：调用方在 if 分支里拿到成功值，else 分支里拿到原因。 */
+/**
+ * 收窄辅助。tsconfig 是 strict: false，TypeScript 不肯在 await 结果上按 !ok 收窄，
+ * 所以必须用显式的类型谓词，否则每个调用方都要写 as 断言。
+ */
 export function isAttached(result: AttachmentResult): result is { ok: true; attachment: Attachment } {
   return result.ok === true;
 }
@@ -108,9 +111,11 @@ export function readZipEntry(buf: Buffer, entry: ZipEntry): Buffer {
   const end = start + entry.compressedSize;
   if (end > buf.length) throw Error('ZIP 条目数据越界');
   const raw = buf.subarray(start, end);
+  // 方法 0 是存储（EPUB 的 mimetype 条目按规范必须如此），直接切片。
   if (entry.method === 0) return Buffer.from(raw);
   if (entry.method !== 8) throw Error(`不支持的压缩方式 ${entry.method}`);
-  // maxOutputLength 是防解压炸弹的最后一道闸。
+  // 解压上限取"声明大小 × 64"与硬上限的较小值：正常文档的压缩比远低于 64，
+  // 而 deflate 炸弹可达 1000:1，这道闸保证它无法撑爆内存。
   return inflateRawSync(raw, { maxOutputLength: Math.min(MAX_INFLATED_BYTES, Math.max(entry.size, 1) * 64) });
 }
 
@@ -122,11 +127,13 @@ function entryText(buf: Buffer, entries: ZipEntry[], name: string): string | und
 }
 
 // ── XML 文本提取 ──────────────────────────────────────────────────────────
+/** 正则元字符转义：分段标签里的 `:` 与可能的特殊字符不能直接拼进正则。 */
+const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /** 剥离标签但不吞掉文字：先把段落/行级标签换成换行，再解实体、去标签。 */
 export function xmlToText(xml: string, blockTags: string[] = ['w:p', 'a:p']): string {
   let text = xml;
   for (const tag of blockTags) {
-    text = text.replace(new RegExp(`</${tag.replace(':', ':')}>`, 'gi'), '\n');
+    text = text.replace(new RegExp(`</${escapeRegExp(tag)}>`, 'gi'), '\n');
   }
   text = text
     .replace(/<w:br\s*\/>/gi, '\n')

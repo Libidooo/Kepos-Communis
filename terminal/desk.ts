@@ -203,12 +203,12 @@ export class Desk {
    const added:string[]=[];const failed:string[]=[];
    for(const path of paths){
     const result=await loadAttachment(path,{policy,deny:[dataRoot],cwd:this.ctx.cwd});
-    if(isAttached(result)){
-     const attachment=result.attachment;
-     // 同一个文件重复附加只保留一份。
-     if(!this.attachments.some((a:any)=>a.path===attachment.path))this.attachments.push(attachment);
-     added.push(attachment.name);
-    }else failed.push(result.reason);
+    // 早返回式收窄：联合类型在 continue 之后能正确推断，不需要额外的守卫函数。
+    if(!isAttached(result)){failed.push(result.reason);continue;}
+    const attachment=result.attachment;
+    // 同一个文件重复附加只保留一份。
+    if(!this.attachments.some((a:any)=>a.path===attachment.path))this.attachments.push(attachment);
+    added.push(attachment.name);
    }
    this.saveAttachments();
    if(added.length&&failed.length)this.notice=`已附加 ${added.join('、')}；${failed.length} 项失败：${failed[0]}`;

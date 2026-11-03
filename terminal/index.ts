@@ -295,17 +295,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const results:any[]=[];
   for(const path of params.paths){
    const loaded=await loadAttachment(path,{cwd:base,deny:[dataRoot]});
-   if(isAttached(loaded)){
-    const limit=params.maxChars??20000;
-    // 超长附件按游标分页：模型读一段后可用 nextCursor 继续，
-    // 而不是永远只能看到头尾、中段永远读不到。
-    const page=loaded.attachment.kind==='image'?null:paginateAttachmentText(loaded.attachment.text||'',params.cursor??0,limit);
-    const body=loaded.attachment.kind==='image'
-     ? `[图片 ${loaded.attachment.name} · ${loaded.attachment.mimeType} · 已作为图像附件]`
-     : page!.text;
-    results.push({ok:true,name:loaded.attachment.name,path:loaded.attachment.path,kind:loaded.attachment.kind,bytes:loaded.attachment.bytes,note:loaded.attachment.note,truncated:!!loaded.attachment.truncated,content:body,
-     ...(page?{cursor:page.cursor,nextCursor:page.nextCursor,total:page.total,page:page.page,pages:page.pages}:{})});
-   }else results.push({ok:false,path,reason:loaded.reason});
+   // 早返回式收窄，避免为联合类型维护额外的守卫函数。
+   if(!isAttached(loaded)){results.push({ok:false,path,reason:loaded.reason});continue;}
+   const limit=params.maxChars??20000;
+   // 超长附件按游标分页：模型读一段后可用 nextCursor 继续，
+   // 而不是永远只能看到头尾、中段永远读不到。
+   const page=loaded.attachment.kind==='image'?null:paginateAttachmentText(loaded.attachment.text||'',params.cursor??0,limit);
+   const body=loaded.attachment.kind==='image'
+    ? `[图片 ${loaded.attachment.name} · ${loaded.attachment.mimeType} · 已作为图像附件]`
+    : page!.text;
+   results.push({ok:true,name:loaded.attachment.name,path:loaded.attachment.path,kind:loaded.attachment.kind,bytes:loaded.attachment.bytes,note:loaded.attachment.note,truncated:!!loaded.attachment.truncated,content:body,
+    ...(page?{cursor:page.cursor,nextCursor:page.nextCursor,total:page.total,page:page.page,pages:page.pages}:{})});
   }
   const text=results.map(item=>item.ok?`<file name="${item.name}" kind="${item.kind}"${item.note?` note="${item.note}"`:''}>\n${item.content}\n</file>`:`<file-error path="${item.path}">${item.reason}</file-error>`).join('\n\n');
   return{content:[{type:'text',text}],details:{results}};

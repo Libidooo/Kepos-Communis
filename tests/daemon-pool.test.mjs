@@ -62,3 +62,15 @@ test('a healthy daemon recovers the banner', async () => {
   assert.equal(recovered, 0);
   assert.ok(pool.bannerText().length > 0);
 });
+
+test('repeated probe failures do not spam the fallback callback', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'kepos-daemon-spam-'));
+  const reasons = [];
+  const pool = new DaemonWorkerPool({ dataDir, fallback: makeFallback(), onFallback: r => reasons.push(r) });
+  await pool.probe();
+  await pool.probe();
+  await pool.probe();
+  // 状态已经降级，后续探测失败只是刷新原因，不应反复通知界面。
+  assert.equal(reasons.length, 1, 'fallback announced once, not on every probe');
+  assert.equal(pool.status, 'local-fallback');
+});

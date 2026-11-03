@@ -32,7 +32,6 @@ export class DaemonWorkerPool {
   status: DaemonPoolStatus = 'daemon';
   lastReason = '';
   private client: SchedulerClient | undefined;
-  private checkedAt = 0;
 
   constructor(private readonly options: DaemonWorkerPoolOptions) {}
 
@@ -48,7 +47,6 @@ export class DaemonWorkerPool {
       await client.request('health');
       this.client = client;
       if (this.status !== 'daemon') { this.status = 'daemon'; this.lastReason = ''; this.options.onRecovered?.(); }
-      this.checkedAt = Date.now();
       return true;
     } catch (error: any) {
       return this.degrade(`调度守护进程无响应：${error?.message || error}`);
@@ -56,10 +54,12 @@ export class DaemonWorkerPool {
   }
 
   private degrade(reason: string) {
+    // 只在状态真的变化时回调：probe 会被反复调用，重复触发会让警告条一直闪。
+    const wasHealthy = this.status === 'daemon';
     this.client = undefined;
     this.status = 'local-fallback';
     this.lastReason = reason;
-    this.options.onFallback?.(reason);
+    if (wasHealthy) this.options.onFallback?.(reason);
     return false;
   }
 

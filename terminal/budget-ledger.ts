@@ -7,6 +7,8 @@
 //
 // The ledger reads `usage` already present in receipts — no new accounting path.
 import type { KeposDatabase } from './database.ts';
+// 复用 workers.ts 的口径，避免两处算法漂移（台账与任务预算必须按同一个数记）。
+import { spentTokens } from './workers.ts';
 
 export type LedgerScope = 'day' | 'session' | 'plan';
 
@@ -18,12 +20,8 @@ export interface LedgerEntry {
   updatedAt: number;
 }
 
-/** 与 workers.ts 的口径一致：优先 totalTokens，否则 input+output+cacheRead。 */
-export function usageTokens(usage: any): number {
-  if (!usage) return 0;
-  if (Number.isFinite(usage.totalTokens)) return Number(usage.totalTokens);
-  return (Number(usage.input) || 0) + (Number(usage.output) || 0) + (Number(usage.cacheRead) || 0);
-}
+/** 与任务预算同一个口径：优先 totalTokens，否则 input+output+cacheRead。 */
+export const usageTokens = (usage: any): number => Number(spentTokens(usage)) || 0;
 
 export function usageCost(usage: any): number {
   const total = Number(usage?.cost?.total);
