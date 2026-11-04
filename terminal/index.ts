@@ -3,8 +3,9 @@ import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { Type } from '@earendil-works/pi-ai';
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { Desk, fit, historyLines } from './desk.ts';
 import { playSplash } from './splash.ts';
@@ -34,6 +35,7 @@ import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
 import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
+import { assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
@@ -867,7 +869,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','值守规则',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','值守规则':'watch-rules',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -895,7 +897,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['值守规则','watch-rules'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -949,6 +951,35 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  if(action.kind==='crew'){await crewForm(local,action.id);ui.notify(`成员配置已更新 · ${config.agents.length} 位成员`);return;}
+ // 值守规则：人类可编辑。开关与规则放在一起，因为"开启但规则为空"这件事
+ // 本身需要被看见——那等于开了监听却什么都不抓。
+ if(action.kind==='watch-rules'){
+  config.watch ??= { enabled: false, rules: [] };
+  const rules=config.watch.rules?.length?config.watch.rules:DEFAULT_WATCH_RULES;
+  const header=`值守 · ${config.watch.enabled?'已开启':'已关闭'} · ${rules.length} 条规则`;
+  const choice=await ui.select(header,['开启 / 关闭监听','查看规则','清除候选记录','返回']);
+  if(choice==='开启 / 关闭监听'){
+   config.watch.enabled=!config.watch.enabled;
+   if(!config.watch.rules?.length)config.watch.rules=rules;
+   save();
+   ui.notify(config.watch.enabled
+    ?`值守已开启 · ${rules.length} 条规则 · 严格档只记录，代理档会按规则自动派发只读核对`
+    :'值守已关闭。候选记录保留，可随时回看。','info');
+   return;
+  }
+  if(choice==='查看规则'){
+   // 规则内容是给人读的，用 notify 直接展开；再弹一个只有"返回"的选择框只是多一次按键。
+   const lines=rules.map((rule:any)=>`${rule.id} → ${rule.agent||'（未指派）'}\n  ${rule.intent}\n  抓：${[...(rule.extensions||[]),...(rule.pathIncludes||[])].join(' ')||'任意'} · 冷却 ${Math.round((rule.cooldownMs||0)/1000)}s`);
+   ui.notify(lines.join('\n\n')||'没有规则；开启监听时会使用默认规则。','info');
+   return;
+  }
+  if(choice==='清除候选记录'){
+   const removed=watchCandidates.clear();
+   ui.notify(`已清除 ${removed} 条值守候选记录`,'info');
+   return;
+  }
+  return;
+ }
  // 档案文件是给人改的接口：改完由人显式导回，冲突当场看得见。
  // 不做"文件变了就自动生效"——那会让一次手滑直接改变正在运行的编制。
  if(action.kind==='profiles-import'){
@@ -1009,19 +1040,46 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
   spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{try{const rep=pool.tasks.find(t=>t.id===taskId);if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,request.skills?Array.from(READ_ONLY_TOOLS):Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});return{ok:true};}catch(error){return{ok:false,reason:clean(error)};}}});
   spawnPoller.start(()=>pool.tasks.filter(t=>!terminalStates.has(t.status||'')).map(t=>t.id),ctx.cwd);
-  // 事件驱动值守（观察期）：命中规则只记候选，绝不派任务。
+  // 事件驱动值守：M1 只记录候选，M2 在 proxy 档 + 语义评估通过时才自动派发。
   // 关闭是默认——监听器在没人看的时候自己开任务，是这一层最危险的可能。
   if(config.watch?.enabled){
    const {usable}=validRules(config.watch.rules?.length?config.watch.rules:DEFAULT_WATCH_RULES);
    const rules=usable;
+   const rateWindow={stamps:[] as number[]};
    watcher=new DirectoryWatcher(config.watch.roots?.length?config.watch.roots:[ctx.cwd],{
     intervalMs:1500,maxDepth:2,
     onEvent:(path,kind)=>{
      const hit=matchRule(path,kind,rules);
      if(!hit)return;
-     // 只记录。observeOnly 恒为 true——这一阶段的产物是一张给人看的表。
      const recorded=watchCandidates.record({ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,cooldownMs:hit.rule.cooldownMs});
-     if(recorded&&desk){desk.notice=`值守观察：${describeCandidate({id:'',at:Date.now(),ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,observeOnly:true})}`;scheduleRepaint();}
+     if(!recorded)return;
+     const candidate={id:'',at:Date.now(),ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,observeOnly:true as const};
+     // 严格/只读档到此为止：候选进表，等人来看。
+     const policy=currentPolicy();
+     if(policy!=='proxy'){
+      if(desk){desk.notice=`值守观察：${describeCandidate(candidate)}`;scheduleRepaint();}
+      return;
+     }
+     // proxy 档：先做语义评估，再由闸门决定是否花钱。
+     void (async()=>{
+      let text='';
+      try{text=await readFile(path,'utf8');}catch{/* 读不到就按"没有内容"评估，闸门会据此决定 */}
+      let verdict:any;
+      try{verdict=parseAssessment(await minimalCompletion(assessmentPrompt(candidate,text)));}
+      catch{/* 评估失败按"保留候选"处理，闸门会记录而非派发 */}
+      const crew=config.agents.find(agent=>agent.name===candidate.agent||agent.id===candidate.agent);
+      const decision=gate({candidate,policy,assessment:verdict,assignable:Boolean(crew)});
+      if(decision.action!=='auto'){if(desk){desk.notice=`值守：${describeCandidate(candidate)} · ${decision.reason}`;scheduleRepaint();}return;}
+      if(!canAutoDispatch(rateWindow)){
+       // 超出频率上限本身就是值得人知道的事实：规则可能太宽。
+       if(desk){desk.urgent(`值守自动派发已达每分钟上限 · ${basename(path)} 改为记录待人工处理`);scheduleRepaint();}
+       return;
+      }
+      try{
+       pool.launch({...crew!},dispatchInstruction(candidate,text),ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),['read'],[],false,0,undefined,config.budget?.perTaskTokens,{purpose:'watch'});
+       if(desk){desk.notice=`值守自动派发 · ${candidate.agent} 核对 ${basename(path)}`;scheduleRepaint();}
+      }catch(error){if(desk){desk.urgent('值守自动派发失败：'+clean(error));scheduleRepaint();}}
+     })();
     },
    });
    watcher.start();

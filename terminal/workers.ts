@@ -6,11 +6,12 @@ import type { ChildProcess } from 'node:child_process';
 import { root, type Crew } from './store.ts';
 import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
+import { canRepresent } from './watch-purpose.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration'; groupId?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean };
+export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' | 'watch'; groupId?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean };
 export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
@@ -581,7 +582,11 @@ export class WorkerPool {
   if (parentTask && seconds > Math.max(1, Math.floor(parentTask.limit / 2))) throw Error(`Copied task deadline cannot exceed half of parent task (${Math.floor(parentTask.limit / 2)} seconds)`);
   if (!instruction.trim()) throw Error('Task goal is empty');
   if (this.queued.size >= 1000) throw Error('Worker queue is full');
-  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], delegationDepth === 0, undefined, metadata.cliGrants);
+  // 代表额外持有派生与裁决工具：它要对自己的僚属负责，包括分派与裁决。
+  // 例外：值守自动派发的任务（purpose=watch）没有人类在场，
+  // 给它派生权等于让一条误触发的规则自行繁殖出一整棵任务树。
+  const canSpawn = canRepresent(delegationDepth, metadata);
+  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], canSpawn, undefined, metadata.cliGrants);
   const snapshotBase = { name: crew.name, role: crew.role, roleKey: crew.roleKey, model: profile.model, provider: profile.provider, tools: [...profile.tools], skills: [...profile.skills], mcp: profile.mcp };
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
