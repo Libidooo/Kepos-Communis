@@ -1,10 +1,19 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderGraph, renderCouncilList, councilTasks } from '../dist/terminal/graph-view.js';
-import { Desk } from '../dist/terminal/desk.js';
+
+
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { stripVTControlCharacters } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+// Desk 构造时会保存草稿，草稿写进配置库。没有隔离就会把本文件的夹具代表
+// 写进真实配置——这已经发生过多次，表现为一个叫 A 的空代表长期留在编制里。
+process.env.ORBITAL_HOME = mkdtempSync(join(tmpdir(), 'kepos-graph-view-home-'));
+// 静态 import 会被提升到 env 赋值之前，所以这里必须动态导入。
+const { renderGraph, renderCouncilList, councilTasks } = await import('../dist/terminal/graph-view.js');
+const { Desk } = await import('../dist/terminal/desk.js');
 
 const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
