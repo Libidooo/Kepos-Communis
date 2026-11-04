@@ -45,6 +45,11 @@ export interface Config {
    * 要等一张候选表被人看过一段时间，才谈自动执行。
    */
   watch?: { enabled: boolean; roots?: string[]; rules?: import('./watch.ts').WatchRule[] };
+  /**
+   * 静默预检：拿到 bug 报告后先并行试着复现，只有确认可复现才打扰人。
+   * 默认关闭——它会自动开三席并行任务，属于会花钱的能力。
+   */
+  precheck?: { enabled: boolean; agents?: string[] };
 }
 
 export type CliAllowEntry = {

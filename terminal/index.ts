@@ -36,6 +36,7 @@ import { adoptProposal, discardProposal, listProposals, writeProposal } from './
 import { collectMetrics, formatMetrics } from './kpi.ts';
 import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
 import { assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
+import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
@@ -126,6 +127,55 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const briefingStore=new BriefingStore(db());
  // 事件驱动值守的候选表：观察期只记录，不执行。
  const watchCandidates=new WatchCandidates(db());
+ // 静默预检的判定记录：同一条报告只跑一次三席并行。
+ const precheckStore=new PrecheckStore(db());
+ /**
+  * 静默预检：一条 bug 报告进来，先派几名代表从不同角度试着复现。
+  * 只有真的复现出来才打扰人——这是 M3 的全部意义。
+  *
+  * 为什么值得：报告里大多数是"复现不了"或"描述不够"，
+  * 让人自己分辨这些会把注意力耗在分诊上。而并行复现正是 Kepos 的结构优势：
+  * 单 Worker 只能串行试三个角度，代价高到不值得为此静默。
+  */
+ const runPrecheck=async(report:string,ctx:any)=>{
+  const usable=precheckable(report);
+  if(!usable.ok){if(desk)desk.notice=`未预检：${usable.reason}`;return;}
+  const previous=precheckStore.find(report);
+  if(previous){if(desk)desk.notice=`这条报告已预检过（${previous.verdict}）：${previous.summary}`;return;}
+  // 代表选择：优先配置指定的，否则按角度顺序取已配置的前几个。
+  const wanted=config.precheck?.agents?.length
+   ?config.precheck.agents.map(name=>config.agents.find(agent=>agent.name===name||agent.id===name)).filter(Boolean)
+   :config.agents.slice(0,DEFAULT_PRECHECK_AGENTS);
+  if(!wanted.length){if(desk)desk.notice='未预检：没有可用的代表';return;}
+  if(desk)desk.notice=`静默预检中：${wanted.length} 名代表并行尝试复现…`;scheduleRepaint();
+  const parent=ctx.sessionManager.getSessionId();
+  const sessionFile=ctx.sessionManager.getSessionFile()||'';
+  // 并行派发：每个角度一个只读任务，预算与时限都压得很低——
+  // 预检本身必须便宜，否则它比 bug 还贵。
+  const attempts=await Promise.all(wanted.map(async(crew:any,index:number)=>{
+   const angle=PRECHECK_ANGLES[index%PRECHECK_ANGLES.length];
+   try{
+    const task=await pool.run(crew,reproduceInstruction({report,angle:angle.angle,index}),ctx.cwd,sessionFile,PRECHECK_SECONDS,undefined,parent,['read'],[],false,0,undefined,PRECHECK_BUDGET_TOKENS,{purpose:'watch'});
+    return parseReproduction(crew.name,String(task.output||''));
+   }catch(error){
+    // 一位代表失败不该让整次预检作废：记成 unclear，其余角度仍有意义。
+    return {agent:crew.name,state:'unclear' as const,evidence:'',reason:'预检任务失败：'+clean(error)};
+   }
+  }));
+  const result=aggregateReproductions(attempts);
+  precheckStore.record({report,result,attempts:attempts.length});
+  const outcome={result,attempts};
+  // 只有 reproduced 走紧急通道。refuted 与 inconclusive 用普通通知：
+  // 它们要的是"回复报告者"，不是"打断现在的你"。
+  if(shouldInterrupt(result)){
+   if(process.stdout.isTTY)process.stdout.write('\x07');
+   desk?.urgent(`预检确认可复现 · ${result.summary}`);
+  }else if(desk)desk.notice=`预检：${result.summary}`;
+  // 完整记录交给总理——它是这条报告的处置人。
+  void pi.sendUserMessage(precheckReport({report,result,attempts}),{deliverAs:'steer'});
+  scheduleRepaint();
+  return outcome;
+ };
  // ── 代表改道后的两段式上报 ─────────────────────────────────────────────
  // 上级判定只有这一处：有代理总代就是总代，否则是总理。
  const superiorOf=():{name:string;role:'deputy'|'premier'}=>{
@@ -623,6 +673,12 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  pi.registerTool({name:'kepos_roles',label:'查看 Council 角色目录',description:'返回预设代表角色的短索引，支持按政策、发表、代码、学术等领域筛选。主 Agent 可先用它选择 roleKey，再用 kepos_delegate 快速创建代表。',parameters:Type.Object({domain:Type.Optional(Type.String({maxLength:40})),query:Type.Optional(Type.String({maxLength:100}))}),async execute(_id,params){
   const roles=roleCatalog(params);
   return{content:[{type:'text',text:boundedJson({roles,usage:'将 key 传给 kepos_delegate.tasks[].roleKey；如需 Skill，再用 kepos_skills 验证后显式传入。'})}],details:{count:roles.length}};
+ }});
+ pi.registerTool({name:'kepos_precheck',label:'静默预检',description:'拿到 bug 报告时先并行试着复现，只有确认可复现才打断人。派几名只读代表从不同角度（测试 / 源码 / 运行行为）各试一次；结论分「已复现 / 未能复现 / 无法判断」三种，后两种不打扰人但都会留记录。同一份报告只预检一次。开销：每席 12 万 token、4 分钟上限。',parameters:Type.Object({report:Type.String({maxLength:4000,description:'要预检的问题描述：现象、触发步骤、环境'})}),async execute(_id,params,_signal,_update,ctx){
+  if(!config.precheck?.enabled)throw Error('静默预检未开启。它会自动并行开几席只读任务，属于会花钱的能力，需要人类先在配置里开启。');
+  const outcome=await runPrecheck(params.report,ctx);
+  if(!outcome)return{content:[{type:'text',text:'未执行预检（报告不满足条件或已预检过）'}],details:undefined};
+  return{content:[{type:'text',text:precheckReport({report:params.report,result:outcome.result,attempts:outcome.attempts})}],details:outcome.result};
  }});
  pi.registerTool({name:'kepos_metrics',label:'运行度量',description:'只读指标：重复委派、二次追问、提前完成、Watchdog 误报、记忆质量。每项都给出分子/分母与口径说明；样本不足时明说，不返回 0% 假装健康。用于验证优化是否真的生效，不要凭感觉判断。',parameters:Type.Object({metric:Type.Optional(Type.String({maxLength:40,description:'只取一项：duplicate_delegation / second_ask / premature_done / watchdog / memory；缺省全部'}))}),async execute(_id,params){
   const results=collectMetrics(db(),params.metric);

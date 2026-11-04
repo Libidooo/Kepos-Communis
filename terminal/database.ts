@@ -80,6 +80,17 @@ export class KeposDatabase {
    );
    CREATE INDEX IF NOT EXISTS idx_watch_recent ON watch_candidates(at DESC);
    CREATE INDEX IF NOT EXISTS idx_watch_cooldown ON watch_candidates(rule_id,path,at);
+   -- 静默预检记录：同一条报告只预检一次。
+   -- 没有这张表，重复的报告会反复开三席——最贵的重复劳动。
+   CREATE TABLE IF NOT EXISTS precheck_runs(
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    fingerprint TEXT NOT NULL,
+    verdict TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    attempts INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_precheck_finger ON precheck_runs(fingerprint,at);
    PRAGMA user_version=1;
   `);});
   } catch(error) { this.sql.close(); throw error; }
