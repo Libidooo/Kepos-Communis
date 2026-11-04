@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {mkdtempSync, existsSync, readFileSync, writeFileSync, readdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+process.env.ORBITAL_HOME=mkdtempSync(join(tmpdir(),'kepos-pf-home-'));
 const {
   renderProfile, parseProfile, summarizeRole, profileFileName,
   syncProfiles, readProfiles, profilesRoot,

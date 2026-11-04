@@ -1,5 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtempSync} from 'node:fs';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+// 数据根必须隔离：worker 测试会开真实数据库。
+process.env.ORBITAL_HOME=mkdtempSync(join(tmpdir(),'kepos-assess-home-'));
 const {
   assessmentPrompt, parseAssessment, gate, canAutoDispatch, dispatchInstruction,
   WATCH_DISPATCH_HEADER, AUTO_DISPATCH_PER_MINUTE, MAX_ASSESS_CHARS,

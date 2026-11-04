@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import {mkdtempSync, writeFileSync, mkdirSync, rmSync, utimesSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
+// 数据根必须隔离：否则 new KeposDatabase() 会落到真实库，把测试夹具写进用户配置。
+process.env.ORBITAL_HOME=mkdtempSync(join(tmpdir(),'kepos-watch-home-'));
 const {KeposDatabase}=await import('../dist/terminal/database.js');
 const {
   matchRule, isExcludedPath, WatchCandidates, DirectoryWatcher, describeCandidate,
