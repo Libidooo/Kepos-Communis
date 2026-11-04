@@ -25,7 +25,8 @@
     "benchmark:render": "npm run build && node scripts/benchmark.mjs",
     "test:package": "npm run build && node scripts/verify-pack.mjs",
     "audit:public": "node scripts/audit-public.mjs",
-    "test:terminal:profiles": "python conpty-test.py --smoke --sdk --profiles"
+    "test:terminal:profiles": "python conpty-test.py --smoke --sdk --profiles",
+    "test:terminal:v04": "python conpty-test.py --smoke --v04"
   },
   "type": "module",
   "license": "MIT",

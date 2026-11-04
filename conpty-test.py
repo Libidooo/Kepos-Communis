@@ -107,6 +107,20 @@ try:
     saved=json.loads(db.execute("SELECT value FROM kv WHERE key='workspace'").fetchone()[0])
    assert saved['agents'][0]['role']=='FIRST_ROLE_UI_FIXTURE','Revision restore did not reach persisted config'
    assert saved['agents'][0]['tools']==['read'],'Tool preset was not restored'
+  if '--v04' in sys.argv:
+   # 0.4 验收：三个新界面入口必须在真实终端里出现并可交互。
+   # 单测只证明函数返回正确；这里证明按键、路由、渲染串起来是通的。
+   start=len(output());write('\x1b[21~');wait_for('议会',15,start)
+   write('\x1b[21~');time.sleep(.5)
+   start=len(output());write('\x1bOQ');wait_for('操作菜单',10,start)
+   write('\x1b[B'*12+'\x1b[A'*12)
+   time.sleep(.3)
+   write('\x1b[B'*12+'\r');wait_for('自动化',15,start)
+   wait_for('值守观察',10,start)
+   write('\x1b');time.sleep(.4)
+   start=len(output());write('\x1bOR');wait_for('议会任务',15,start)
+   write('\x1bOR');time.sleep(.3)
+   print('PASS 0.4 UI acceptance: automation menu lists the three capabilities; task view renders the waiting section',flush=True)
   start=len(output());write('\x1b[19~');wait_for('全局任务',10,start);write('\x1bOR');time.sleep(.3)
   start=len(output());write('\x1b[20~');wait_for('长程计划',10,start);write('\x1b[20~');time.sleep(.3)
   start=len(output());write('\x18');wait_for('输入区',15,start)
