@@ -166,28 +166,35 @@ export function saveConfig(config: Config): void {
     Object.assign(config, merged);
   });
   remember(config);
-  exportProfiles(config);
+  // previous 是这次保存前的快照：代表没变就不碰磁盘（草稿保存走的是同一条路径）。
+  exportProfiles(config, previous.agents);
 }
 
 /**
  * 配置保存后同步导出档案文件。
  *
- * 放在 saveConfig 之后而不是之内：这段是"给人看/给人改"的视图，
- * 写文件失败不该让一次配置保存失败。反过来，任何绕过 saveConfig 的路径
- * 也就不会产生档案文件——这正是我们要的（唯一的写入入口）。
+ * 两个约束来自实测教训：
+ *
+ * 1. **只在代表真的变了时导出。** saveConfig 在输入框里每 250ms 被调用一次
+ *    （草稿自动保存），把磁盘扫描挂在这条路径上等于每敲一个字都重扫并重写
+ *    所有项目目录。档案是给人读的视图，不值得这种开销。
+ *
+ * 2. **只导出当前工作区。** 之前遍历 config.projects 并往每个目录写 AGENTS.md，
+ *    结果测试夹具把假代表写进了真实仓库根。配置属于整个工作区集合，
+ *    但档案文件属于"你现在在的项目"，不该由保存动作往别人的目录里塞文件。
  */
-function exportProfiles(config: Config): void {
-  // 只导出当前工作区的代表档案：.kepos 属于项目，不跨项目混放。
-  for (const cwd of new Set([process.cwd(), ...(config.projects || [])])) {
-    try {
-      const archiveRoot = join(cwd, ARCHIVE_DIR);
-      syncAgentsFile(cwd, { members: config.agents.map(agent => ({ name: agent.name, roleKey: agent.roleKey, model: agent.model })), archiveDir: ARCHIVE_DIR });
-      // 档案目录只在已经存在归档区、或真有代表时才建立，避免空项目被塞进 .kepos。
-      if (!config.agents.length && !existsSync(archiveRoot)) continue;
-      syncProfiles(archiveRoot, config.agents);
-    } catch {
-      // 导出是尽力而为：只读目录、磁盘满都不该影响配置保存本身。
-    }
+function exportProfiles(config: Config, previous: readonly Crew[]): void {
+  // 代表名单或其内容没变：草稿、折叠状态、主题之类的高频保存直接跳过。
+  if (same(previous, config.agents)) return;
+  const cwd = process.cwd();
+  try {
+    syncAgentsFile(cwd, { members: config.agents.map(agent => ({ name: agent.name, roleKey: agent.roleKey, model: agent.model })), archiveDir: ARCHIVE_DIR });
+    // 档案目录只在已经存在归档区、或真有代表时才建立，避免空项目被塞进 .kepos。
+    const archiveRoot = join(cwd, ARCHIVE_DIR);
+    if (!config.agents.length && !existsSync(archiveRoot)) return;
+    syncProfiles(archiveRoot, config.agents);
+  } catch {
+    // 导出是尽力而为：只读目录、磁盘满都不该影响配置保存本身。
   }
 }
 

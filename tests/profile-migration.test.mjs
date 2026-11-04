@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {mkdtempSync, existsSync, readFileSync, writeFileSync, mkdirSync} from 'node:fs';
+import {mkdtempSync, existsSync, readFileSync, writeFileSync, statSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 
@@ -144,3 +144,36 @@ test('an unconfigured workspace does not scatter .kepos directories',()=>{
 });
 
 test.after(()=>{process.chdir(home);});
+
+// 回归：草稿自动保存每 250ms 调一次 saveConfig。档案导出挂在这条热路径上
+// 会导致每敲一个字就重扫并重写磁盘——这是实测踩到的。
+test('saving a draft does not touch profile files',()=>{
+  const setup=loadConfig();
+  setup.agents=[crew('a1','审查官')];
+  saveConfig(setup);
+  const dir=profilesRoot(join(workspace,'.kepos'));
+  const file=join(dir,'a1.md');
+  const before=readFileSync(file,'utf8');
+  const mtime=statSync(file).mtimeMs;
+  // 模拟打字：只改草稿，代表不动。
+  for(let n=0;n<5;n++){
+    const current=loadConfig();
+    current.drafts['draft:test']='打'.repeat(n+1);
+    saveConfig(current);
+  }
+  assert.equal(readFileSync(file,'utf8'),before,'profile content untouched');
+  const after=statSync(file).mtimeMs;
+  assert.equal(after,mtime,'the file is not even rewritten');
+});
+
+// 回归：曾经遍历 config.projects 往每个项目根写 AGENTS.md，
+// 于是测试夹具把假代表写进了真实仓库。档案只属于当前工作区。
+test('export never writes into other projects',()=>{
+  const other=mkdtempSync(join(tmpdir(),'kepos-c1-other-'));
+  const setup=loadConfig();
+  setup.projects=[other];
+  setup.agents=[crew('a1','审查官')];
+  saveConfig(setup);
+  assert.equal(existsSync(join(other,AGENTS_FILE)),false,'no AGENTS.md in an unrelated project');
+  assert.equal(existsSync(join(other,'.kepos',PROFILES_DIR)),false,'no profiles directory either');
+});
