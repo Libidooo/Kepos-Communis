@@ -4,6 +4,8 @@ import { dirname, join, resolve } from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { db } from './database.ts';
 import { root } from './paths.ts';
+import { ARCHIVE_DIR } from './archive.ts';
+import { readProfiles, syncAgentsFile, syncProfiles } from './profile-file.ts';
 import { ProfileHistory, type AgentProfile } from './profiles.ts';
 export { root, sessionRoot } from './paths.ts';
 
@@ -158,10 +160,32 @@ export function saveConfig(config: Config): void {
     Object.assign(config, merged);
   });
   remember(config);
+  exportProfiles(config);
 }
 
-export function restoreProfile(config: Config, agentId: string, revision: string): Crew {
-  const member = config.agents.find(agent => agent.id === agentId);
+/**
+ * 配置保存后同步导出档案文件。
+ *
+ * 放在 saveConfig 之后而不是之内：这段是"给人看/给人改"的视图，
+ * 写文件失败不该让一次配置保存失败。反过来，任何绕过 saveConfig 的路径
+ * 也就不会产生档案文件——这正是我们要的（唯一的写入入口）。
+ */
+function exportProfiles(config: Config): void {
+  // 只导出当前工作区的代表档案：.kepos 属于项目，不跨项目混放。
+  for (const cwd of new Set([process.cwd(), ...(config.projects || [])])) {
+    try {
+      const archiveRoot = join(cwd, ARCHIVE_DIR);
+      syncAgentsFile(cwd, { members: config.agents.map(agent => ({ name: agent.name, roleKey: agent.roleKey, model: agent.model })), archiveDir: ARCHIVE_DIR });
+      // 档案目录只在已经存在归档区、或真有代表时才建立，避免空项目被塞进 .kepos。
+      if (!config.agents.length && !existsSync(archiveRoot)) continue;
+      syncProfiles(archiveRoot, config.agents);
+    } catch {
+      // 导出是尽力而为：只读目录、磁盘满都不该影响配置保存本身。
+    }
+  }
+}
+
+export function restoreProfile(config: Config, agentId: string, revision: string): Crew {  const member = config.agents.find(agent => agent.id === agentId);
   const saved = profileHistory().get(agentId, revision);
   if (!member || !saved) throw Error('Unknown profile revision');
   if (config.agents.some(agent => agent.id !== agentId && agent.name === saved.profile.name)) {
@@ -191,4 +215,51 @@ export function createSessionFile(cwd: string, name: string, sessionDir?: string
     writeFileSync(file, records.map(record => JSON.stringify(record)).join('\n') + '\n', { flag: 'wx' });
   }
   return file;
+}
+
+export type ProfileImportReport = {
+  /** 实际改变的成员（按稳定 id 匹配）。 */
+  updated: string[];
+  /** 文件里有、配置里没有的 id：不自动新建，交给人决定。 */
+  unknown: string[];
+  /** 解析失败的文件与原因——不能静默丢弃，否则"改了没生效"最难查。 */
+  errors: Array<{ file: string; error: string }>;
+};
+
+/**
+ * 把档案目录里的手改结果导入配置。
+ *
+ * 三条克制：
+ *   1. 只更新已存在的 id，不凭一个 md 文件新开代表——那等于让文件系统决定编制。
+ *   2. 名称冲突整体拒绝：两份档案同名会让所有按名派发的逻辑失去确定答案。
+ *   3. 全部校验通过再一次写入：坏文件不能造成"改了一半"的配置。
+ */
+export function importProfiles(config: Config, cwd: string): ProfileImportReport {
+  const report: ProfileImportReport = { updated: [], unknown: [], errors: [] };
+  const archiveRoot = join(cwd, ARCHIVE_DIR);
+  const read = readProfiles(archiveRoot);
+  report.errors.push(...read.errors);
+  if (!read.profiles.length) return report;
+
+  // 先做全部校验，再一次性落盘。
+  const candidates: Array<{ member: Crew; file: AgentProfile }> = [];
+  for (const file of read.profiles) {
+    const member = config.agents.find(agent => agent.id === file.id);
+    if (!member) { report.unknown.push(file.id); continue; }
+    candidates.push({ member, file });
+  }
+  // 导入后的最终名单用于查重：不能只看新值之间是否冲突，还要看与未导入的成员是否冲突。
+  const finalNames = new Map(config.agents.map(agent => [agent.id, agent.name]));
+  for (const { member, file } of candidates) finalNames.set(member.id, file.name);
+  const clash = [...finalNames.values()].filter((name, index, all) => all.indexOf(name) !== index);
+  if (clash.length) throw Error(`导入后出现重名代表：${[...new Set(clash)].join('、')}；请先在档案里改名`);
+
+  for (const { member, file } of candidates) {
+    // 整份替换：档案里省略的可选字段必须消失，不能残留在旧配置里。
+    for (const key of ['roleKey', 'tools', 'skills', 'readScope', 'readAllow', 'mcpServers'] as const) delete (member as any)[key];
+    Object.assign(member, file);
+    report.updated.push(member.name);
+  }
+  if (report.updated.length) saveConfig(config);
+  return report;
 }

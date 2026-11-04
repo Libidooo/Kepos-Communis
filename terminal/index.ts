@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { Desk, fit, historyLines } from './desk.ts';
 import { playSplash } from './splash.ts';
-import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, profileHistory, restoreProfile, type Crew } from './store.ts';
+import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, profileHistory, restoreProfile, importProfiles, type Crew } from './store.ts';
 import { keposSessionStore } from './session-store.ts';
 import { db } from './database.ts';
 import { ownedUI } from './dialogs.ts';
@@ -864,7 +864,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -892,7 +892,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -946,6 +946,19 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  if(action.kind==='crew'){await crewForm(local,action.id);ui.notify(`成员配置已更新 · ${config.agents.length} 位成员`);return;}
+ // 档案文件是给人改的接口：改完由人显式导回，冲突当场看得见。
+ // 不做"文件变了就自动生效"——那会让一次手滑直接改变正在运行的编制。
+ if(action.kind==='profiles-import'){
+  let report:any;
+  try{report=importProfiles(config,ctx.cwd);}catch(error){ui.notify(clean(error),'warning');return;}
+  refreshSupervisionPrompt();save();
+  const lines=[`已导入 ${report.updated.length} 位代表的档案`,...report.updated.map((name:string)=>`· ${name}`)];
+  if(report.unknown.length)lines.push(`文件里这些 id 不在配置中，未新建：${report.unknown.join('、')}`);
+  if(report.errors.length)lines.push(`有 ${report.errors.length} 个文件没能读取：`,...report.errors.map((item:any)=>`· ${item.file}：${item.error}`));
+  if(!report.updated.length&&!report.errors.length)lines.push('没有可导入的变化。');
+  ui.notify(lines.join('\n'),report.errors.length?'warning':'info');
+  return;
+ }
  if(action.kind==='editcrew'){const choice=await ui.select('编辑成员',config.agents.map(a=>a.name));const crew=config.agents.find(a=>a.name===choice);if(crew)await crewForm(local,crew.id);return;}
  if(action.kind==='deputy'){
   // 代理总代是兼任职务：人类从现任代表中推选，不新增席位、不改该代表的职责与模型。
