@@ -192,18 +192,28 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const createLinkedSession=(ctx:any,cwd:string,title:string)=>{const piPath=createSessionFile(cwd,title,sessionDir(ctx));const logical=keposSessionStore.createSession({cwd,title,piSessionFile:piPath});config.sessionLinks[piPath]=logical.logicalSessionId;save();return piPath;};
  const repaint=()=>desk?.refresh();const scheduleRepaint=()=>{if(repaintTimer)return;repaintTimer=setTimeout(()=>{repaintTimer=undefined;repaint();},75);};pool.change=scheduleRepaint;
  let unsubscribePool:()=>void=()=>{};let unsubscribeMissions:()=>void=()=>{};
- const bindPool=()=>{unsubscribePool();unsubscribeMissions();unsubscribeMissions=scheduler.subscribe(event=>{if(!desk)return;if(event.state==='NEEDS_HUMAN'&&process.stdout.isTTY)process.stdout.write('\x07');if(['NEEDS_HUMAN','SUCCEEDED','FAILED'].includes(event.state)){const text=`${event.state==='NEEDS_HUMAN'?'需要人类处理':'计划状态更新'}：${event.goal} · ${event.cwd} · F9查看`;if(event.state==='NEEDS_HUMAN')desk.urgent(text);else desk.notice=text;desk.refresh();}});unsubscribePool=pool.subscribe(event=>{
+ const bindPool=()=>{unsubscribePool();unsubscribeMissions();unsubscribeMissions=scheduler.subscribe(event=>{
+  // 门禁提醒的铃声不依赖界面：计划在后台进入待审批时，人该被叫醒。
+  if(event.state==='NEEDS_HUMAN'&&process.stdout.isTTY)process.stdout.write('\x07');
+  if(!desk)return;
+  if(['NEEDS_HUMAN','SUCCEEDED','FAILED'].includes(event.state)){const text=`${event.state==='NEEDS_HUMAN'?'需要人类处理':'计划状态更新'}：${event.goal} · ${event.cwd} · F9查看`;if(event.state==='NEEDS_HUMAN')desk.urgent(text);else desk.notice=text;desk.refresh();}});unsubscribePool=pool.subscribe(event=>{
+  // ── 后台记账：不依赖界面是否打开 ──────────────────────────────────────
+  // 书案关掉后任务仍在跑。这三件事都是关于任务的事实，不是界面装饰：
+  // 改道结论的补报、记忆整理、watchdog 判定。放在 `if(!desk)` 之后，
+  // 等于"人一关面板，代表的经验就不再沉淀、上级也收不到结论"。
+  if(event.type==='task_review_due')void judgeReview(event.task);
+  if(event.type==='task_finished'){
+   flushUpward(event.task);
+   const candidate=candidateFromTask(event.task as any);
+   if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}
+  }
   if(!desk)return;
   if(event.type!=='task_progress')desk.invalidate();
   if(event.task.cwd===desk.ctx.cwd&&event.task.parentSessionId===desk.ctx.sessionManager.getSessionId()){
    // 失败类终态与要求人类介入的事件必须"听得见"：此前失败只留一条 4 秒 notice，
    // 委派秒败时用户毫无感知（报错无阻拦）。错误原因带进 notice，不用翻任务详情。
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
-   // 任务终态后入队做记忆整理：只入队不执行，避免在结算路径上做模型调用。
-   if(event.type==='task_finished'){flushUpward(event.task);const candidate=candidateFromTask(event.task as any);if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}}
    const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
-   // 到复核点：先让模型判断"还在推进吗"。这是 observe 阶段，判定结果只提示，不终止。
-   if(event.type==='task_review_due')void judgeReview(event.task);
    if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
    // 僚属失败时把责任归到直属代表：代表对该僚属全权负责，必须由它去修或重派。
    // 主环不显示僚属，所以这条通知是发现问题的唯一入口，必须写明"谁该负责"。
