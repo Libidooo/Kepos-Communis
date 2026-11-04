@@ -36,7 +36,7 @@ import { adoptProposal, discardProposal, listProposals, writeProposal } from './
 import { collectMetrics, formatMetrics } from './kpi.ts';
 import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
 import { AUTO_DISPATCH_PER_MINUTE, assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
-import { AUTOMATION_LABEL, automationAllowed, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
+import { AUTOMATION_LABEL, automationAllowed, automationPrompt, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
 import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -377,13 +377,14 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 未推选时只留一句"不要为它开席位"，否则每轮白烧 400 字符。 ──
   const deputy=deputyName?`Deputy chair governance: the deputy chair is an elected part-time duty, not a representative seat — the human elected ${deputyName}. When a governance decision needs a second opinion (tool and MCP grant approvals, batched reviews), delegate a review task to that member, require its VOTE line, record the round with kepos_vote, then set tasks[].mcp accordingly. When the human changes requirements mid-flight and re-briefing means touching many representatives at once, hand the dispatch work to the deputy chair and keep the judgement and the report to the human yourself — holding 48 re-briefings in your own context crowds out the judgement the human is actually asking for. Never create a seat or a role for the deputy chair.`:'';
   // 人类加急改变需求：重排纪律单列，因为它与"再来一个任务"是相反的次序。
+  const automationState=automationPrompt(policy,config.automation);
   const replan=`When the human changes requirements or goals while work is in flight, the message arrives marked as an urgent human change. Do not treat it as an additional request: first read what is already finished and keep it, then work out which planned steps the change makes unnecessary, then re-plan. Explicitly cancel tasks the change replaced instead of letting them run to completion and discarding the result. Finish by telling the human in one sentence which steps continue, which stopped, and what changed.`;
   // ── 按需：计划门禁与表决只在确实存在长程计划时才注入。 ──
   const hasPlans=(()=>{try{return scheduler.list().length>0;}catch{return false;}})();
   const plans=hasPlans?`A delegate plan longer than ${HUMAN_APPROVAL_THRESHOLD_SECONDS}s must be represented as an kepos_plan step and explicitly approved by a human before dispatch. Use kepos_plan for long dockets with bounded steps and human gates, and kepos_events with a cursor for incremental supervision. When the council must decide, have each delegate end its output with a VOTE: yes|no|abstain - one-line reason, then record the round with kepos_vote including your own recommendation in main, and relay the tally to the human.`:'';
   // 恒定的一句：无论是否推选过，都不该为代理总代创建编制。
   const seatRule='Never create a seat or a role for the deputy chair; it is an elected duty, not a representative seat.';
-  supervisionPrompt=[core,supervision,mcp,deputy,replan,plans,seatRule,config.agents.length?OPENING_STEPS:'',config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
+  supervisionPrompt=[core,supervision,mcp,deputy,replan,automationState,plans,seatRule,config.agents.length?OPENING_STEPS:'',config.agents.length?EFFORT_GUIDE:'',`Crew: ${crew}`].filter(Boolean).join(' ');
  };
  const refreshSupervisionPrompt=()=>assembleSupervisionPrompt();refreshSupervisionPrompt();
  pi.on('before_agent_start',(event)=>{if(!supervisionPrompt)refreshSupervisionPrompt();event.systemPromptOptions.sections.kepos_supervision=supervisionPrompt;});
@@ -679,7 +680,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const roles=roleCatalog(params);
   return{content:[{type:'text',text:boundedJson({roles,usage:'将 key 传给 kepos_delegate.tasks[].roleKey；如需 Skill，再用 kepos_skills 验证后显式传入。'})}],details:{count:roles.length}};
  }});
- pi.registerTool({name:'kepos_precheck',label:'静默预检',description:'拿到 bug 报告时先并行试着复现，只有确认可复现才打断人。派几名只读代表从不同角度（测试 / 源码 / 运行行为）各试一次；结论分「已复现 / 未能复现 / 无法判断」三种，后两种不打扰人但都会留记录。同一份报告只预检一次。开销：每席 12 万 token、4 分钟上限。',parameters:Type.Object({report:Type.String({maxLength:4000,description:'要预检的问题描述：现象、触发步骤、环境'})}),async execute(_id,params,_signal,_update,ctx){
+ pi.registerTool({name:'kepos_precheck',label:'静默预检',description:'【自动化能力 · 需人类开启且处于代理档】拿到 bug 报告时先并行试着复现，只有确认可复现才打断人。派几名只读代表从不同角度（测试 / 源码 / 运行行为）各试一次；结论分「已复现 / 未能复现 / 无法判断」三种，后两种不打扰人但都会留记录。同一份报告只预检一次。开销：每席 12 万 token、4 分钟上限。未开启或被档位停用时调用会报错并说明原因。',parameters:Type.Object({report:Type.String({maxLength:4000,description:'要预检的问题描述：现象、触发步骤、环境'})}),async execute(_id,params,_signal,_update,ctx){
   const outcome=await runPrecheck(params.report,ctx);
   if(!outcome)return{content:[{type:'text',text:'未执行预检（报告不满足条件或已预检过）'}],details:undefined};
   return{content:[{type:'text',text:precheckReport({report:params.report,result:outcome.result,attempts:outcome.attempts})}],details:outcome.result};

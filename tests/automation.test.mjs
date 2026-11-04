@@ -7,7 +7,7 @@ process.env.ORBITAL_HOME=mkdtempSync(join(tmpdir(),'kepos-automation-home-'));
 
 const {
   AUTOMATION_DEFAULTS, AUTOMATION_LABEL, automationAllowed, automationSnapshot,
-  confirmText, dispatchReady, isActingCapability, migrateAutomation, toggleAutomation,
+  confirmText, dispatchReady, isActingCapability, migrateAutomation, toggleAutomation, automationPrompt,
 }=await import('../dist/terminal/automation.js');
 
 const off={};
@@ -128,4 +128,33 @@ test('the labels describe what each capability actually does',()=>{
   // 三项的名称必须互不相同，否则菜单里分不清。
   const names=new Set(Object.values(AUTOMATION_LABEL).map(item=>item.name));
   assert.equal(names.size,3);
+});
+
+// 提示里不该提到用不了的能力：模型会反复尝试然后失败，每次都是真实调用。
+test('the prompt stays silent when nothing is enabled',()=>{
+  assert.equal(automationPrompt('proxy',undefined),'');
+  assert.equal(automationPrompt('proxy',off),'');
+});
+
+test('the prompt names only what is actually usable',()=>{
+  const text=automationPrompt('proxy',{observe:true,precheck:true});
+  assert.match(text,/Automation available: 值守观察, 静默预检/);
+  assert.match(text,/kepos_precheck/);
+  // 没开的派发不能被提到。
+  assert.doesNotMatch(text,/值守自动派发/);
+});
+
+// 被档位暂停的能力要明说"别重试"，否则模型会换种说法再试一遍。
+test('a paused capability says do not retry',()=>{
+  const text=automationPrompt('human',{observe:true,dispatch:true,precheck:true});
+  assert.match(text,/paused/);
+  assert.match(text,/Do not retry/);
+  assert.match(text,/值守自动派发/);
+  // 可用的观察仍然要报出来。
+  assert.match(text,/Automation available: 值守观察/);
+});
+
+test('the precheck hint appears only when precheck is usable',()=>{
+  assert.doesNotMatch(automationPrompt('proxy',{observe:true}),/kepos_precheck/);
+  assert.match(automationPrompt('proxy',{precheck:true}),/kepos_precheck/);
 });

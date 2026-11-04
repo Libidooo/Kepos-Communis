@@ -157,3 +157,25 @@ export function migrateAutomation(legacy: { watch?: { enabled?: boolean; roots?:
   if (precheck?.agents?.length) settings.precheckAgents = precheck.agents;
   return settings;
 }
+
+/**
+ * 给总理的系统提示片段。
+ *
+ * 只在能力真的被配置过时才提——提到一个用不了的能力，模型会反复尝试然后失败，
+ * 而每轮尝试都是真实调用。被档位暂停的能力要明说"别重试、去告诉人"，
+ * 否则它会以为是自己调用方式错了，换个说法再试一遍。
+ */
+export function automationPrompt(policy: ApprovalPolicy, settings: AutomationSettings | undefined): string {
+  const rows = automationSnapshot(policy, settings);
+  const live = rows.filter(row => row.enabled);
+  if (!live.length) return '';
+  const usable = live.filter(row => row.allowed).map(row => row.name);
+  const paused = live.filter(row => !row.allowed).map(row => `${row.name} (${row.reason})`);
+  return [
+    usable.length ? `Automation available: ${usable.join(', ')}.` : '',
+    paused.length ? `Automation configured but paused: ${paused.join('; ')}. Do not retry these; tell the human what would need to change.` : '',
+    usable.includes(AUTOMATION_LABEL.precheck.name)
+      ? 'kepos_precheck takes a bug report and spawns parallel read-only reproductions; only a reproduced verdict interrupts the human.'
+      : '',
+  ].filter(Boolean).join(' ');
+}
