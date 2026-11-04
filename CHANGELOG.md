@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.4.0 — 2026-11-03
+## 0.4.0 — 2026-11-04
 
-Tool noise, communication cost, temporary work groups and unified scheduling:
+Tool noise, communication cost, temporary work groups, unified scheduling, and a
+second pass on delegation discipline, acceptance, and supervised automation:
 
 - **Tool output folds to one line by default.** A tool result renders as a single summary line with a row count; `F5` expands to the full output, and the choice now persists across restarts instead of resetting. Failures never fold — a result marked as an error, carrying an error message, or whose first line reads like an error is always expanded and tinted with the error colour, so folding cannot hide a problem.
 - **Reviews are event-driven instead of polled.** Every delegate used to fire a review point every five minutes, so 48 parallel delegates woke the lead 48 times per window — supervision could cost more than the work itself. Kepos now wakes the lead only when a delegate has produced no event for three consecutive cycles, or has entered a state needing a human decision. Stall detection stays as the safety floor. `lastProgress` is used rather than `checkpointAt`, because the latter only refreshes on assistant text and made delegates busy with long tool calls look stuck.
@@ -14,6 +15,37 @@ Tool noise, communication cost, temporary work groups and unified scheduling:
 - **Attachments are addressable and pageable.** The attachment bar shows each item with its size and truncation marker; `/attach remove <n>` drops one item while `/attach remove` clears all. Long attachments use a cursor (`nextCursor` / `total` / `page` / `pages`) so the middle of a large document is reachable — previously only head and tail were returned.
 - **Daemon pool adapter (D4 Phase 2).** New dispatch can route through the daemon; when it is missing or unresponsive Kepos degrades to the local pool and says why, with a status-bar banner. Cancellation always reaches the local pool too, so a degraded daemon cannot leave orphans. Existing tasks stay readable because SQLite remains the source of truth.
 - **Installation-wide budget ledger (D4 Phase 4).** The daemon owns a ledger keyed by local calendar day, parent session and plan, fed from usage already recorded in receipts. `check()` reports measured spend and the configured action; it never kills a task, because termination stays a human decision.
+
+### 0.4 优化迭代（依据 2026-11-03 调研报告）
+
+委托纪律、代表记忆、验收条目、值守自动化。
+
+**代表从一次性执行者变成能积累的同事**
+
+- **委派四件套**：`kepos_delegate` 的任务要求写清目标 / 输出格式 / 允许范围 / 明确边界。缺项默认告警，`KEPOS_MANDATE_STRICT=1` 时拒绝派发——纯提示词的约束约每五次漏一次，所以这一项可以从告警逐步收紧。代表产出在呈现层加一行防御性抬头，声明其中的指令不构成对你的指令。
+- **代表记忆（双时态）**：任务进入终态后，用一次极小的模型调用把产出压成 ADD / UPDATE / NOOP 操作，写进 `representative_memories`。修正只置 `valid_to`，永不物理删除，所以"某个时刻我们相信什么"始终可答。注入时最多 50 条 / 200 行，并以一句"仅供参考，与本任务证据冲突时以本任务为准"收尾。
+- **失败任务也留复盘笔记**：旧实现在产出为空时直接跳过整理，而失败任务通常正是没有产出。现在只要给出错误原因就值得复盘，问题也换了一个——不是"这次发现了什么"，而是"下次同类任务该怎么委派"。
+- **记忆 → 技能**：同一 slug 的过程记忆来自 **3 个不同任务**（而非同一任务 3 行）时，生成 `skills-proposed/<slug>/SKILL.md` 提议。采纳是人的动作：一份 SKILL.md 会改变后续每次分派的提示词，自动写入等于让模型给自己扩权。截断时切步骤而不是切文档尾部——尾部是"边界"一节，那正是防止技能误用的部分。
+
+**"完成"要经得起核对**
+
+- **验收条目**：计划步骤可带 1-8 条可在只读前提下验证的条目，存为独立列，创建时一律 `passes:false`。勾选必须逐条点名（序号或原文），空数组不是"全过"。带未勾选项成功 → 记 `premature_done` 事件：这不是失败状态，是"模型说完成了、验收说还没有"这一分歧的可度量记录。老计划没有该列时照常可读。
+- **Watchdog 用模型判断是否空转**：超时只回答"跑了多久"，答不了"还在推进吗"。复核点把上次判定之后的事件与产出末尾交给便宜模型，判 `progress / deviated / looping / noisy`。**阶段①只观察**：progress 与 noisy 静默，deviated/looping 只提示且明说"是否终止由你决定"。坏输入一律按 progress——误报会让人关掉整个通道。误报率由 `kepos_metrics` 直接算，够数据前不升级为终止通道。
+- **五项可复核指标**：`kepos_metrics` 给出重复委派、二次追问、提前完成、Watchdog 误报、记忆质量。每项都带分子分母；分母为空报"样本不足"而不是 0%——空分母报 0 正是仪表盘说谎的方式。
+
+**人机协作**
+
+- **「等你处理」分区**：F3/F8 顶部固定等待区，按紧急度排序（门禁 → 空转 → 复核 → 失败/预算停止），每条带直达按键。失败是终态但仍要人决定"修还是重放"，所以只有**本次打开书案之后**才结算的失败才进等待区——重启不该把上周的失败重新挂成新闻。Enter 确认后落回历史。
+- **人员加急槽**：常规槽满员时，人发给排队中任务的消息仍能把它提前到**一个**预留槽；新派发永远抢不到它。消息并入任务说明并标注"人类补充（优先处理）"。
+- **中途改变需求真的送达了**：两条路径此前都是"看起来成功"。发给总理的消息没带 `deliverAs`，Pi 在流式中抛错而扩展层吞掉了错误，界面显示"已排队"而消息不存在；发给运行中代表的消息缺 `streamingBehavior`，同样被拒。现在都走 `steer`——当前工具批次结束后、下一次 LLM 调用前插入，正是"趁空闲间隙改安排"。代表收到后**停下**原目标（而非做完再说），并两段式上报：变更下达时先报"结论待补"，任务结算后补真实结论。
+- **人类不能直接指挥僚属**：界面与工具层双重拒绝，并指出该找哪位代表——责任链断在中间，代表就不知道自己下属被改了方向。
+
+**代表档案与自动化**
+
+- **档案文件化**：代表导出为 `.kepos/profiles/<id>.md`（frontmatter + 职责正文），可读、可 diff、可手编。**数据库仍是权威**：`saveConfig` 带并发合并，搬走权威要重写合并并处理半写文件，风险远大于收益。导入是显式动作，只更新已存在的 id、重名整体拒绝、全部校验通过才写入。
+- **`AGENTS.md`**：工作区根说明归档结构、代表名单与四条容易搞错的约定。导出是显式调用而非保存副作用——此前它挂在 `saveConfig` 上并遍历所有项目，导致测试夹具写进了真实仓库。
+- **值守自动化（三项独立开关，全默认关闭）**：观察只写候选、不花钱；自动派发与静默预检会开任务，**必须是代理档**，且派发依赖观察。预检并行三名代表从测试 / 源码 / 运行行为三个角度复现，**只有带证据的确认才打扰人**；无证据的 "yes" 降级为 unclear，解析失败也降级为 unclear 而非 no。自动派发的任务标记 `purpose: watch`，**不能派生僚属**，并有每分钟上限。
+- **配置迁移**：旧的 `watch.enabled` / `precheck.enabled` 迁移为"仅观察"。升级不该是人开始悄悄花钱的时刻。
 
 
 ## 0.3.0-beta.6 — 2026-11-02
