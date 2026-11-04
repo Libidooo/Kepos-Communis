@@ -49,3 +49,23 @@ test('deputy chair is an elected duty, not a council role seat',()=>{
  // 目录里没有任何角色自称治理审批（那是推选职责，不是岗位）。
  assert.equal(COUNCIL_ROLES.some(role=>/代理总代|Deputy Chair/.test(role.zhName+role.enName)),false);
 });
+
+// B1 规格要求角色提示词带开局三步与收尾纪律。这两条不随角色变化，
+// 所以必须每个角色都有——漏一个就等于那个角色会凭印象继续。
+test('every role prompt carries the opening and closing discipline',async()=>{
+ const {COUNCIL_ROLES,rolePrompt}=await import('../dist/terminal/council-roles/index.js');
+ for(const role of COUNCIL_ROLES){
+  for(const locale of ['zh-CN','en']){
+   const text=rolePrompt(role,locale);
+   if(locale==='zh-CN'){
+    assert.match(text,/开局：先读检查点/,'开局纪律缺失：'+role.key);
+    assert.match(text,/一次只做一项/,'增量纪律缺失：'+role.key);
+    assert.match(text,/收尾：结构化地更新检查点/,'收尾纪律缺失：'+role.key);
+   }else{
+    assert.match(text,/Opening: read the checkpoint/,'opening discipline missing: '+role.key);
+    assert.match(text,/Do one at a time/,'one-at-a-time missing: '+role.key);
+    assert.match(text,/Closing: update the checkpoint structurally/,'closing discipline missing: '+role.key);
+   }
+  }
+ }
+});

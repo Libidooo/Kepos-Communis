@@ -307,6 +307,9 @@ export class MissionScheduler {
             this.event(id, job.key, 'acceptance_checked', { marked, state, unmet: unmetChecks(checks) });
             this.graph.updateNode(id, job.key, job.state as any, { checkpoint: `验收 ${checks.filter(item => item.passes).length}/${checks.length}` });
         });
+        // 勾满之后计划应当自行离开 NEEDS_HUMAN——它先前停在那里唯一的原因就是这些条目。
+        // 不在这里重判，人就得手动再点一次才能让计划收尾。
+        if (state === 'complete' && m.state === 'NEEDS_HUMAN') this.publishState(this.get(id, parent)!);
         return { job: { ...job, acceptance: checks }, marked, state };
     }
     /** 计划内所有步骤的验收勾选进度。没有条目的步骤不计入——"没写验收"不是"通过"。 */
@@ -342,7 +345,13 @@ export class MissionScheduler {
         try {
             const dependencies = job.dependsOn.map(id => m.jobs.find(item => item.id === id)!);
             const context = dependencies.map(dep => `[${dep.id}] ${limitText(dep.output)}`).join('\n\n');
-            const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
+            // 验收条目必须随任务一起交给代表。
+            // 没有这一段，代表完全不知道"完成"的判定标准，交付物就只能靠猜——
+            // 而验收条目存在的意义正是让判定标准离开散文、变成可核对的清单。
+            const acceptance = job.acceptance?.length
+                ? `\n\n## 验收条目（逐条对照，缺一条就不算完成）\n${job.acceptance.map((item, index) => `${index + 1}. ${item.check}`).join('\n')}\n\n交付时在「## 结论」里逐条回应：这一条由什么证据证明成立。没有证据的条目直说没做到，不要含糊带过。`
+                : '';
+            const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}${acceptance}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
             handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false);
             const launched = handle;
             this.liveHandles.set(job.key, launched);
@@ -506,8 +515,21 @@ export class MissionScheduler {
     private publishState(m: MissionRecord) {
         if (terminal.has(m.state) || m.state === 'PAUSED')
             return;
-        if (m.jobs.every(job => job.state === 'SUCCEEDED'))
+        if (m.jobs.every(job => job.state === 'SUCCEEDED')) {
+            // 步骤都跑完了，但验收条目可能没勾满。规格要求"只有全部 passes 才算完成"：
+            // 一个步骤"跑完了"和"做到承诺的事"是两件事，后者才是人真正关心的。
+            // 未勾满时停在 NEEDS_HUMAN——不是失败，是等人确认那几条到底算不算数。
+            const unmet = m.jobs.filter(job => unmetChecks(job.acceptance).length > 0);
+            if (unmet.length) {
+                this.setMission(m, 'NEEDS_HUMAN');
+                this.event(m.id, null, 'acceptance_pending', {
+                    jobs: unmet.map(job => job.id),
+                    unmet: unmet.flatMap(job => unmetChecks(job.acceptance)),
+                });
+                return;
+            }
             this.setMission(m, 'SUCCEEDED');
+        }
         else if (m.jobs.some(job => ['FAILED', 'NEEDS_HUMAN', 'CANCELLED'].includes(job.state)))
             this.setMission(m, 'NEEDS_HUMAN');
     }

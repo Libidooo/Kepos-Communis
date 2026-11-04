@@ -355,3 +355,22 @@ test('the approval mode is always visible in the status bar', () => {
   assert.ok(statusOf().includes('⛨ 严格'), 'missing callback falls back to strict');
   desk.dispose();
 });
+
+// 规格要求书案显示验收进度 ▓▓░░░ 2/5。步骤数不等于验收数，
+// 只显示前者会让 5/5 看起来已完成，而验收可能一条没勾。
+test('the plan console shows acceptance progress beside the step count',()=>{
+  const ctx = { cwd: home, isIdle: () => true, model: undefined, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => [], getEntries: () => [] } };
+  const desk = new Desk({ terminal: { rows: 35 }, requestRender() {} }, { fg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, [], { tasks: [], children: new Map() }, () => {}, () => {});
+  desk.monitor = { tasks: () => [], evidence: () => undefined, plans: () => [
+    { id: 'm1', state: 'NEEDS_HUMAN', goal: '验收未勾满', cwd: home, completed: 2, total: 2, attention: 0, acceptance: { done: 2, total: 5 } },
+    { id: 'm2', state: 'SUCCEEDED', goal: '没有验收条目', cwd: home, completed: 1, total: 1, attention: 0, acceptance: { done: 0, total: 0 } },
+  ] };
+  desk.missionView = true;
+  const frame = desk.render(120).join('\n');
+  assert.ok(frame.includes('2/2 步'), 'step progress still shown');
+  assert.ok(frame.includes('2/5 验收'), 'acceptance progress shown separately');
+  assert.ok(frame.includes('▓▓') && frame.includes('░░░'), 'a bar renders for partial acceptance');
+  // 没有验收条目的计划不该显示 0/0 验空，那只是噪声。
+  assert.ok(!frame.includes('0/0 验收'), 'a plan without acceptance shows no bar');
+  desk.dispose();
+});

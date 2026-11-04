@@ -200,6 +200,12 @@ export class Desk {
    return wrapTextWithAnsi(`模型判定 · ${label}：${clean(note.reason)}`,Math.max(8,this.centerWidth-4));
   });
  }
+ /** 验收进度条：▓ 已勾 / ░ 未勾。宽度固定 5 格，与预算条视觉一致。 */
+ acceptanceBar(done:number,total:number):string{
+  const width=5;
+  const filled=total?Math.round((done/total)*width):0;
+  return this.theme.fg('success','▓'.repeat(filled))+this.theme.fg('dim','░'.repeat(Math.max(0,width-filled)));
+ }
  /** 任务 id 在分桶顺序里的位置，供列表跳转、代表席回车定位。 */
  orderIndex(id:string|undefined,tasks:any[]=this.panelTasks()):number{
   if(!id)return -1;return this.taskBucketsFor(tasks).order.findIndex((task:any)=>task.id===id);
@@ -633,7 +639,13 @@ export class Desk {
  // 等待项处理完就消失（审批完 / 确认后 / 重派后），所以这张清单不会越积越长。
  const summary=this.waitingSection(buckets,Math.max(8,this.centerWidth-4));
  history=task?[...summary,...(summary.length?['']:[]),`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+order.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...this.watchdogLines(task),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheHitPercent(task.usage)>0?' · 缓存命中'+cacheHitPercent(task.usage)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[...summary,...(summary.length?['']:[]),this.taskScope==='all'?'全局任务 · 暂无僚属 任务':'本会话暂无僚属 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
- if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>[`${plan.state} · ${plan.completed}/${plan.total} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''])];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');
+ if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>{
+  // 两行进度：步骤跑完几个，以及验收勾了几个。前者是"做了多少"，后者是"做到没有"。
+  // 只显示前者的计划会在 5/5 时看起来完成，而验收可能一条都没勾。
+  const acc=(plan as any).acceptance;
+  const bar=acc&&acc.total?`  ${this.acceptanceBar(acc.done,acc.total)} ${acc.done}/${acc.total} 验收`:'';
+  return [`${plan.state} · ${plan.completed}/${plan.total} 步${bar} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''];
+ })];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');
   // 值守观察：候选表要和人看得见。这一层尚未执行任何动作，
   // 列在这里就是为了让人判断"这条规则会不会误伤"，而不是被悄悄跑起来。
   const candidates=this.monitor?.watch?.()||[];

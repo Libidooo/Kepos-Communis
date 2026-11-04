@@ -21,11 +21,27 @@ export function taskEvidence(database:KeposDatabase,id:string) {
 export function planSummaries(database:KeposDatabase) {
  // The monitor exposes no Worker capabilities or full evidence in a list query.
  if(!database.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='missions'").get())return [];
- return database.prepare(`SELECT m.id,m.goal,m.cwd,m.parent AS parentSessionId,m.state,m.updated,
+ const rows=database.prepare(`SELECT m.id,m.goal,m.cwd,m.parent AS parentSessionId,m.state,m.updated,
  (SELECT COUNT(*) FROM mission_jobs j WHERE j.mission_id=m.id) AS total,
  (SELECT COUNT(*) FROM mission_jobs j WHERE j.mission_id=m.id AND j.state='SUCCEEDED') AS completed,
  (SELECT COUNT(*) FROM mission_jobs j WHERE j.mission_id=m.id AND j.state='NEEDS_HUMAN') AS attention
  FROM missions m ORDER BY CASE WHEN m.state='NEEDS_HUMAN' THEN 0 ELSE 1 END,m.updated DESC LIMIT 100`).all() as any[];
+ // 验收进度单独算：它和"步骤跑完了几个"是两个不同的进度，
+ // 混成一列会让人以为 5/5 就是全部做完，而实际可能一条验收都没勾。
+ const progress=new Map<string,{total:number;done:number}>();
+ try{
+  const checks=database.prepare("SELECT mission_id,acceptance FROM mission_jobs WHERE acceptance IS NOT NULL AND state='SUCCEEDED'").all() as any[];
+  for(const row of checks){
+   let list:any[]=[];
+   try{list=JSON.parse(row.acceptance);}catch{continue;}
+   if(!Array.isArray(list)||!list.length)continue;
+   const at=progress.get(row.mission_id)||{total:0,done:0};
+   at.total+=list.length;
+   at.done+=list.filter(item=>item?.passes===true).length;
+   progress.set(row.mission_id,at);
+  }
+ }catch{/* 老库没有该列时进度留空，不影响其它字段 */}
+ return rows.map(row=>({...row,acceptance:progress.get(row.id)||{total:0,done:0}}));
 }
 
 const PLAN_GLYPHS: Record<string, string> = { QUEUED: '○', RUNNING: '▶', NEEDS_HUMAN: '⚠', SUCCEEDED: '✓', FAILED: '✕', CANCELLED: '⨉' };

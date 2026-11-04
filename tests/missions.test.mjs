@@ -219,3 +219,45 @@ test('acceptance survives a reload and old plans without the column still read',
   assert.equal(reopened.get(legacy.id,'parent').jobs[0].acceptance,undefined);
  }finally{reopened.stop();}
 });
+
+// B1 规格三条子要求此前都漏了：验收条目没到代表手上、计划完成不看验收、
+// 角色提示词缺开局纪律。这里逐条锁住。
+test('the acceptance items are handed to the representative with the task',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'scan',agent,task:'检查鉴权',acceptance:['测试通过','无新增依赖']}]);
+ await f.scheduler.tick();
+ assert.equal(f.dispatch.length,1);
+ const instruction=f.dispatch[0].text;
+ assert.match(instruction,/验收条目/);
+ assert.match(instruction,/1\. 测试通过/);
+ assert.match(instruction,/2\. 无新增依赖/);
+ // 要它逐条回应，而不是笼统说"已完成"。
+ assert.match(instruction,/逐条回应/);
+ assert.match(instruction,/没有证据的条目直说没做到/);
+ void m;
+});
+
+test('a step without acceptance does not get an empty acceptance block',async t=>{
+ const f=fixture(t);f.enqueue([{id:'plain',agent,task:'普通任务'}]);await f.scheduler.tick();
+ assert.doesNotMatch(f.dispatch[0].text,/验收条目/,'no empty section when there is nothing to check');
+});
+
+// 步骤全跑完但验收没勾满时，计划不能自称成功。
+test('all steps succeeded with unmet acceptance keeps the plan in NEEDS_HUMAN',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'a',agent,task:'a',acceptance:['测试通过']},{id:'b',agent,task:'b'}]);
+ await f.scheduler.tick();f.done(0);await f.scheduler.tick();f.done(1);await f.scheduler.tick();
+ assert.equal(f.scheduler.get(m.id).jobs.every(j=>j.state==='SUCCEEDED'),true,'every step ran');
+ assert.equal(f.scheduler.get(m.id).state,'NEEDS_HUMAN','but acceptance is unchecked, so it is not done');
+ // 记一条事件说明卡在哪，而不是无声停住。
+ const pending=f.scheduler.events(m.id,'parent',0,200).events.find(e=>e.type==='acceptance_pending');
+ assert.ok(pending,'the pending acceptance is recorded');
+ assert.deepEqual(pending.payload.unmet,['测试通过']);
+ // 勾满之后计划自行收尾，不需要人再点一次。
+ f.scheduler.checkAcceptance(m.id,'parent','a',[1]);
+ assert.equal(f.scheduler.get(m.id).state,'SUCCEEDED','checking the last item lets the plan finish');
+});
+
+test('a plan whose steps carry no acceptance still completes normally',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'a',agent,task:'a'}]);
+ await f.scheduler.tick();f.done(0);await f.scheduler.tick();
+ assert.equal(f.scheduler.get(m.id).state,'SUCCEEDED','no acceptance means nothing to block on');
+});
