@@ -27,10 +27,10 @@ const RIM = [255, 206, 164] as const;
 const AMBER = [255, 196, 120] as const;
 // Mid tone between shadow and highlight: the ring reads warmer than a pure red ramp.
 const EMBER = [214, 74, 74] as const;
-// Drop shadow for the wordmark. SHADOW is nearly black and vanished against the background.
-// A light neutral grey gives the offset copy enough presence to read as depth while staying
-// clearly below the white KEPOS and the vermilion COMMUNIS.
-const DROP = [176, 168, 166] as const;
+// Drop shadow for the wordmark. SHADOW is nearly black and vanished against the background,
+// so the offset copy needs enough presence to read as depth — while staying clearly darker
+// than both the white KEPOS and the vermilion COMMUNIS, or it competes with the glyphs.
+const DROP = [120, 112, 110] as const;
 const WHITE = [255, 255, 255] as const;
 const QUADRANTS = [' ', '▘', '▝', '▀', '▖', '▌', '▞', '▛', '▗', '▚', '▐', '▜', '▄', '▙', '▟', '█'];
 
