@@ -6,6 +6,7 @@ import { db } from './database.ts';
 import { root } from './paths.ts';
 import { ARCHIVE_DIR } from './archive.ts';
 import { readProfiles, syncAgentsFile, syncProfiles } from './profile-file.ts';
+import { migrateAutomation } from './automation.ts';
 import { ProfileHistory, type AgentProfile } from './profiles.ts';
 export { root, sessionRoot } from './paths.ts';
 
@@ -40,16 +41,13 @@ export interface Config {
    */
   watchdogModel?: { provider?: string; model: string };
   /**
-   * 事件驱动值守（观察期）。缺省关闭。
-   * 开启后只把命中规则的变更记进候选表，不派任何任务——
-   * 要等一张候选表被人看过一段时间，才谈自动执行。
+   * 自动化能力：系统在没人开口时自己干活。三项全默认关闭。
+   *
+   * 会启动任务的（dispatch / precheck）必须同时满足"开着"与"代理档"，
+   * 判定集中在 automation.ts——界面、工具、事件三处都读那一份，
+   * 否则"为什么它没跑"会变成最难查的那类问题。
    */
-  watch?: { enabled: boolean; roots?: string[]; rules?: import('./watch.ts').WatchRule[] };
-  /**
-   * 静默预检：拿到 bug 报告后先并行试着复现，只有确认可复现才打扰人。
-   * 默认关闭——它会自动开三席并行任务，属于会花钱的能力。
-   */
-  precheck?: { enabled: boolean; agents?: string[] };
+  automation?: import('./automation.ts').AutomationSettings;
 }
 
 export type CliAllowEntry = {
@@ -127,6 +125,14 @@ export function loadConfig(): Config {
       database.set('workspace', saved);
     }
     const config = { ...defaults(), ...saved };
+    // 旧版把自动化拆成 watch.enabled / precheck.enabled 两组散字段。
+    // 迁移时一律降级为"仅观察"：升级不该让人在没察觉的情况下开始花钱。
+    if (!config.automation && ('watch' in saved || 'precheck' in saved)) {
+      config.automation = migrateAutomation(saved as any);
+      delete (config as any).watch;
+      delete (config as any).precheck;
+      database.set('workspace', config);
+    }
     for (const agent of config.agents) profileHistory().record(agent);
     return remember(config);
   });

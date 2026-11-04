@@ -35,7 +35,8 @@ import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
 import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
-import { assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
+import { AUTO_DISPATCH_PER_MINUTE, assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
+import { AUTOMATION_LABEL, automationAllowed, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
 import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -138,13 +139,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   * 单 Worker 只能串行试三个角度，代价高到不值得为此静默。
   */
  const runPrecheck=async(report:string,ctx:any)=>{
+  // 能力判定只有一处：开关 + 档位（+ 派发的前置观察）。这里只问"能不能用"，
+  // 不自己判断档位——那样两处判定迟早不一致。
+  const permission=automationAllowed(currentPolicy(),config.automation,'precheck');
+  if(!permission.allowed)throw Error(permission.reason);
   const usable=precheckable(report);
   if(!usable.ok){if(desk)desk.notice=`未预检：${usable.reason}`;return;}
   const previous=precheckStore.find(report);
   if(previous){if(desk)desk.notice=`这条报告已预检过（${previous.verdict}）：${previous.summary}`;return;}
   // 代表选择：优先配置指定的，否则按角度顺序取已配置的前几个。
-  const wanted=config.precheck?.agents?.length
-   ?config.precheck.agents.map(name=>config.agents.find(agent=>agent.name===name||agent.id===name)).filter(Boolean)
+  const wanted=config.automation?.precheckAgents?.length
+   ?config.automation.precheckAgents.map(name=>config.agents.find(agent=>agent.name===name||agent.id===name)).filter(Boolean)
    :config.agents.slice(0,DEFAULT_PRECHECK_AGENTS);
   if(!wanted.length){if(desk)desk.notice='未预检：没有可用的代表';return;}
   if(desk)desk.notice=`静默预检中：${wanted.length} 名代表并行尝试复现…`;scheduleRepaint();
@@ -675,7 +680,6 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return{content:[{type:'text',text:boundedJson({roles,usage:'将 key 传给 kepos_delegate.tasks[].roleKey；如需 Skill，再用 kepos_skills 验证后显式传入。'})}],details:{count:roles.length}};
  }});
  pi.registerTool({name:'kepos_precheck',label:'静默预检',description:'拿到 bug 报告时先并行试着复现，只有确认可复现才打断人。派几名只读代表从不同角度（测试 / 源码 / 运行行为）各试一次；结论分「已复现 / 未能复现 / 无法判断」三种，后两种不打扰人但都会留记录。同一份报告只预检一次。开销：每席 12 万 token、4 分钟上限。',parameters:Type.Object({report:Type.String({maxLength:4000,description:'要预检的问题描述：现象、触发步骤、环境'})}),async execute(_id,params,_signal,_update,ctx){
-  if(!config.precheck?.enabled)throw Error('静默预检未开启。它会自动并行开几席只读任务，属于会花钱的能力，需要人类先在配置里开启。');
   const outcome=await runPrecheck(params.report,ctx);
   if(!outcome)return{content:[{type:'text',text:'未执行预检（报告不满足条件或已预检过）'}],details:undefined};
   return{content:[{type:'text',text:precheckReport({report:params.report,result:outcome.result,attempts:outcome.attempts})}],details:outcome.result};
@@ -925,7 +929,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','值守规则',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','值守规则':'watch-rules',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -953,7 +957,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['值守规则','watch-rules'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1007,26 +1011,39 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  if(action.kind==='crew'){await crewForm(local,action.id);ui.notify(`成员配置已更新 · ${config.agents.length} 位成员`);return;}
- // 值守规则：人类可编辑。开关与规则放在一起，因为"开启但规则为空"这件事
- // 本身需要被看见——那等于开了监听却什么都不抓。
- if(action.kind==='watch-rules'){
-  config.watch ??= { enabled: false, rules: [] };
-  const rules=config.watch.rules?.length?config.watch.rules:DEFAULT_WATCH_RULES;
-  const header=`值守 · ${config.watch.enabled?'已开启':'已关闭'} · ${rules.length} 条规则`;
-  const choice=await ui.select(header,['开启 / 关闭监听','查看规则','清除候选记录','返回']);
-  if(choice==='开启 / 关闭监听'){
-   config.watch.enabled=!config.watch.enabled;
-   if(!config.watch.rules?.length)config.watch.rules=rules;
+ // 自动化能力：三项独立开关，全部默认关闭。
+ // 会启动任务的（派发 / 预检）在 automation.ts 里与审批档绑定：
+ // 只有代理档才放行，严格与只读档一律停用。这里只负责呈现与切换。
+ if(action.kind==='automation'){
+  const rules=config.automation?.rules?.length?config.automation.rules:DEFAULT_WATCH_RULES;
+  const snapshot=automationSnapshot(currentPolicy(),config.automation);
+  const labels=snapshot.map(item=>{
+   const mark=item.enabled?(item.allowed?'● 开':'◐ 开（被档位暂停）'):'○ 关';
+   return `${mark} ${item.name}：${AUTOMATION_LABEL[item.capability].what}`;
+  });
+  const choice=await ui.select(`自动化 · 当前 ${policyLabel[currentPolicy()].split('：')[0]} · ${rules.length} 条规则`,[...labels,'查看规则','清除候选记录','返回']);
+  const at=labels.indexOf(choice);
+  if(at>=0){
+   const item=snapshot[at];
+   const on=!item.enabled;
+   // 关闭永不需确认：让刹车和油门一样难踩是最糟的设计。
+   if(on&&isActingCapability(item.capability)){
+    const ok=await ui.confirm('确认开启自动化能力',confirmText(item.capability,{rules:rules.length,agents:Math.min(3,config.agents.length),maxPerMinute:AUTO_DISPATCH_PER_MINUTE}));
+    if(!ok)return;
+   }
+   const result=toggleAutomation(config.automation,item.capability,on);
+   config.automation=result.settings;
+   if(!config.automation.rules?.length)config.automation.rules=rules;
    save();
-   ui.notify(config.watch.enabled
-    ?`值守已开启 · ${rules.length} 条规则 · 严格档只记录，代理档会按规则自动派发只读核对`
-    :'值守已关闭。候选记录保留，可随时回看。','info');
+   const after=automationAllowed(currentPolicy(),config.automation,item.capability);
+   const state=on?'已开启':'已关闭';
+   ui.notify(after.allowed?`${item.name}：${state}`:`${item.name}：${state} · ${after.reason}`,on&&!after.allowed?'warning':'info');
    return;
   }
   if(choice==='查看规则'){
    // 规则内容是给人读的，用 notify 直接展开；再弹一个只有"返回"的选择框只是多一次按键。
    const lines=rules.map((rule:any)=>`${rule.id} → ${rule.agent||'（未指派）'}\n  ${rule.intent}\n  抓：${[...(rule.extensions||[]),...(rule.pathIncludes||[])].join(' ')||'任意'} · 冷却 ${Math.round((rule.cooldownMs||0)/1000)}s`);
-   ui.notify(lines.join('\n\n')||'没有规则；开启监听时会使用默认规则。','info');
+   ui.notify(lines.join('\n\n')||'没有规则；开启观察时会使用默认规则。','info');
    return;
   }
   if(choice==='清除候选记录'){
@@ -1102,11 +1119,12 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   spawnPoller.start(()=>pool.tasks.filter(t=>!terminalStates.has(t.status||'')).map(t=>t.id),ctx.cwd);
   // 事件驱动值守：M1 只记录候选，M2 在 proxy 档 + 语义评估通过时才自动派发。
   // 关闭是默认——监听器在没人看的时候自己开任务，是这一层最危险的可能。
-  if(config.watch?.enabled){
-   const {usable}=validRules(config.watch.rules?.length?config.watch.rules:DEFAULT_WATCH_RULES);
+  // 观察是派发的前提：只开派发而不开观察，监听器根本不会启动。
+  if(config.automation?.observe===true){
+   const {usable}=validRules(config.automation.rules?.length?config.automation.rules:DEFAULT_WATCH_RULES);
    const rules=usable;
    const rateWindow={stamps:[] as number[]};
-   watcher=new DirectoryWatcher(config.watch.roots?.length?config.watch.roots:[ctx.cwd],{
+   watcher=new DirectoryWatcher(config.automation.roots?.length?config.automation.roots:[ctx.cwd],{
     intervalMs:1500,maxDepth:2,
     onEvent:(path,kind)=>{
      const hit=matchRule(path,kind,rules);
@@ -1114,13 +1132,14 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
      const recorded=watchCandidates.record({ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,cooldownMs:hit.rule.cooldownMs});
      if(!recorded)return;
      const candidate={id:'',at:Date.now(),ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,observeOnly:true as const};
-     // 严格/只读档到此为止：候选进表，等人来看。
-     const policy=currentPolicy();
-     if(policy!=='proxy'){
+     // 观察永远记录；要不要真的派人由统一判定决定。
+     // 严格/只读档、或自动派发没开，到此为止：候选进表，等人来看。
+     const permission=automationAllowed(currentPolicy(),config.automation,'dispatch');
+     if(!permission.allowed){
       if(desk){desk.notice=`值守观察：${describeCandidate(candidate)}`;scheduleRepaint();}
       return;
      }
-     // proxy 档：先做语义评估，再由闸门决定是否花钱。
+     // 派发已放行：先做语义评估，再由闸门决定这一次是否花钱。
      void (async()=>{
       let text='';
       try{text=await readFile(path,'utf8');}catch{/* 读不到就按"没有内容"评估，闸门会据此决定 */}
@@ -1128,7 +1147,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
       try{verdict=parseAssessment(await minimalCompletion(assessmentPrompt(candidate,text)));}
       catch{/* 评估失败按"保留候选"处理，闸门会记录而非派发 */}
       const crew=config.agents.find(agent=>agent.name===candidate.agent||agent.id===candidate.agent);
-      const decision=gate({candidate,policy,assessment:verdict,assignable:Boolean(crew)});
+      const decision=gate({candidate,policy:currentPolicy(),assessment:verdict,assignable:Boolean(crew)});
       if(decision.action!=='auto'){if(desk){desk.notice=`值守：${describeCandidate(candidate)} · ${decision.reason}`;scheduleRepaint();}return;}
       if(!canAutoDispatch(rateWindow)){
        // 超出频率上限本身就是值得人知道的事实：规则可能太宽。
