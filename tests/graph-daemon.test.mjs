@@ -18,10 +18,13 @@ test('SQLite scheduler lease prevents concurrent daemons and recovers expired ow
 
 test('SchedulerDaemon refuses duplicate starts while running and after restart allows one owner',async()=>{
  const dir=mkdtempSync(join(tmpdir(),'kepos-daemon-'));const db=new KeposDatabase(join(dir,'daemon.sqlite'));
- const daemon=new SchedulerDaemon(db,{},{leaseTtlMs:50,tickMs:20,heartbeatMs:20});
+ // 租约必须足够长：50ms 的 TTL 在慢机器上会在两条断言之间过期，
+ // 第二个实例就能正常获取租约而不抛异常——CI 的 Windows 节点实测触发过。
+ // stop() 会释放租约，所以重启场景不依赖短 TTL。
+ const daemon=new SchedulerDaemon(db,{},{leaseTtlMs:60000,tickMs:20,heartbeatMs:20});
  daemon.start();
  assert.throws(()=>daemon.start(),/already running/);
- assert.throws(()=>new SchedulerDaemon(db,{}, {leaseTtlMs:50}).start(),/Another Kepos scheduler daemon/);
+ assert.throws(()=>new SchedulerDaemon(db,{}, {leaseTtlMs:60000}).start(),/Another Kepos scheduler daemon/);
  daemon.stop();
  daemon.start();daemon.stop();db.close();
 });
