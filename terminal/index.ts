@@ -9,7 +9,7 @@ import { basename, join } from 'node:path';
 import { visibleWidth } from '@earendil-works/pi-tui';
 import { Desk, fit, historyLines } from './desk.ts';
 import { playSplash } from './splash.ts';
-import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, profileHistory, restoreProfile, importProfiles, type Crew } from './store.ts';
+import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, profileHistory, restoreProfile, importProfiles, exportWorkspaceFiles, type Crew } from './store.ts';
 import { keposSessionStore } from './session-store.ts';
 import { db } from './database.ts';
 import { ownedUI } from './dialogs.ts';
@@ -986,6 +986,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   let report:any;
   try{report=importProfiles(config,ctx.cwd);}catch(error){ui.notify(clean(error),'warning');return;}
   refreshSupervisionPrompt();save();
+  // 导入之后把文件重新导出一次：手写的简写会被规范化回标准形态。
+  // 目标目录由这次操作显式给出——导出不再从 process.cwd() 猜。
+  const exported=exportWorkspaceFiles(config,ctx.cwd);
+  if(exported.skipped.length)ui.notify('档案导出有跳过项：'+exported.skipped.slice(0,3).join('；'),'warning');
   const lines=[`已导入 ${report.updated.length} 位代表的档案`,...report.updated.map((name:string)=>`· ${name}`)];
   if(report.unknown.length)lines.push(`文件里这些 id 不在配置中，未新建：${report.unknown.join('、')}`);
   if(report.errors.length)lines.push(`有 ${report.errors.length} 个文件没能读取：`,...report.errors.map((item:any)=>`· ${item.file}：${item.error}`));

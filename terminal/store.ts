@@ -166,39 +166,36 @@ export function saveConfig(config: Config): void {
     Object.assign(config, merged);
   });
   remember(config);
-  // previous 是这次保存前的快照：代表没变就不碰磁盘（草稿保存走的是同一条路径）。
-  exportProfiles(config, previous.agents);
 }
 
 /**
- * 配置保存后同步导出档案文件。
+ * 把代表档案与 AGENTS.md 导出到指定工作区。
  *
- * 两个约束来自实测教训：
- *
- * 1. **只在代表真的变了时导出。** saveConfig 在输入框里每 250ms 被调用一次
- *    （草稿自动保存），把磁盘扫描挂在这条路径上等于每敲一个字都重扫并重写
- *    所有项目目录。档案是给人读的视图，不值得这种开销。
- *
- * 2. **只导出当前工作区。** 之前遍历 config.projects 并往每个目录写 AGENTS.md，
- *    结果测试夹具把假代表写进了真实仓库根。配置属于整个工作区集合，
- *    但档案文件属于"你现在在的项目"，不该由保存动作往别人的目录里塞文件。
+ * **必须显式传目录**，这里刻意不读 process.cwd()。
+ * 上一版从 saveConfig 里隐式触发并扫 process.cwd()，结果任何调用 saveConfig 的
+ * 测试或子进程都会往真实仓库里写文件——包括一份假代表名单。
+ * 导出的目标是"哪个工作区"，只有调用方知道；猜出来的目标迟早写错地方。
  */
-function exportProfiles(config: Config, previous: readonly Crew[]): void {
-  // 代表名单或其内容没变：草稿、折叠状态、主题之类的高频保存直接跳过。
-  if (same(previous, config.agents)) return;
-  const cwd = process.cwd();
+export function exportWorkspaceFiles(config: Config, cwd: string): { agents: boolean; profiles: number; skipped: string[] } {
+  const result = { agents: false, profiles: 0, skipped: [] as string[] };
   try {
-    syncAgentsFile(cwd, { members: config.agents.map(agent => ({ name: agent.name, roleKey: agent.roleKey, model: agent.model })), archiveDir: ARCHIVE_DIR });
-    // 档案目录只在已经存在归档区、或真有代表时才建立，避免空项目被塞进 .kepos。
+    result.agents = syncAgentsFile(cwd, {
+      members: config.agents.map(agent => ({ name: agent.name, roleKey: agent.roleKey, model: agent.model })),
+      archiveDir: ARCHIVE_DIR,
+    });
     const archiveRoot = join(cwd, ARCHIVE_DIR);
-    if (!config.agents.length && !existsSync(archiveRoot)) return;
-    syncProfiles(archiveRoot, config.agents);
-  } catch {
-    // 导出是尽力而为：只读目录、磁盘满都不该影响配置保存本身。
+    // 没有代表、也没有既有归档区时不建目录：空项目不该被塞进 .kepos。
+    if (!config.agents.length && !existsSync(archiveRoot)) return result;
+    const synced = syncProfiles(archiveRoot, config.agents);
+    result.profiles = synced.written;
+    result.skipped.push(...synced.skipped);
+  } catch (error) {
+    result.skipped.push(String(error));
   }
+  return result;
 }
-
-export function restoreProfile(config: Config, agentId: string, revision: string): Crew {  const member = config.agents.find(agent => agent.id === agentId);
+export function restoreProfile(config: Config, agentId: string, revision: string): Crew {
+  const member = config.agents.find(agent => agent.id === agentId);
   const saved = profileHistory().get(agentId, revision);
   if (!member || !saved) throw Error('Unknown profile revision');
   if (config.agents.some(agent => agent.id !== agentId && agent.name === saved.profile.name)) {

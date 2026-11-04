@@ -11,7 +11,7 @@ const workspace=mkdtempSync(join(tmpdir(),'kepos-c1-work-'));
 process.env.ORBITAL_HOME=join(home,'orbital');
 process.chdir(workspace);
 
-const {loadConfig, saveConfig, importProfiles}=await import('../dist/terminal/store.js');
+const {loadConfig, saveConfig, importProfiles, exportWorkspaceFiles}=await import('../dist/terminal/store.js');
 const {profilesRoot, AGENTS_FILE, PROFILES_DIR}=await import('../dist/terminal/profile-file.js');
 const {readdirSync,unlinkSync}=await import('node:fs');
 /** 清掉用例自己造的非常规档案，避免彼此串味。 */
@@ -22,7 +22,7 @@ const crew=(id,name,extra={})=>({id,name,model:'relay/x',provider:'relay',role:`
 test('saving config exports a profile file per representative',()=>{
   const config=loadConfig();
   config.agents=[crew('a1','审查官'),crew('a2','研究员')];
-  saveConfig(config);
+  saveConfig(config); exportWorkspaceFiles(config,workspace);
   const dir=profilesRoot(join(workspace,'.kepos'));
   assert.ok(existsSync(join(dir,'a1.md')),'one file per stable id');
   assert.ok(existsSync(join(dir,'a2.md')));
@@ -56,7 +56,7 @@ test('export does not disturb the concurrent merge in saveConfig',()=>{
 test('a representative removed from config loses its file on the next save',()=>{
   const config=loadConfig();
   config.agents=config.agents.filter(agent=>agent.id!=='a2');
-  saveConfig(config);
+  saveConfig(config); exportWorkspaceFiles(config,workspace);
   const dir=profilesRoot(join(workspace,'.kepos'));
   assert.equal(existsSync(join(dir,'a2.md')),false,'no orphan file for a deleted member');
   assert.ok(existsSync(join(dir,'a1.md')),'the rest stay');
@@ -67,7 +67,7 @@ test('a hand-edited profile imports back, and only for known ids',()=>{
   // 显式重设前置：前一个用例改过 a3 的名字，用例之间不该继承彼此的副作用。
   const setup=loadConfig();
   setup.agents=[crew('a1','审查官'),crew('a2','研究员'),crew('a3','书记官')];
-  saveConfig(setup);
+  saveConfig(setup); exportWorkspaceFiles(setup,workspace);
   const dir=profilesRoot(join(workspace,'.kepos'));
   // 人改：把 a1 的模型与职责换掉。
   const text=readFileSync(join(dir,'a1.md'),'utf8').replace(/^model: .*$/m,'model: relay/y').replace(/审查官的职责。只读。/,'新的职责：只做合规审查。');
@@ -93,7 +93,7 @@ test('importing a file that omits optional fields clears them, not merges them',
   // 先给 a1 加上可选字段并保存，让它真的存在。
   let config=loadConfig();
   config.agents=config.agents.map(agent=>agent.id==='a1'?{...agent,skills:['academic-paper'],roleKey:'auditor'}:agent);
-  saveConfig(config);
+  saveConfig(config); exportWorkspaceFiles(config,workspace);
   assert.match(readFileSync(join(dir,'a1.md'),'utf8'),/academic-paper/);
   // 人把 skills 与 roleKey 整行删掉。
   const stripped=readFileSync(join(dir,'a1.md'),'utf8').split('\n').filter(line=>!/^(skills|roleKey):/.test(line)).join('\n');
@@ -122,7 +122,7 @@ test('duplicate names are rejected before anything is written',()=>{
   // 自带前置：三个互不重名的代表，再让其中一个与另一个同名。
   const setup=loadConfig();
   setup.agents=[crew('a1','审查官'),crew('a2','研究员'),crew('a3','书记官')];
-  saveConfig(setup);
+  saveConfig(setup); exportWorkspaceFiles(setup,workspace);
   const dir=profilesRoot(join(workspace,'.kepos'));
   const text=readFileSync(join(dir,'a1.md'),'utf8').replace(/^name: .*$/m,'name: 书记官');
   writeFileSync(join(dir,'a1.md'),text,'utf8');
@@ -138,7 +138,7 @@ test('an unconfigured workspace does not scatter .kepos directories',()=>{
   process.chdir(clean);
   const config=loadConfig();
   config.agents=[];
-  saveConfig(config);
+  saveConfig(config); exportWorkspaceFiles(config,workspace);
   // 没有代表、也没有既有归档区时，不建档案目录；但 AGENTS.md 仍然写出来说明本工作区。
   assert.equal(existsSync(join(clean,'.kepos',PROFILES_DIR)),false);
 });
@@ -150,7 +150,7 @@ test.after(()=>{process.chdir(home);});
 test('saving a draft does not touch profile files',()=>{
   const setup=loadConfig();
   setup.agents=[crew('a1','审查官')];
-  saveConfig(setup);
+  saveConfig(setup); exportWorkspaceFiles(setup,workspace);
   const dir=profilesRoot(join(workspace,'.kepos'));
   const file=join(dir,'a1.md');
   const before=readFileSync(file,'utf8');
@@ -173,7 +173,23 @@ test('export never writes into other projects',()=>{
   const setup=loadConfig();
   setup.projects=[other];
   setup.agents=[crew('a1','审查官')];
-  saveConfig(setup);
+  saveConfig(setup); exportWorkspaceFiles(setup,workspace);
   assert.equal(existsSync(join(other,AGENTS_FILE)),false,'no AGENTS.md in an unrelated project');
   assert.equal(existsSync(join(other,'.kepos',PROFILES_DIR)),false,'no profiles directory either');
+});
+
+// 这次污染的根因：saveConfig 会去写 process.cwd() 下的文件。
+// 任何调用 saveConfig 的测试或子进程都可能写错地方。导出现在必须显式给目录。
+test('saveConfig itself never touches the filesystem',()=>{
+  const clean=mkdtempSync(join(tmpdir(),'kepos-c1-pure-'));
+  process.chdir(clean);
+  const config=loadConfig();
+  config.agents=[crew('a1','审查官')];
+  saveConfig(config);
+  // 保存只写数据库；这个目录里不该出现任何文件。
+  assert.equal(existsSync(join(clean,AGENTS_FILE)),false,'save does not write AGENTS.md');
+  assert.equal(existsSync(join(clean,'.kepos')),false,'save does not create .kepos');
+  // 由调用方显式导出，才产生文件。
+  exportWorkspaceFiles(config,clean);
+  assert.equal(existsSync(join(clean,AGENTS_FILE)),true,'the explicit call does write it');
 });
