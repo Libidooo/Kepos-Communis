@@ -66,6 +66,20 @@ export class KeposDatabase {
     note TEXT
    );
    CREATE INDEX IF NOT EXISTS idx_briefing_task ON human_briefings(task_id,at);
+   -- 事件驱动的观察层：命中规则的变更只记录"本会怎么做"，不执行。
+   -- 观察期产物必须可查，否则无法据此判断规则是否会误伤。
+   CREATE TABLE IF NOT EXISTS watch_candidates(
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    rule_id TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    path TEXT NOT NULL,
+    task TEXT NOT NULL,
+    agent TEXT NOT NULL DEFAULT '',
+    observe_only INTEGER NOT NULL DEFAULT 1
+   );
+   CREATE INDEX IF NOT EXISTS idx_watch_recent ON watch_candidates(at DESC);
+   CREATE INDEX IF NOT EXISTS idx_watch_cooldown ON watch_candidates(rule_id,path,at);
    PRAGMA user_version=1;
   `);});
   } catch(error) { this.sql.close(); throw error; }

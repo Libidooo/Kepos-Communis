@@ -12,6 +12,7 @@ import { dataRoot } from './paths.ts';
 import { renderGraph, renderCouncilList, councilTasks, countActive, countPending, stateColor, stateMark, type CouncilFilter, type CouncilView, type GraphHit, type GraphViewSnapshot } from './graph-view.ts';
 import { taskBuckets, WAITING_LABEL } from './monitor.ts';
 import { deliveryNote, representativeBriefing } from './briefing.ts';
+import { describeCandidate } from './watch.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
@@ -129,7 +130,7 @@ export class Desk {
  private entriesCache:any[]|undefined;private entriesKey='';private entriesDirty=true;private rowCache:any[]|undefined;private liveBaseCache:string[]=[];private liveBaseCacheKey='';
  taskScope:'session'|'all'='session';
  missionView=false;graphView=false;graphDetail=false;graphSelected=-1;graphSelectedId:string|null=null;graphZoom=1;graphFocus:'ring'|'list'|'input'='ring';graphHits:GraphHit[]=[];graphOffsets:Record<string,{x:number;y:number}>={};graphDrag?:{id:string;lastX:number;lastY:number};graphWidth=0;councilList=false;councilFilter:CouncilFilter='active';councilIndex=0;councilQuery='';councilSearch=false;pendingSeen=0;councilDesk=false;councilDeskTaskId:string|null=null;deskOffset=0;deskX=0;deskWidth=0;deskOutputTotal=0;deskOutputVisible=0;deskWrapKey='';deskWrapCache:string[]|null=null;graph?:{snapshot:()=>GraphViewSnapshot};
- monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[];watchdog?:(id:string)=>any[]};
+ monitor?:{tasks:()=>any[];evidence:(id:string)=>any;plans:()=>any[];watchdog?:(id:string)=>any[];watch?:()=>any[]};
  /** 当前审批模式，用于状态栏常驻显示；由 index.ts 注入。 */
  approvalPolicy?:()=>'human'|'proxy'|'readonly';
  /** 代表改道后由外层落库并向上级汇报；Desk 只负责把消息送达任务。 */
@@ -632,7 +633,16 @@ export class Desk {
  // 等待项处理完就消失（审批完 / 确认后 / 重派后），所以这张清单不会越积越长。
  const summary=this.waitingSection(buckets,Math.max(8,this.centerWidth-4));
  history=task?[...summary,...(summary.length?['']:[]),`${clean(task.agent)}书案 / `+(this.taskIndex+1)+' / '+order.length,`${clean(task.agent)} · ${task.status}`, '项目：'+clean(task.cwd), '父会话：'+clean(task.parentSessionId), '配置版本：'+String(task.profileRevision||'旧记录').slice(0,12), '工具：'+clean(task.tool||'—'),...(task.reviewAt?['复核：'+(task.reviewDue?'现在需要主 Agent 检查':'下一次 '+new Date(task.reviewAt).toLocaleTimeString())+' · 已复核 '+String(task.reviewCount||0)+' 次']:[]),...(task.stalled?['⚠ 疑似空转：是否终止由人类决定（F2 → 查看/取消运行中任务）']:[]),...this.watchdogLines(task),...(task.budgetTokens?['Token 预算上限：'+formatTokens(task.budgetTokens)]:[]),...(task.checkpoint?['最近检查点：',...wrapTextWithAnsi(clean(task.checkpoint),Math.max(8,this.centerWidth-4))]:[]), ...(task.queueWaitMs!==undefined?['排队 '+task.queueWaitMs+'ms · 首文本 '+(task.firstTextMs??'待返回')+'ms']:[]),`⏳ ${this.budgetBar(task)} · ${task.ended?Math.round((task.ended-task.started)/1000)+'s':terminalStates.has(task.status||'')?'耗时未记录':Math.round((Date.now()-task.started)/1000)+'s'} / 上限 ${task.limit}s`,`${clean(task.provider)} / ${clean(task.model)}`,...(task.usage?.totalTokens?[`Token ↑${formatTokens(task.usage.input)} ↓${formatTokens(task.usage.output)}${task.usage.cacheHitPercent(task.usage)>0?' · 缓存命中'+cacheHitPercent(task.usage)+'%':''}${task.usage.cost?.total?' · ~$'+Number(task.usage.cost.total).toFixed(4):''}`]:[]),...wrapTextWithAnsi(clean(task.title),Math.max(8,this.centerWidth-4)),'',...(task.error?wrapTextWithAnsi('错误：'+clean(task.error),Math.max(8,this.centerWidth-4)):[]),task.outputTruncated?'任务产出（已截断，保留末尾约32 KiB）：':'任务产出：',...String(task.output||'等待输出…').split('\n').flatMap(s=>wrapTextWithAnsi(clean(s),Math.max(8,this.centerWidth-4)))]:[...summary,...(summary.length?['']:[]),this.taskScope==='all'?'全局任务 · 暂无僚属 任务':'本会话暂无僚属 任务。','F2 → 分派只读任务，或让主 Agent 自动分派。'];}
- if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>[`${plan.state} · ${plan.completed}/${plan.total} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''])];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');}
+ if(this.missionView&&!this.help){const plans=this.monitorData().plans;history=['长程计划 · 人类控制台','F9 返回 · F2 → 管理长程计划','',...plans.flatMap(plan=>[`${plan.state} · ${plan.completed}/${plan.total} · ${plan.goal}`, '  '+plan.id+' · '+clean(plan.cwd),''])];if(!plans.length)history.push('暂无计划。主 Agent 可以用 kepos_plan 拆解并提交。');
+  // 值守观察：候选表要和人看得见。这一层尚未执行任何动作，
+  // 列在这里就是为了让人判断"这条规则会不会误伤"，而不是被悄悄跑起来。
+  const candidates=this.monitor?.watch?.()||[];
+  if(candidates.length){
+   history.push('','值守观察 · 命中但未执行 '+candidates.length+' 条','');
+   for(const candidate of candidates.slice(0,12))history.push(...wrapTextWithAnsi(describeCandidate(candidate),Math.max(8,this.centerWidth-4)));
+   if(candidates.length>12)history.push(this.theme.fg('dim',`… 另有 ${candidates.length-12} 条`));
+  }else if(this.monitor?.watch)history.push('','值守观察 · 暂无命中；开启后只记录候选，不会自动派任务');
+ }
  this.displayLines=history;
  // 框线面板：body 含顶底两行框，内容行 bodyHeight-2；标题嵌入顶框，焦点面板用 borderAccent。
  const contentRows=Math.max(1,this.bodyHeight-2);const historyHeight=Math.max(1,contentRows-(preview?2:0));

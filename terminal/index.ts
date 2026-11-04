@@ -33,6 +33,7 @@ import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
+import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
 import { dataRoot } from './paths.ts';
@@ -65,7 +66,7 @@ const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'dependency_engineer', 'incident_investigator',
 ];
 export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
- const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';let spawnPoller:SpawnRequestPoller|undefined;
+ const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';let spawnPoller:SpawnRequestPoller|undefined;let watcher:any;
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
  // Windows console close kills the process without Pi's graceful shutdown (SIGHUP is
  // handled POSIX-only there), so session_shutdown never runs and warm executors would
@@ -121,6 +122,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const watchdogStore=new WatchdogStore(db());
  // 人类在执行途中改变需求的记录：界面显示"已加急"必须有对应的真实送达。
  const briefingStore=new BriefingStore(db());
+ // 事件驱动值守的候选表：观察期只记录，不执行。
+ const watchCandidates=new WatchCandidates(db());
  // ── 代表改道后的两段式上报 ─────────────────────────────────────────────
  // 上级判定只有这一处：有代理总代就是总代，否则是总理。
  const superiorOf=():{name:string;role:'deputy'|'premier'}=>{
@@ -294,7 +297,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }
   return{block:true,reason:riskReason(risk)};
  });
- pi.on('session_shutdown',async(event)=>{valid=false;generation++;unsubscribePool();unsubscribeMissions();spawnPoller?.stop();spawnPoller=undefined;current=undefined;clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;pool.change=()=>{};if(event.reason==='quit'||event.reason==='reload'){try{await pool.shutdown();await scheduler.tick();}catch(error){console.error('Kepos 清理未正常完成：'+clean(error));}finally{scheduler.stop();delete globalStore[poolKey];delete globalStore[missionKey];}}});
+ pi.on('session_shutdown',async(event)=>{valid=false;generation++;unsubscribePool();unsubscribeMissions();spawnPoller?.stop();spawnPoller=undefined;watcher?.stop();watcher=undefined;current=undefined;clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;pool.change=()=>{};if(event.reason==='quit'||event.reason==='reload'){try{await pool.shutdown();await scheduler.tick();}catch(error){console.error('Kepos 清理未正常完成：'+clean(error));}finally{scheduler.stop();delete globalStore[poolKey];delete globalStore[missionKey];}}});
  let supervisionPrompt='';
  // 分层提示词：核心规则常驻，其余按场景注入。
  // 每轮都全量塞入 MCP 治理、表决、计划门禁的规则，会白烧约 600 tokens——
@@ -1001,11 +1004,28 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  try{await playSplash(ctx,config,ready);}catch{}
  await ready;if(initialFailed){ctx.ui.notify(clean(initialError),'error');return;}
  while(true){let sessions:any[];try{sessions=firstSessions??await loadSessions();firstSessions=undefined;}catch(e){ctx.ui.notify(clean(e),'error');return;}
- let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images,options)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true,...options}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3)};
+ let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images,options)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true,...options}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3),watch:()=>watchCandidates.recent(20)};
   // 代表派生请求：代表进程写文件，这里轮询接手。僚属由代表发起、代表负责，
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
   spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{try{const rep=pool.tasks.find(t=>t.id===taskId);if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,request.skills?Array.from(READ_ONLY_TOOLS):Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});return{ok:true};}catch(error){return{ok:false,reason:clean(error)};}}});
   spawnPoller.start(()=>pool.tasks.filter(t=>!terminalStates.has(t.status||'')).map(t=>t.id),ctx.cwd);
+  // 事件驱动值守（观察期）：命中规则只记候选，绝不派任务。
+  // 关闭是默认——监听器在没人看的时候自己开任务，是这一层最危险的可能。
+  if(config.watch?.enabled){
+   const {usable}=validRules(config.watch.rules?.length?config.watch.rules:DEFAULT_WATCH_RULES);
+   const rules=usable;
+   watcher=new DirectoryWatcher(config.watch.roots?.length?config.watch.roots:[ctx.cwd],{
+    intervalMs:1500,maxDepth:2,
+    onEvent:(path,kind)=>{
+     const hit=matchRule(path,kind,rules);
+     if(!hit)return;
+     // 只记录。observeOnly 恒为 true——这一阶段的产物是一张给人看的表。
+     const recorded=watchCandidates.record({ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,cooldownMs:hit.rule.cooldownMs});
+     if(recorded&&desk){desk.notice=`值守观察：${describeCandidate({id:'',at:Date.now(),ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,observeOnly:true})}`;scheduleRepaint();}
+    },
+   });
+   watcher.start();
+  }
   // 给总理的加急指令：带上当前规模与"先看进度再重排"的顺序要求。
   // 人多时明确交给代理总代分担派发——那是治理规则，不是建议。
   // 这里只拼文案，不落库：拼装和在途统计都可能被反复调用，落库只在真的送达时做。
@@ -1038,7 +1058,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
     pendingUpward.set(taskId,{agent:task.agent,briefing:text,superior});
    }catch(error){desk&&(desk.notice='改道汇报失败：'+clean(error));}
   };
-  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;desk?.dispose();desk=undefined;}
+  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;watcher?.stop();watcher=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;
  try{
  if(action.kind==='reload'){if(blocked(ctx)){ctx.ui.notify('任务进行中，未重载；请等待或中止后重试','warning');continue;}const active=pool.tasks.filter(t=>!terminalStates.has(t.status)).length;if(active&&!await ctx.ui.confirm('重载 Kepos 扩展？',`重载会取消 ${active} 个运行中的子任务（包括其他会话的）；会话记录和输入草稿保留。`))continue;db().set('ui_reload',{pid:process.pid,sessionId:ctx.sessionManager.getSessionId(),at:Date.now()});await ctx.reload();return;}

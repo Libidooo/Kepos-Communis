@@ -39,6 +39,12 @@ export interface Config {
    * 而不必同时改主 Agent。阶段①只观察，不触发终止。
    */
   watchdogModel?: { provider?: string; model: string };
+  /**
+   * 事件驱动值守（观察期）。缺省关闭。
+   * 开启后只把命中规则的变更记进候选表，不派任何任务——
+   * 要等一张候选表被人看过一段时间，才谈自动执行。
+   */
+  watch?: { enabled: boolean; roots?: string[]; rules?: import('./watch.ts').WatchRule[] };
 }
 
 export type CliAllowEntry = {
