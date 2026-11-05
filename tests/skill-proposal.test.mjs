@@ -122,3 +122,22 @@ test('renderSkill bounds an over-long body and always states the boundary',()=>{
   assert.ok(text.length<=MAX_SKILL_BODY_CHARS);
   assert.match(text,/## 边界/);
 });
+
+// 采纳必须含两步：移文件 + 写进代表 skills[]。只移文件等于装了没人用。
+test('a proposal records which representative it came from',()=>{
+  const agentDir=freshDir();
+  writeProposal(agentDir,{slug:'from-agent',description:'d',steps:['s'],agent:'审查官'});
+  const [proposal]=listProposals(agentDir);
+  assert.equal(proposal.agent,'审查官','adoption needs to know who to bind the skill to');
+});
+
+test('an older proposal without an author reads back with an empty agent',()=>{
+  const agentDir=freshDir();
+  // 手写一份没有来源句的提议：不能因此读不出这条提议。
+  const dir=join(agentDir,'skills-proposed','legacy');
+  mkdirSync(dir,{recursive:true});
+  writeFileSync(join(dir,'SKILL.md'),'---\nname: legacy\ndescription: old\n---\n\n## 步骤\n\n1. step\n\n## 边界\n\n- x\n');
+  const [proposal]=listProposals(agentDir);
+  assert.equal(proposal.slug,'legacy');
+  assert.equal(proposal.agent,'');
+});

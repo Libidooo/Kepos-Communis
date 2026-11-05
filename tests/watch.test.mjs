@@ -172,3 +172,19 @@ test('a recorded candidate never causes a dispatch on its own',()=>{
     assert.deepEqual(Object.keys(rows[0]).sort(),['agent','at','id','kind','observeOnly','path','ruleId','task']);
   }finally{db.close();}
 });
+
+// 观察表没有自然生命周期（任务会结算，候选不会）。不裁剪就是一张无限增长的表。
+test('the candidate table keeps only the most recent entries',()=>{
+  const{db}=fresh();
+  try{
+    const store=new WatchCandidates(db);
+    for(let n=0;n<20;n++)store.record({ruleId:'r',kind:'file-changed',path:`/p/f${n}.md`,task:'t',agent:'A',at:1000+n});
+    assert.equal(store.recent(100).length,20);
+    const removed=store.prune(5);
+    assert.equal(removed,15);
+    const left=store.recent(100);
+    assert.equal(left.length,5);
+    // 保留的是最新的那些。
+    assert.ok(left.every(c=>/f1[5-9]\.md/.test(c.path)),'kept the newest');
+  }finally{db.close();}
+});

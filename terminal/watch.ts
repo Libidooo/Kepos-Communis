@@ -153,6 +153,18 @@ export class WatchCandidates implements CandidateStore {
     const result = this.database.prepare('DELETE FROM watch_candidates').run();
     return Number(result.changes ?? 0);
   }
+
+  /**
+   * 只留最近 N 条。
+   *
+   * 观察期会持续积累候选，而这张表没有自然生命周期（不像任务会结算）。
+   * 不裁剪的话，开一年观察就有一个无限增长的表。保留最近 500 条足够回答
+   * "规则会不会误伤"；更早的候选没有判断价值。
+   */
+  prune(keep = 500): number {
+    const result = this.database.prepare('DELETE FROM watch_candidates WHERE id NOT IN (SELECT id FROM watch_candidates ORDER BY at DESC, rowid DESC LIMIT ?)').run(Math.max(1, keep));
+    return Number(result.changes ?? 0);
+  }
 }
 
 /**

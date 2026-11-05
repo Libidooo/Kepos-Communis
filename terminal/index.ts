@@ -70,7 +70,7 @@ const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'dependency_engineer', 'incident_investigator',
 ];
 export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
- const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';let spawnPoller:SpawnRequestPoller|undefined;let watcher:any;
+ const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';let spawnPoller:SpawnRequestPoller|undefined;let watcher:any;let internalGeneration=0;
  const missionKey=Symbol.for('kepos.mission-scheduler:'+root);
  // Windows console close kills the process without Pi's graceful shutdown (SIGHUP is
  // handled POSIX-only there), so session_shutdown never runs and warm executors would
@@ -84,20 +84,54 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  const scheduler:MissionScheduler=globalStore[missionKey]||(globalStore[missionKey]=new MissionScheduler(db(),pool));
  const planSummary=(m:any)=>({id:m.id,goal:m.goal,state:m.state,cwd:m.cwd,jobs:m.jobs.map((j:any)=>({id:j.id,state:j.state,task:j.task.slice(0,300),agent:j.agent.name,requiresHuman:j.requiresHuman,dependsOn:j.dependsOn||[],checkpoint:j.checkpoint?.slice(0,500),error:j.error,...(j.acceptance?.length?{acceptance:j.acceptance,acceptanceState:acceptanceState(j.acceptance)}:{})}))});
- const save=()=>{saveConfig(config);refreshSupervisionPrompt?.();desk?.invalidate();};
+ /**
+  * 所有配置改动的唯一出口：存库、刷新提示、重绘。
+  *
+  * 代表名单真的变化时顺带导出档案文件（C1 要求"配置保存后生成 md"）。
+  * 判据是前后快照比较而不是无条件写：草稿保存每 250ms 走同一条路径，
+  * 无条件的目录扫描会把打字变成磁盘操作。导出失败不影响保存本身。
+  */
+ const save=()=>{
+  const before=JSON.stringify(config.agents);
+  saveConfig(config);
+  refreshSupervisionPrompt?.();
+  desk?.invalidate();
+  if(JSON.stringify(config.agents)===before)return;
+  // 目标目录显式给出：导出不能从 process.cwd() 猜，那会把文件写到别人的项目里。
+  try{exportWorkspaceFiles(config,current?.cwd||process.cwd());}catch{}
+ };
  const currentPolicy=()=>normalizePolicy(config.approvalPolicy);
  // 每个代表任务默认 200 万 token 预算（未显式配置时）。预算是"单个任务"的额度，
  // 每开一个新任务 / 新对话都从 0 重新计算——不存在跨任务累计。
  const DEFAULT_TASK_TOKEN_BUDGET = 2_000_000;
  configureWorkerBudget(()=>({perTaskTokens:DEFAULT_TASK_TOKEN_BUDGET,...(config.budget||{})}));
  /**
-  * 一次最小生成：复用主 Agent 的模型，不发工具、不改配置。
-  * 记忆整理与 watchdog 判定都需要它，两者都不值得为一次短问答单开 worker 进程。
-  * 失败向上抛，由各自的调用方决定"静默跳过"还是"显示原因"。
-  */
- const minimalCompletion=async(prompt:string):Promise<string>=>{
-  const result=current?.generateCompletion?.(prompt);
-  return result&&typeof result.then==='function'?String(await result||''):'';
+ * 一次最小生成：记忆整理、watchdog 判定、语义评估共用。
+ *
+ * 这三条链路此前调用 `current.generateCompletion`，而那个方法在 SDK 里并不存在。
+ * 可选链让它安静地返回 undefined，后续解析拿到空字符串再返回空数组——
+ * 于是三条链路在真实运行时全部无事发生，测试却因为注入了桩而全绿。
+ * 真实数据库里 representative_memories / watchdog_verdicts 长期 0 行就是这个原因。
+ *
+ * 现在走唯一真实可用的路径：派一个极小的只读任务。代价是每次都要起一个 worker，
+ * 所以调用方必须真的需要结果才调它。
+ */
+ const minimalCompletion=async(prompt:string,options:{budgetTokens?:number}={}):Promise<string>=>{
+  const crew=config.agents[0];
+  if(!crew?.model)throw Error('没有可用的代表配置，无法执行内部生成');
+  // 内部生成自己会产生 task_finished 事件，那条事件又会触发记忆整理——
+  // 而记忆整理再调本函数。没有这道闸，一条任务能繁殖出无限条内部任务。
+  if(internalGeneration>0)throw Error('内部生成正在进行，跳过以避免递归');
+  const session=current?.sessionManager?.getSessionFile?.()||'';
+  const parent=current?.sessionManager?.getSessionId?.()||'';
+  const cwd=current?.cwd||process.cwd();
+  if(!parent)throw Error('没有活跃会话，无法执行内部生成');
+  internalGeneration++;
+  try{
+   // purpose=configuration：内部生成不是委派，审计时要能与真正派给代表的工作区分。
+   const task=await pool.run(crew,prompt,cwd,session,60,undefined,parent,['read'],[],false,0,undefined,options.budgetTokens??3000,{purpose:'configuration'});
+   return String(task.output||'');
+  }finally{internalGeneration--;}
  };
  // 记忆整理管道：整理只是一次短摘要。
  const memoryPipeline=new ConsolidationPipeline(db(),minimalCompletion,
@@ -930,7 +964,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','代表复盘笔记','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -943,8 +977,16 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const steps=proposal.steps.length?proposal.steps.map((step,index)=>`${index+1}. ${step}`).join('\n'):'（未记录步骤）';
   const decision=await ui.select(`${proposal.slug}\n\n${steps}\n\n边界：仅在同类任务中套用；执行前核对路径与命令。`,['采纳并安装','丢弃这份提议','返回']);
   if(decision==='采纳并安装'){
-   // 采纳的动作本身是权威：装进 skills/ 之后，代表通过 skills[] 显式引用才会用到。
-   try{adoptProposal(agentDir,proposal.slug);ui.notify(`已安装技能 ${proposal.slug} · 在代表配置的 skills 里引用后生效`);}catch(error){ui.notify('安装失败：'+clean(error),'warning');}
+   // 采纳包含两步：把文件移进 skills/，并真的加进代表的 skills[]。
+   // 只移文件不接线等于装了没人用——代表通过 skills[] 才会引用到它。
+   try{
+    adoptProposal(agentDir,proposal.slug);
+    const owner=config.agents.find(agent=>agent.name===proposal.agent)||config.agents[0];
+    if(!owner){ui.notify(`已安装技能 ${proposal.slug}，但没有可绑定的代表`,'warning');return;}
+    owner.skills=[...new Set([...(owner.skills||[]),proposal.slug])];
+    refreshSupervisionPrompt();save();
+    ui.notify(`已安装技能 ${proposal.slug} 并加入「${owner.name}」的 skills · 下次派发生效`);
+   }catch(error){ui.notify('安装失败：'+clean(error),'warning');}
    return;
   }
   if(decision==='丢弃这份提议'){discardProposal(agentDir,proposal.slug);ui.notify('已丢弃提议 '+proposal.slug);}
@@ -958,7 +1000,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1056,6 +1098,27 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  // 档案文件是给人改的接口：改完由人显式导回，冲突当场看得见。
  // 不做"文件变了就自动生效"——那会让一次手滑直接改变正在运行的编制。
+ // 复盘笔记：失败任务整理出来的"下次该怎么委派"。
+ // 这些记忆会自动注入该代表的下一次派发，所以这里只是让人能看见并手动作废。
+ if(action.kind==='lessons'){
+  const failed=new Set(pool.tasks.filter(task=>['失败','超时','已中断'].includes(String(task.status||''))).map(task=>task.id));
+  const rows:any[]=[];
+  for(const member of config.agents){
+   for(const row of memoryPipeline.list(member.id)){
+    if(row.sourceWorkerId&&failed.has(row.sourceWorkerId))rows.push({member:member.name,...row});
+   }
+  }
+  if(!rows.length){ui.notify('暂无复盘笔记：失败或超时的任务结束后会自动整理。','info');return;}
+  const label=(row:any)=>`${row.member} · ${new Date(row.validFrom).toLocaleDateString()} · ${row.content.slice(0,80)}`;
+  const pick=await ui.select(`代表复盘笔记（${rows.length}）`,rows.map(label));
+  const chosen=rows[rows.map(label).indexOf(pick)];
+  if(!chosen)return;
+  if(await ui.confirm('作废这条笔记？',`${chosen.member}\n\n${chosen.content}\n\n作废后它不会再注入该代表的下一次派发；记录本身保留，可回溯。`)){
+   memoryPipeline.invalidate(chosen.id);
+   ui.notify('已作废该复盘笔记（记录保留）','info');
+  }
+  return;
+ }
  if(action.kind==='profiles-import'){
   let report:any;
   try{report=importProfiles(config,ctx.cwd);}catch(error){ui.notify(clean(error),'warning');return;}
@@ -1132,6 +1195,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
      if(!hit)return;
      const recorded=watchCandidates.record({ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,cooldownMs:hit.rule.cooldownMs});
      if(!recorded)return;
+     // 观察表没有自然生命周期：每记一条就裁一次，保留最近 500 条。
+     try{watchCandidates.prune();}catch{}
      const candidate={id:'',at:Date.now(),ruleId:hit.rule.id,kind,path,task:hit.task,agent:hit.rule.agent,observeOnly:true as const};
      // 观察永远记录；要不要真的派人由统一判定决定。
      // 严格/只读档、或自动派发没开，到此为止：候选进表，等人来看。

@@ -88,8 +88,8 @@ export function renderSkill(input: { slug: string; description: string; steps: s
   return `${head}${body}${tail}`;
 }
 
-/** 待审阅提议。agent/workers 不在磁盘上——提议正文里已经写明来源，读回时无需再存一份可能过期的元数据。 */
-export type SkillProposal = { slug: string; description: string; steps: string[]; path: string };
+/** 待审阅提议。agent 记录来源代表：采纳时要靠它把技能绑到正确的人身上。 */
+export type SkillProposal = { slug: string; description: string; steps: string[]; agent: string; path: string };
 
 /** 提议目录（<agentDir>/skills-proposed）。 */
 export function proposedRoot(agentDir: string): string {
@@ -107,7 +107,7 @@ export function writeProposal(agentDir: string, proposal: Omit<SkillProposal, 'p
   mkdirSync(dir, { recursive: true });
   const path = join(dir, 'SKILL.md');
   writeFileSync(path, renderSkill({ slug: proposal.slug, description: proposal.description, steps: proposal.steps, agent: proposal.agent }), 'utf8');
-  return { slug: proposal.slug, description: proposal.description, steps: proposal.steps, path };
+  return { slug: proposal.slug, description: proposal.description, steps: proposal.steps, agent: proposal.agent ?? '', path };
 }
 
 /** 列出全部待审阅提议。坏文件跳过——一份手写出错的 SKILL.md 不该让整个列表消失。 */
@@ -121,9 +121,11 @@ export function listProposals(agentDir: string): SkillProposal[] {
     try {
       const text = readFileSync(path, 'utf8');
       const description = /^description:\s*(.+)$/m.exec(text)?.[1]?.trim() || slug;
+      // 来源代表写在正文首句里（renderSkill 生成）；采纳时要靠它决定绑给谁。
+      const agent = /由代表「([^」]+)」/.exec(text)?.[1] || '';
       const steps = (text.split('## 步骤')[1] || '').split('## 边界')[0]
         .split('\n').map(line => /^\d+\.\s*(.+)$/.exec(line.trim())?.[1]).filter((line): line is string => !!line);
-      out.push({ slug, description, steps, path });
+      out.push({ slug, description, steps, agent, path });
     } catch { continue; }
   }
   return out;
