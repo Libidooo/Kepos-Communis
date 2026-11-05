@@ -146,14 +146,14 @@ export function buildElectionReport(input: {
   let recommendation: string;
   if (!ranked.length) recommendation = '没有可评估的候选人：组内还没有推举表态。';
   else if (input.tied) recommendation = `得票并列（${ranked[0]?.votes} 票）：请人类在候选之间指定，系统不代为裁定。`;
-  else if (input.tied === false && ready.length) recommendation = `若无异议，建议由「${ready[0].name}」牵头（${ready[0].votes} 票，${ready[0].rationale}）。`;
-  else if (ranked.some(item => item.verdict === 'caution')) recommendation = `候选人都有需要留意的地方，建议先诊断再决定；可考虑「${ranked[0].name}」并加强复核。`;
+  else if (input.tied === false && ready.length) recommendation = `若无异议，建议推举「${ready[0].name}」兼任代理总代（${ready[0].votes} 票，${ready[0].rationale}）。`;
+  else if (ranked.some(item => item.verdict === 'caution')) recommendation = `候选人都有需要留意的地方：建议先诊断再决定；若必须现在推举，可考虑「${ranked[0].name}」并加强复核。`;
   else recommendation = '所有候选人都存在未解决的失败记录，建议暂不推举。';
 
   const top = input.tied ? undefined : ranked[0];
   const approvalLine = top
-    ? `批准「${top.name}」在组 ${input.groupId} 中承担该任务的协调职责${input.goal ? `：${input.goal.slice(0, 120)}` : ''}`
-    : `组 ${input.groupId} 的推举需要人类裁定`;
+    ? `推举「${top.name}」兼任代理总代${input.goal ? `（组 ${input.groupId}：${input.goal.slice(0, 80)}）` : `（组 ${input.groupId}）`}`
+    : `组 ${input.groupId} 的代理总代推举需要人类裁定`;
   return { groupId: input.groupId, goal: input.goal, electorate: input.electorate, ballots: input.ballots, tied: input.tied, candidates: ranked, recommendation, approvalLine };
 }
 
@@ -165,30 +165,32 @@ export function buildElectionReport(input: {
  */
 export function renderElectionReport(report: ElectionReport): string {
   const lines = [
-    `# 推举呈报 · 组 ${report.groupId}`,
+    `# 推举代理总代 · 组 ${report.groupId}`,
     '',
-    ...(report.goal ? [`任务：${report.goal.slice(0, 200)}`, ''] : []),
-    `参与 ${report.electorate} 人，收到 ${report.ballots} 票${report.tied ? '（并列）' : ''}。`,
-    '',
-    '## 建议',
-    report.recommendation,
-    '',
-    '## 待批准',
-    report.approvalLine,
+    ...(report.goal ? [`任务：${report.goal.slice(0, 120)}`] : []),
+    `参与 ${report.electorate} 人，${report.ballots} 票${report.tied ? '（并列）' : ''}`,
     '',
   ];
-  if (report.candidates.length) {
-    lines.push('## 候选人');
-    for (const item of report.candidates) {
-      const flag = item.verdict === 'ready' ? '✓ 可推举' : item.verdict === 'caution' ? '！需留意' : '✕ 不建议';
-      lines.push('', `### ${item.name} · ${item.votes} 票 · ${flag}`, '', `职责：${item.role}`);
-      lines.push(`模型：${item.provider ? `${item.provider}/` : ''}${item.model}${item.roleKey ? ` · 角色 ${item.roleKey}` : ''}`);
-      lines.push(`历史：近 ${item.history.sampleSize} 轮中 ${item.history.failureCount} 轮未完成${item.history.consecutiveFailures ? `，连续失败 ${item.history.consecutiveFailures} 轮` : ''}`);
-      lines.push(`结论：${item.rationale}`);
-      for (const issue of item.issues) lines.push(`  依据：${issue.taskId} · ${issue.category} · ${issue.reason}`);
-    }
+  // 候选人一行一个：票数、健康度、结论。人第一眼只需要这些。
+  for (const item of report.candidates) {
+    const flag = item.verdict === 'ready' ? '可推举' : item.verdict === 'caution' ? '需留意' : '不建议';
+    const h = item.history.sampleSize
+      ? `${item.history.sampleSize} 轮中 ${item.history.failureCount} 未完成`
+      : '无完成记录';
+    lines.push(`· ${item.name}　${item.votes} 票　${flag}　${h}`);
   }
-  lines.push('', '---', '这份报告只提供依据；批准与否由你决定。');
+  lines.push('', '## 建议', report.recommendation, '');
+  // 只展开有问题的候选：健康的候选不需要解释。
+  const troubled = report.candidates.filter(item => item.issues.length || item.verdict !== 'ready');
+  if (troubled.length) {
+    lines.push('## 依据');
+    for (const item of troubled) {
+      lines.push(`- ${item.name}：${item.rationale}`);
+      for (const issue of item.issues) lines.push(`  · ${issue.taskId} ${issue.category}：${issue.reason}`);
+    }
+    lines.push('');
+  }
+  lines.push('---', '批准即推举该代表兼任代理总代；不新增席位、不改其职责与模型。');
   return lines.join('\n');
 }
 

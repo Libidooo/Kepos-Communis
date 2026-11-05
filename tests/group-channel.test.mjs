@@ -150,8 +150,8 @@ test('no history is caution, not ready — an unknown is not a clean record', ()
 test('the report recommends conditionally and never declares a winner', () => {
   const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 2 }, profile: profile(), tasks: [task()] });
   const report = buildElectionReport({ groupId: 'g1', goal: '审查鉴权', electorate: 3, ballots: 2, tied: false, assessments: [a] });
-  assert.match(report.recommendation, /若无异议，建议由/);
-  assert.match(report.approvalLine, /批准「审查官」在组 g1/);
+  assert.match(report.recommendation, /若无异议，建议推举/);
+  assert.match(report.approvalLine, /推举「审查官」兼任代理总代/);
   assert.doesNotMatch(report.recommendation, /最佳人选/, 'the system does not make the judgement');
 });
 
@@ -165,12 +165,10 @@ test('a tie is handed to the human instead of being resolved', () => {
 test('the rendered report leads with the decision and keeps evidence attached', () => {
   const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 2 }, profile: profile(), tasks: [task({ state: 'FAILED', error: 'boom' })] });
   const text = renderElectionReport(buildElectionReport({ groupId: 'g1', electorate: 3, ballots: 2, tied: false, assessments: [a] }));
-  assert.match(text, /# 推举呈报 · 组 g1/);
+  assert.match(text, /# 推举代理总代 · 组 g1/);
   assert.match(text, /## 建议/);
-  assert.match(text, /## 待批准/);
-  assert.match(text, /## 候选人/);
-  assert.match(text, /职责：审查鉴权与依赖/);
-  assert.match(text, /批准与否由你决定/);
+    assert.match(text, /· 审查官/, 'candidates are one line each');
+    assert.match(text, /批准即推举该代表兼任代理总代/);
 });
 
 test('an approved coordinator is recorded and returned for the group', () => {

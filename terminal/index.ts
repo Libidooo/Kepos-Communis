@@ -1045,7 +1045,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举呈报','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举呈报':'elections','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -1082,7 +1082,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举呈报','elections'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举代理总代','elections'],['直接推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1247,7 +1247,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    const chosen=recommended??await ui.select('批准哪位承担协调职责？',names);
    if(!chosen||!names.includes(chosen))return;
    electionStore.approve(record.id,chosen);
-   ui.notify(`已批准「${chosen}」在组 ${record.groupId} 中承担协调职责`,'info');
+   // 批准即推举为代理总代：这是兼任职务，不新增席位、不改该代表的职责与模型。
+   const member=config.agents.find(agent=>agent.name===chosen);
+   if(member){config.deputyAgentId=member.id;save();refreshSupervisionPrompt();}
+   ui.notify(`已推举「${chosen}」为代理总代（兼任，不占席位）`,'info');
    return;
   }
   if(decision==='驳回'){electionStore.reject(record.id);ui.notify('已驳回该推举呈报','info');}
