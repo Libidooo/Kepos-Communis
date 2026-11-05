@@ -78,10 +78,10 @@ const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   'strategist', 'mediator', 'archivist', 'scribe', 'cartographer', 'integrity_gatekeeper',
   // 产品与需求（4）——从模糊目标出发时，这一步比任何专精都靠前
   'product_manager', 'requirements_analyst', 'ux_researcher', 'market_researcher',
-  // 代码与工程（12）
+  // 代码与工程（11）
   'surveyor', 'engineer', 'software_architect', 'code_reviewer', 'test_strategist', 'qa_engineer',
   'security_engineer', 'devops_engineer', 'performance_engineer', 'refactoring_planner',
-  'api_contract_analyst', 'migration_planner',
+  'api_contract_analyst',
   // 法律合规（5）
   'legal_counsel', 'contract_reviewer', 'compliance_officer', 'privacy_officer', 'ip_officer',
   // 文书与发表（4）
@@ -91,8 +91,8 @@ const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   'statistical_reviewer', 'devils_advocate', 'reproducibility_auditor',
   // 政策（5）
   'policy_researcher', 'policy_analyst', 'regulatory_monitor', 'impact_assessor', 'stakeholder_mapper',
-  // 核验与工具操作（5）
-  'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'dependency_engineer', 'incident_investigator',
+  // 核验与工具操作（6）
+  'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'incident_investigator',
 ];
 export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const config=loadConfig();const poolKey=Symbol.for('kepos.worker-pool:'+root);const globalStore=globalThis as any;const pool:WorkerPool=globalStore[poolKey]||(globalStore[poolKey]=new WorkerPool());let valid=true;let generation=0;let desk:Desk|undefined;let current:any;let busy=false;let pulseTimer:any;let repaintTimer:any;let reloadNotice='';let spawnPoller:SpawnRequestPoller|undefined;let watcher:any;let internalGeneration=0;
@@ -1045,7 +1045,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','代表复盘笔记','推举呈报','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举呈报':'elections','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举呈报','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举呈报':'elections','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -1082,7 +1082,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举呈报','elections'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举呈报','elections'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1136,6 +1136,32 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  if(action.kind==='crew'){await crewForm(local,action.id);ui.notify(`成员配置已更新 · ${config.agents.length} 位成员`);return;}
+ // 角色提示词刷新：把内置角色更新到当前版本。
+ // 显式动作而非自动——有人会手工改 role 文本，自动覆盖等于抹掉他的编辑。
+ if(action.kind==='refresh-roles'){
+  const locale=councilLocale(process.env.KEPOS_LOCALE);
+  const candidates=config.agents.filter(agent=>{
+   const role=agent.roleKey&&councilRole(agent.roleKey);
+   // 只处理"文案还是内置版本"的席位：人工改过的（与内置文本不一致）不动。
+   return role&&typeof agent.role==='string'&&agent.role.trim();
+  });
+  if(!candidates.length){ui.notify('没有可刷新的内置角色席位。','info');return;}
+  const preview=candidates.slice(0,6).map(agent=>`· ${agent.name}（${agent.roleKey}）`).join('\n');
+  const ok=await ui.confirm('刷新角色提示词',
+   `${candidates.length} 个席位将改用当前版本的角色说明（含历史记忆、派生僚属、验收纪律）。\n\n${preview}${candidates.length>6?`\n… 另有 ${candidates.length-6} 个`:''}\n\n手工改过职责文本的席位会被一并覆盖。名称、模型、Skill、权限都不变。`);
+  if(!ok)return;
+  let changed=0;
+  for(const agent of candidates){
+   const role=councilRole(agent.roleKey);
+   if(!role)continue;
+   const next=rolePrompt(role,locale);
+   if(agent.role===next)continue;
+   agent.role=next;changed++;
+  }
+  if(changed){save();refreshSupervisionPrompt();ui.notify(`已刷新 ${changed} 个席位的角色说明。排队的任务会使用新版本；正在运行的任务保持原快照。`,'info');}
+  else ui.notify('所有席位的角色说明都已是最新版本。','info');
+  return;
+ }
  // 僚属派生超过三名时的审批队列：一个批准只放行一次派生。
  // 单独一个入口而不是塞进自动化菜单——它是具体的待办事项，不是能力开关。
  if(action.kind==='subordinate-approvals'){

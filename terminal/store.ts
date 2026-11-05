@@ -19,6 +19,12 @@ export interface Config {
   drafts: Record<string, string>;
   sessionLinks: Record<string, string>;
   initialized?: boolean;
+  /**
+   * 席位数量。缺省 48 是**默认配置**，不是固定编制——
+   * 人类可以按任务流水线把它调成任意值，也可以跳过播种自己逐个添加代表。
+   * 只在首次初始化时决定播种多少席；之后编制完全由 config.agents 决定。
+   */
+  councilSize?: number;
   approvalPolicy?: import('./approval.ts').ApprovalPolicy;
   /** Default read scope for delegated workers; tasks and members may override. */
   workerReadScope?: import('./worker-sandbox.ts').ReadScope;

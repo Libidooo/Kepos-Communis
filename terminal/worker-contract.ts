@@ -15,7 +15,9 @@ export const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls', 'kepos_attach'] as
  */
 export const REPRESENTATIVE_TOOLS = [...READ_ONLY_TOOLS, 'kepos_spawn', 'kepos_report'] as const;
 /** 一个代表最多同时带几个僚属。远小于总理的 48，避免层级爆炸。 */
-export const MAX_SUBORDINATES_PER_REPRESENTATIVE = 6;
+// 实际执行在 subordinates.ts：那里同时管硬上限与"超过三人需人类审批"的门槛。
+// 这里保留导出是为了兼容既有引用，值的来源只有一处。
+export { MAX_SUBORDINATES_PER_REPRESENTATIVE } from './subordinates.ts';
 /** 僚属时限不得超过其直属代表剩余时间的一半。 */
 export const SUBORDINATE_BUDGET_RATIO = 0.5;
 export type WorkerState = 'QUEUED' | 'STARTING' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'INTERRUPTED' | 'CANCEL_REQUESTED' | 'CANCELLED' | 'TIMED_OUT';
