@@ -30,6 +30,7 @@ import { cliGrantUsable } from './cli-grant.ts';
 import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
 import { postGroupMessage, readGroupMessages, renderGroupChannel } from './group-channel.ts';
+import { publishEvidence, readGroupEvidence, renderPeerEvidence } from './group-evidence.ts';
 import { normalizeGroupId, optionalGroupId } from './group-id.ts';
 import { ARCHIVE_DIR } from './archive.ts';
 import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
@@ -336,6 +337,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(event.type==='task_review_due')void judgeReview(event.task);
   if(event.type==='task_finished'){
    flushUpward(event.task);
+   // 同组证据：任务结束时把它产出里"## 结论"之前的部分写进组内可见目录。
+   // 结论不写入——切分在源头完成，读取方就无从读到别人的判断。
+   if(event.task.groupId){
+    try{publishEvidence({archiveRoot:join(event.task.cwd||'',ARCHIVE_DIR),groupId:event.task.groupId,task:event.task as any});}catch{}
+   }
    const candidate=candidateFromTask(event.task as any);
    if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}
   }
@@ -568,6 +574,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 分派时组是可选的，缺省即不进组。
   const homeGroup=optionalGroupId(task.groupId);
   const groups=effectiveGroups({homeGroup,secondments:secondmentStore.active(),agentId:crew.id});
+  // 派发阶段任务 id 尚未生成，所以没有"自己"可标记：所有消息都按发言者显示。
   const channelFor=groups.length
    ?groups.map(id=>renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),id,8),'')).filter(Boolean).join('\n\n')
    :'';
@@ -578,7 +585,14 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const coordinatorNote=coordinator&&crew.name===coordinator
    ?coordinatorBrief(crew.name,groupId!,config.agents.filter(a=>pool.tasks.some(t=>t.groupId===groupId&&t.agent===a.name)).map(a=>a.name))
    :coordinator?`组内协调由「${coordinator}」牵头：把状态与证据发到组通道，不要直接把判断交给它。`:'';
-  const groupPreamble=[groupChannel,coordinatorNote].filter(Boolean).join('\n\n');
+  // 同组证据：拿到的是别人产出里"## 结论"之前的段落，事实可以共享，判断不行。
+  // 这一步让"同组可读彼此证据"从文档承诺变成运行时行为——此前它只写在 CHANGELOG 里。
+  // selfTaskId 传空：任务此刻还没有 id（派发前组装），而组内已发布的证据
+  // 都来自别的任务，不存在"读到自己"的问题。
+  const peerEvidence=homeGroup
+   ?renderPeerEvidence(readGroupEvidence(join(ctx.cwd,ARCHIVE_DIR),homeGroup,''))
+   :'';
+  const groupPreamble=[groupChannel,peerEvidence,coordinatorNote].filter(Boolean).join('\n\n');
   const preamble=[memoryIndex,groupPreamble].filter(Boolean).join('\n\n');
   const launched=preamble?{...task,task:`${preamble}\n\n---\n\n${String(task.task||'')}`}:task;
   // memoryInjected 只用于度量分组：哪一组任务在派发时看过该代表的历史记忆。
@@ -1602,7 +1616,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
     pendingUpward.set(taskId,{agent:task.agent,briefing:text,superior});
    }catch(error){desk&&(desk.notice='改道汇报失败：'+clean(error));}
   };
-  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;watcher?.stop();watcher=undefined;desk?.dispose();desk=undefined;}
+  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,groupId:(task as any).groupId,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;watcher?.stop();watcher=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;
  try{
  if(action.kind==='reload'){if(blocked(ctx)){ctx.ui.notify('任务进行中，未重载；请等待或中止后重试','warning');continue;}const active=pool.tasks.filter(t=>!terminalStates.has(t.status)).length;if(active&&!await ctx.ui.confirm('重载 Kepos 扩展？',`重载会取消 ${active} 个运行中的子任务（包括其他会话的）；会话记录和输入草稿保留。`))continue;db().set('ui_reload',{pid:process.pid,sessionId:ctx.sessionManager.getSessionId(),at:Date.now()});await ctx.reload();return;}

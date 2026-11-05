@@ -5,14 +5,14 @@ import { TASK_ACTIVE_STATES, isTaskActive, isTaskCurrent, isTaskPending, taskEla
 import { awaitingHuman } from './monitor.ts';
 
 export type GraphViewAgent = { id: string; name: string; model?: string; roleKey?: string; deputy?: boolean };
-export type GraphViewTask = TaskStateLike & { id: string; agent: string; agentId?: string; purpose?: 'delegation' | 'configuration'; internal?: boolean; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; error?: string; groupKey?: string; started?: number; ended?: number };
+export type GraphViewTask = TaskStateLike & { id: string; agent: string; agentId?: string; purpose?: 'delegation' | 'configuration'; internal?: boolean; title?: string; tool?: string; checkpoint?: string; output?: string; parentWorkerId?: string; delegationDepth?: number; groupId?: string; error?: string; groupKey?: string; started?: number; ended?: number };
 export type GraphViewSnapshot = { agents: GraphViewAgent[]; tasks: GraphViewTask[] };
 export type GraphHit = { id: string; kind: 'main' | 'agent' | 'task'; index: number; x: number; y: number; taskId?: string };
 export type GraphOffsets = Record<string, { x: number; y: number }>;
 export type CouncilFilter = 'active' | 'pending' | 'all';
 export type CouncilView = { list: boolean; filter: CouncilFilter; query: string; index: number; focus?: 'ring' | 'list' | 'input'; desk?: boolean };
 type Cell = { char: string; color?: string; italic?: boolean; faint?: boolean; bold?: boolean };
-type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number; deputy?: boolean };
+export type VisualNode = { id: string; label: string; kind: 'agent' | 'task'; task?: GraphViewTask; groupKey: string; x: number; y: number; index: number; deputy?: boolean };
 // 活跃=正在执行；NEEDS_HUMAN 归入“待处理”。终态残留的复核/停滞标记不再报警。
 export const activeStates = TASK_ACTIVE_STATES;
 export const countActive = (tasks: GraphViewTask[]) => tasks.filter(isTaskActive).length;
@@ -289,7 +289,8 @@ export function renderCouncilList(tasks: GraphViewTask[], width: number, height:
   return { rows, taskId: tasks[Math.min(index, tasks.length - 1)]?.id ?? null };
 }
 
-function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
+/** 导出供测试断言分圈逻辑：环图的布局难以从渲染结果反推分组键。 */
+export function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   const agents = (snapshot.agents || []).slice(0, 48);
   const tasks = snapshot.tasks || [];
   const byAgent = new Map(agents.map(agent => [agent.name, agent]));
@@ -303,7 +304,11 @@ function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
     // 这样任务结束后代表回到代表席，不再占着临时分组环。
     const latest = latestByAgent.get(agent.name);
     const active = latest && isTaskCurrent(latest) ? latest : undefined;
-    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: latest, groupKey: active?.groupKey || 'default', index: 0, x: 0, y: 0, deputy: agent.deputy === true };
+    // 分圈优先按工作组：组是任务期间真实存在的协作单元（共享组通道与证据），
+    // 比"同属一个会话"更能说明谁在跟谁一起干活。
+    // 没有组时退回原有的 groupKey（会话/计划），保持既有行为不变。
+    const ring = active?.groupId ? `group:${active.groupId}` : active?.groupKey;
+    return { id: `agent:${agent.id}`, label: agent.name, kind: 'agent' as const, task: latest, groupKey: ring || 'default', index: 0, x: 0, y: 0, deputy: agent.deputy === true };
   });
   // 主环只铺代表席位。僚属（代表派生的子任务）不占席位：
   // 48 个代表各派生若干僚属时，环图会被几十个临时节点撑满，反而看不清组织。

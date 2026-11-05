@@ -14,6 +14,7 @@ process.env.ORBITAL_HOME = mkdtempSync(join(tmpdir(), 'kepos-graph-view-home-'))
 // 静态 import 会被提升到 env 赋值之前，所以这里必须动态导入。
 const { renderGraph, renderCouncilList, councilTasks } = await import('../dist/terminal/graph-view.js');
 const { Desk } = await import('../dist/terminal/desk.js');
+const { makeNodes } = await import('../dist/terminal/graph-view.js');
 
 const theme = { fg: (_color, value) => value };
 const agents = [{ id: 'a', name: 'A' }];
@@ -490,4 +491,29 @@ test('many active tasks cluster into grouped rings whose leader faces 总理', (
   // 没有空席占位：席位全部是真实代表或任务。
   const seats = view.hits.filter(hit => String(hit.id).startsWith('seat:'));
   assert.equal(seats.length, 0, 'no placeholder seats are drawn');
+});
+
+// 工作组分圈：组是任务期间真实存在的协作单元，比"同属一个会话"更能说明谁在跟谁干活。
+// 直接断言分组键，而不是从渲染结果反推——布局随尺寸变化，键才是承诺。
+test('an active group becomes its own ring, ahead of the session key',()=>{
+  const nodes=makeNodes({
+    agents:[{id:'a',name:'审查官'},{id:'b',name:'核验官'},{id:'c',name:'记录官'}],
+    tasks:[
+      {id:'t1',agent:'审查官',state:'RUNNING',status:'运行中',title:'一',groupId:'squad1',groupKey:'session1',started:1},
+      {id:'t2',agent:'核验官',state:'RUNNING',status:'运行中',title:'二',groupId:'squad1',groupKey:'session1',started:2},
+      {id:'t3',agent:'记录官',state:'RUNNING',status:'运行中',title:'三',groupKey:'session1',started:3},
+    ],
+  });
+  const keyOf=name=>nodes.find(node=>node.label===name).groupKey;
+  assert.equal(keyOf('审查官'),'group:squad1');
+  assert.equal(keyOf('核验官'),'group:squad1','same group, same ring');
+  assert.equal(keyOf('记录官'),'session1','no group falls back to the session key');
+});
+
+test('a settled group releases its members back to the default ring',()=>{
+  const nodes=makeNodes({
+    agents:[{id:'a',name:'审查官'}],
+    tasks:[{id:'t1',agent:'审查官',state:'SUCCEEDED',status:'完成',title:'一',groupId:'squad1',started:1,ended:2}],
+  });
+  assert.equal(nodes.find(node=>node.label==='审查官').groupKey,'default','a finished task does not hold a ring');
 });
