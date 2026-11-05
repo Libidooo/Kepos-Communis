@@ -124,3 +124,28 @@ export function groupEvidenceFor(member: GroupMember, output: string): PeerEvide
   const { evidence } = splitEvidenceAndConclusion(output);
   return { taskId: member.taskId, agent: member.agent, state: member.state, body: evidence.trim() };
 }
+
+/**
+ * 组收尾：当组内最后一个任务也结束时，清掉这个组的证据。
+ *
+ * 时机为什么必须是"全部结束"：组内还有任务在跑时清理，会让它突然读不到
+ * 同伴刚发布的进展——协作正需要那份证据，删掉比不发布更糟。
+ *
+ * 清理为什么安全：经验不在这里。代表记忆按 agent_id 存在 SQLite（双时态、不删），
+ * 技能提议按 slug 存在 agentDir，工作流存的是结构而非证据内容。
+ * 组目录里只有当次任务的事实片段，它的生命周期就该和组一样短。
+ *
+ * 返回是否真的清理了（还有活跃任务时返回 false）。
+ */
+export function retireGroupIfDone(input: {
+  archiveRoot: string;
+  groupId: string;
+  /** 该组当前仍存活的任务数，由调用方从任务池算好传入。 */
+  liveTasks: number;
+}): boolean {
+  const groupId = String(input.groupId ?? '').trim();
+  if (!groupId) return false;
+  if (input.liveTasks > 0) return false;
+  clearGroupEvidence(input.archiveRoot, groupId);
+  return true;
+}

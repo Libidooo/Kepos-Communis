@@ -30,7 +30,7 @@ import { cliGrantUsable } from './cli-grant.ts';
 import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
 import { postGroupMessage, readGroupMessages, renderGroupChannel } from './group-channel.ts';
-import { publishEvidence, readGroupEvidence, renderPeerEvidence } from './group-evidence.ts';
+import { publishEvidence, readGroupEvidence, renderPeerEvidence, retireGroupIfDone } from './group-evidence.ts';
 import { normalizeGroupId, optionalGroupId } from './group-id.ts';
 import { ARCHIVE_DIR } from './archive.ts';
 import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
@@ -41,11 +41,12 @@ import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
 import { collectMetrics, formatMetrics } from './kpi.ts';
+import { calibrateAll, formatCalibration } from './calibration.ts';
 import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
 import { AUTO_DISPATCH_PER_MINUTE, assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
 import { AUTOMATION_LABEL, automationAllowed, automationPrompt, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
 import { SubordinateApprovals, decideSpawn } from './subordinates.ts';
-import { describeWorkflow, instantiateWorkflow, newWorkflowId, renderWorkflow, seatsFromAgents, validateWorkflow } from './workflow.ts';
+import { MAX_STEP_CHARS, describeWorkflow, instantiateWorkflow, newWorkflowId, renderWorkflow, seatsFromAgents, validateWorkflow } from './workflow.ts';
 import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -932,9 +933,13 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const data={workflow:workflow.id,plan:planSummary(mission),addedSeats:instantiated.seats.map(seat=>seat.name),warnings:instantiated.warnings};
   return{content:[{type:'text',text:boundedJson(data)}],details:data};
  }});
- pi.registerTool({name:'kepos_metrics',label:'运行度量',description:'只读指标：重复委派、二次追问、提前完成、Watchdog 误报、记忆质量。每项都给出分子/分母与口径说明；样本不足时明说，不返回 0% 假装健康。用于验证优化是否真的生效，不要凭感觉判断。',parameters:Type.Object({metric:Type.Optional(Type.String({maxLength:40,description:'只取一项：duplicate_delegation / second_ask / premature_done / watchdog / memory；缺省全部'}))}),async execute(_id,params){
+ pi.registerTool({name:'kepos_metrics',label:'运行度量与参数校准',description:'只读指标：重复委派、二次追问、提前完成、Watchdog 误报、记忆质量。每项都给出分子/分母与口径说明；样本不足时明说，不返回 0% 假装健康。metric=calibration 时给出三个硬编码参数的观测分布与建议值（置信度阈值 / 派发频率上限 / 僚属审批线）——只建议，不自动改，因为放宽或收紧哪个更糟取决于你在做什么。',parameters:Type.Object({metric:Type.Optional(Type.String({maxLength:40,description:'duplicate_delegation / second_ask / premature_done / watchdog / memory / calibration；缺省全部五项指标'}))}),async execute(_id,params){
+  if(params.metric==='calibration'){
+   const items=calibrateAll(db());
+   return{content:[{type:'text',text:formatCalibration(items)}],details:{calibration:items} as any};
+  }
   const results=collectMetrics(db(),params.metric);
-  return{content:[{type:'text',text:formatMetrics(results)}],details:{metrics:results}};
+  return{content:[{type:'text',text:formatMetrics(results)}],details:{metrics:results} as any};
  }});
  pi.registerTool({name:'kepos_events',label:'增量任务事件',description:`按 cursor 读取当前父会话或项目的任务状态、工具调用、${SUPERVISION_INTERVAL_SECONDS/60}分钟复核点和完成事件，避免全量轮询。只读。`,parameters:Type.Object({cursor:Type.Optional(Type.Integer({minimum:0})),limit:Type.Optional(Type.Integer({minimum:1,maximum:200})),project:Type.Optional(Type.String())}),async execute(_id,params,_signal,_update,ctx){const data=readWorkerEvents(db(),{cursor:params.cursor??0,parentSessionId:ctx.sessionManager.getSessionId(),cwd:params.project||undefined,limit:params.limit??100});return{content:[{type:'text',text:JSON.stringify(data)}],details:data};}});
  pi.registerTool({name:'kepos_history',label:'会话历史代际',description:'只读查询当前会话的 SQLite 历史镜像。默认返回代际目录；提供 generation 可读取指定快照，query 可搜索所有保留消息。不会修改 Pi 上下文或恢复旧执行。',parameters:Type.Object({generation:Type.Optional(Type.Integer({minimum:1})),query:Type.Optional(Type.String({maxLength:200}))}),async execute(_id,params,_signal,_update,ctx){const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(!logical)return{content:[{type:'text',text:'当前会话尚未建立持久历史映射'}],details:undefined};let data:any=keposSessionStore.generations(logical);if(params.generation||params.query!==undefined){let records=params.generation?keposSessionStore.getGeneration(logical,params.generation):keposSessionStore.getMessages(logical,true);records=records.filter(m=>['user','assistant','toolResult'].includes(m.role)||['compaction','branch_summary'].includes(String(m.metadata.piType)));if(params.query!==undefined)records=records.filter(m=>(JSON.stringify(m.content)??'').toLowerCase().includes(params.query!.toLowerCase()));data=records.slice(-12).map(m=>({uid:m.messageUid,role:m.role,content:m.content,archived:m.archived}));}return{content:[{type:'text',text:boundedJson(data)}],details:{logicalSessionId:logical}};}});
@@ -1317,6 +1322,41 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  }
  // 自动化能力：三项独立开关，全部默认关闭。
  // 工作流：席位配方 + 计划模板，与总理的工具共用同一个实例化函数。
+ // 从环图上把某个组存成工作流：组内成员变成席位配方，组内任务变成步骤模板。
+ // 这是"模板从哪里来"的答案——不是凭空设计，而是把一次真实协作固化成形状。
+ if(action.kind==='workflow-from-group'){
+  const groupId=String(action.id||'').trim();
+  if(!groupId){ui.notify('缺少组标识','warning');return;}
+  const members=pool.tasks.filter(task=>task.groupId===groupId);
+  if(!members.length){ui.notify(`组 ${groupId} 没有任务，无法生成工作流`,'warning');return;}
+  const name=await ui.input('工作流名称',`组 ${groupId} 的做法`);
+  if(!name?.trim())return;
+  // 席位取自已配置代表：只记录角色与模型，不记录历史。
+  const seatAgents=config.agents.filter(agent=>members.some(task=>task.agent===agent.name));
+  // 步骤按任务顺序，任务描述沿用原标题；组关系不复用（新实例自带同一个组）。
+  // roleKey 从已配置代表取：Task 上没有这个字段，只有 profileSnapshot 里有。
+  const steps=members.map((task,index)=>{
+   const seat=seatAgents.find(agent=>agent.name===task.agent);
+   return {
+    id:`step-${index+1}`,
+    seat:task.agent,
+    ...(seat?.roleKey?{roleKey:seat.roleKey}:{}),
+    task:String(task.title||'').slice(0,MAX_STEP_CHARS),
+    ...(index>0?{dependsOn:[`step-${index}`]}:{}),
+   };
+  });
+  const workflow:any={
+   id:newWorkflowId(),name:name.trim(),
+   description:`由组 ${groupId} 的实际协作生成 · ${members.length} 个任务`,
+   seats:seatsFromAgents(seatAgents),
+   steps,createdAt:Date.now(),updatedAt:Date.now(),source:'human',
+  };
+  const check=validateWorkflow(workflow);
+  if(!check.ok){ui.notify('生成的工作流不合法：'+check.errors.join('；'),'warning');return;}
+  config.workflows=[...(config.workflows||[]),workflow];save();
+  ui.notify(`已存成工作流「${workflow.name}」· ${describeWorkflow(workflow)}\n它只记录形状，不含这次的证据与结论。`,'info');
+  return;
+ }
  if(action.kind==='workflows'){
   const list=config.workflows||[];
   if(!list.length){

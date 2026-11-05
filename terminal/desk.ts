@@ -89,6 +89,7 @@ export const KEY_HINTS: readonly KeyHint[] = [
  { key: 'tab', label: 'Tab 列表', help: 'Tab：议会内切换席位图与任务列表', when: 'council', footer: true },
  { key: 'slash', label: '/ 过滤', help: '议会列表内按 / 输入关键词过滤，Esc 结束', when: 'list', footer: true },
  { key: 'v', label: 'v 完整产出', help: '议会列表内按 v 打开该任务的完整产出', when: 'list', footer: true },
+ { key: 'w', label: 'w 存成工作流', help: '议会列表内按 w 把该任务所属组存成可复用的工作流', when: 'list', footer: true },
  { key: 'ctrl+left', label: 'Ctrl+← 上一任务', help: '任务视图内 Ctrl+← / Ctrl+→ 切换任务', when: 'task', footer: true },
  { key: 'ctrl+right', label: 'Ctrl+→ 下一任务', help: '任务视图内 Ctrl+← / Ctrl+→ 切换任务', when: 'task', footer: true },
  { key: 'pgup', label: 'PgUp/PgDn', help: 'PgUp/PgDn 或滚轮：滚动历史与产出；Ctrl+End 回到最新', when: 'always', footer: true },
@@ -97,7 +98,7 @@ export const KEY_HINTS: readonly KeyHint[] = [
 export const keyBytes: Record<string, string> = {
  f1: '\x1bOP', f2: '\x1bOQ', f3: '\x1bOR', f4: '\x1bOS', f5: '\x1b[15~', f6: '\x1b[17~', f7: '\x1b[18~',
  f8: '\x1b[19~', f9: '\x1b[20~', f10: '\x1b[21~', f11: '\x1b[23~', escape: '\x1b',
- 'ctrl+x': '\x18', tab: '\t', slash: '/', v: 'v', pgup: '\x1b[5~',
+ 'ctrl+x': '\x18', tab: '\t', slash: '/', v: 'v', w: 'w', pgup: '\x1b[5~',
  'ctrl+left': '\x1b[1;5D', 'ctrl+right': '\x1b[1;5C',
 };
  // 拆分用户输入的多个路径：支持引号包裹的含空格路径，也支持一行一个。
@@ -771,6 +772,9 @@ export class Desk {
  if(this.graphView&&this.graphFocus==='list'&&data==='/'&&!this.councilSearch){this.councilSearch=true;this.notice='列表过滤：输入关键词 · Esc 结束';this.refresh();return;}
  // 列表 Enter 定位到图上对应坐席并打开详情；v 进入完整产出阅读层。
  if(this.graphView&&this.graphFocus==='list'&&matchesKey(data,Key.enter)){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const hit=task?this.graphHits.find(item=>item.taskId===task.id):undefined;if(hit){this.graphSelected=hit.index;this.graphSelectedId=hit.id;this.graphDetail=true;this.refresh();}else{this.notice='当前画面没有这个坐席 · 窄屏请 Tab 回环图';this.refresh();}return;}
+ // 把当前组存成工作流：组是任务期间真实形成的协作单元，正是模板的来源。
+ // 只带走结构（成员角色 + 步骤形状），不带走证据与结论——模板描述形状，不描述过往。
+ if(this.graphView&&this.graphFocus==='list'&&data==='w'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const groupId=(task as any)?.groupId;if(!groupId){this.notice='这个任务不属于任何组 · 只有组才能存成工作流';this.refresh();return;}this.finish({kind:'workflow-from-group',id:String(groupId)});return;}
  if(this.graphView&&this.graphFocus==='list'&&data==='v'){const filtered=councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery);const task=filtered[this.councilIndex];const at=task?this.orderIndex(task.id):-1;if(at>=0){this.graphView=false;this.graphDetail=false;this.taskScope='all';this.monitorAt=0;this.taskView=true;this.taskIndex=at;this.readStart=null;this.refresh();return;}this.notice='未找到该任务的完整产出';this.refresh();return;}
  // 议会内 Enter 只按焦点行事：席位焦点开详情（草稿不发送），输入焦点才发送。
  if(this.graphView&&this.graphFocus==='ring'&&matchesKey(data,Key.enter)){const hit=this.graphHits.find(item=>item.index===this.graphSelected&&item.taskId);if(hit?.taskId){this.councilDesk=true;this.councilDeskTaskId=hit.taskId;this.deskOffset=0;this.deskWrapKey='';this.graphDetail=false;this.councilList=false;this.graphFocus='input';this.editor.focused=this.focused;this.refresh();}else this.graphDetail=true;this.refresh();return;}
