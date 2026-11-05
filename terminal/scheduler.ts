@@ -3,6 +3,7 @@ import type { KeposDatabase } from './database.ts';
 import { GraphStore } from './graph.ts';
 import type { WorkerPool } from './workers.ts';
 import { DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, READ_ONLY_TOOLS, MAX_TASK_SECONDS, profileRevision, type WorkerHandle } from './worker-contract.ts';
+import { optionalGroupId } from './group-id.ts';
 import { acceptanceState, freshAcceptance, isPrematureDone, markPasses, normalizeAcceptance, unmetChecks, type AcceptanceCheck } from './acceptance.ts';
 export type MissionState = 'QUEUED' | 'RUNNING' | 'PAUSED' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export type JobState = 'QUEUED' | 'RUNNING' | 'WAITING' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
@@ -18,6 +19,12 @@ export interface MissionJobInput {
      * 计划写下的是"怎样才算完成"，不是"已经完成了"。
      */
     acceptance?: unknown;
+    /**
+     * 本步骤所属的工作小组。同组步骤共享一个组通道目录，
+     * 可以在其中交换状态与证据（但仍读不到彼此的结论）。
+     * 工作组是工作流把"几步协同"表达出来的方式。
+     */
+    groupId?: string;
 }
 export interface MissionInput {
     id?: string;
@@ -46,6 +53,8 @@ export interface JobRecord {
     checkpoint?: string;
     /** 验收条目及勾选状态；老计划没有这一列时为空数组。 */
     acceptance?: AcceptanceCheck[];
+    /** 本步骤所属的组；计划步骤因此也能参与组通道。 */
+    groupId?: string;
 }
 export interface MissionRecord {
     id: string;
@@ -107,10 +116,12 @@ export class MissionScheduler {
    CREATE INDEX IF NOT EXISTS mission_jobs_mission ON mission_jobs(mission_id);
    CREATE INDEX IF NOT EXISTS mission_events_cursor ON mission_events(mission_id,seq);
   `);
-        // 老库补列：acceptance 是后加的，升级不能让已有计划读不出来。
+        // 老库补列：后加的字段一律在这里补，升级不能让已有计划读不出来。
         const columns = (this.database.prepare('PRAGMA table_info(mission_jobs)').all() as any[]).map(column => column.name);
         if (!columns.includes('acceptance'))
             this.database.sql.exec('ALTER TABLE mission_jobs ADD COLUMN acceptance TEXT');
+        if (!columns.includes('group_id'))
+            this.database.sql.exec('ALTER TABLE mission_jobs ADD COLUMN group_id TEXT');
     }
     enqueue(input: MissionInput): MissionRecord {
         this.validate(input);
@@ -138,8 +149,10 @@ export class MissionScheduler {
                 const requiresHuman = !!item.requiresHuman || seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS;
                 // 验收条目在创建时固定下来：此后修改配置或换模型都不影响"这次承诺了什么"。
                 const acceptance = freshAcceptance(item.acceptance);
-                this.database.prepare('INSERT INTO mission_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(key, id, JSON.stringify(agent), item.task, JSON.stringify(item.dependsOn || []), seconds, requiresHuman ? 1 : 0, 'QUEUED', null, null, null, null, null, null, acceptance.length ? JSON.stringify(acceptance) : null);
-                this.event(id, key, 'job_queued', { state: requiresHuman ? 'NEEDS_HUMAN' : 'QUEUED', profileRevision: agent.profileRevision, requiresHuman, acceptance: acceptance.length, reason: seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS ? 'Long-running step requires human approval' : undefined });
+                // 组标识在入队时校验一次：写错的组名会让"组没生效"变成最难查的一类问题。
+                const groupId = optionalGroupId(item.groupId);
+                this.database.prepare('INSERT INTO mission_jobs VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(key, id, JSON.stringify(agent), item.task, JSON.stringify(item.dependsOn || []), seconds, requiresHuman ? 1 : 0, 'QUEUED', null, null, null, null, null, null, acceptance.length ? JSON.stringify(acceptance) : null, groupId ?? null);
+                this.event(id, key, 'job_queued', { state: requiresHuman ? 'NEEDS_HUMAN' : 'QUEUED', profileRevision: agent.profileRevision, requiresHuman, acceptance: acceptance.length, ...(groupId ? { groupId } : {}), reason: seconds > HUMAN_APPROVAL_THRESHOLD_SECONDS ? 'Long-running step requires human approval' : undefined });
             });
             this.event(id, null, 'mission_created', { state: 'QUEUED' });
         });
@@ -249,6 +262,7 @@ export class MissionScheduler {
             requiresHuman: !!job.requires_human, state: job.state, handle: job.handle ? JSON.parse(job.handle) : undefined,
             output: job.output || undefined, error: job.error || undefined, started: job.started || undefined, ended: job.ended || undefined, checkpoint: job.checkpoint || undefined,
             acceptance: job.acceptance ? JSON.parse(job.acceptance) : undefined,
+            groupId: job.group_id ?? undefined,
         }));
         return { id: row.id, goal: row.goal, cwd: row.cwd, parentSessionId: row.parent, sessionFile: row.session_file || undefined, state: row.state, created: row.created, updated: row.updated, deadline: row.deadline || undefined, jobs };
     }
@@ -352,7 +366,7 @@ export class MissionScheduler {
                 ? `\n\n## 验收条目（逐条对照，缺一条就不算完成）\n${job.acceptance.map((item, index) => `${index + 1}. ${item.check}`).join('\n')}\n\n交付时在「## 结论」里逐条回应：这一条由什么证据证明成立。没有证据的条目直说没做到，不要含糊带过。`
                 : '';
             const instruction = `Mission: ${limitText(m.goal, 2000)}\n\nAssigned step: ${job.task}${acceptance}` + (context ? `\n\nCompleted dependency evidence (verify before relying on it):\n${context.slice(0, 12000)}` : '');
-            handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false);
+            handle = this.pool.launch(structuredClone(job.agent), instruction, m.cwd, m.sessionFile || '', job.seconds, undefined, m.parentSessionId, job.agent.tools ?? Array.from(READ_ONLY_TOOLS), [], false, 0, undefined, undefined, { ...(job.groupId ? { groupId: job.groupId } : {}) });
             const launched = handle;
             this.liveHandles.set(job.key, launched);
             // The pool authorizes by hashing the presented capability, so only the raw

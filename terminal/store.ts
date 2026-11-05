@@ -7,6 +7,7 @@ import { root } from './paths.ts';
 import { ARCHIVE_DIR, syncRoleDocs } from './archive.ts';
 import { councilRole } from './council-roles/index.ts';
 import { readProfiles, syncAgentsFile, syncProfiles } from './profile-file.ts';
+import { syncWorkflows } from './workflow.ts';
 import { migrateAutomation } from './automation.ts';
 import { ProfileHistory, type AgentProfile } from './profiles.ts';
 export { root, sessionRoot } from './paths.ts';
@@ -25,6 +26,12 @@ export interface Config {
    * 只在首次初始化时决定播种多少席；之后编制完全由 config.agents 决定。
    */
   councilSize?: number;
+  /**
+   * 工作流：席位配方 + 计划模板，可保存复用。
+   * 存这里而不是单独文件，因为实例化要同时改编制与提交计划，
+   * 两者必须能被一次原子读写覆盖。
+   */
+  workflows?: import('./workflow.ts').Workflow[];
   approvalPolicy?: import('./approval.ts').ApprovalPolicy;
   /** Default read scope for delegated workers; tasks and members may override. */
   workerReadScope?: import('./worker-sandbox.ts').ReadScope;
@@ -194,8 +201,8 @@ export function saveConfig(config: Config): void {
  * 测试或子进程都会往真实仓库里写文件——包括一份假代表名单。
  * 导出的目标是"哪个工作区"，只有调用方知道；猜出来的目标迟早写错地方。
  */
-export function exportWorkspaceFiles(config: Config, cwd: string): { agents: boolean; profiles: number; skipped: string[] } {
-  const result = { agents: false, profiles: 0, skipped: [] as string[] };
+export function exportWorkspaceFiles(config: Config, cwd: string): { agents: boolean; profiles: number; workflows: number; skipped: string[] } {
+  const result = { agents: false, profiles: 0, workflows: 0, skipped: [] as string[] };
   try {
     result.agents = syncAgentsFile(cwd, {
       members: config.agents.map(agent => ({ name: agent.name, roleKey: agent.roleKey, model: agent.model })),
@@ -221,6 +228,9 @@ export function exportWorkspaceFiles(config: Config, cwd: string): { agents: boo
         }));
       if (docs.length) syncRoleDocs(cwd, docs);
     }
+    // 工作流也导出：它是"这套团队怎么运转"的说明，与代表档案同类。
+    // 一个工作流的价值有一半在于能被读到、被复制到别的项目。
+    if (config.workflows?.length) result.workflows = syncWorkflows(archiveRoot, config.workflows);
   } catch (error) {
     result.skipped.push(String(error));
   }

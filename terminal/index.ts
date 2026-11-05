@@ -29,7 +29,8 @@ import { credentialsReady } from './cli-runtime.ts';
 import { cliGrantUsable } from './cli-grant.ts';
 import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
-import { readGroupMessages, renderGroupChannel } from './group-channel.ts';
+import { postGroupMessage, readGroupMessages, renderGroupChannel } from './group-channel.ts';
+import { normalizeGroupId, optionalGroupId } from './group-id.ts';
 import { ARCHIVE_DIR } from './archive.ts';
 import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
 import { ElectionStore, assessCandidate, buildElectionReport, renderElectionReport } from './election-report.ts';
@@ -43,6 +44,7 @@ import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandida
 import { AUTO_DISPATCH_PER_MINUTE, assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
 import { AUTOMATION_LABEL, automationAllowed, automationPrompt, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
 import { SubordinateApprovals, decideSpawn } from './subordinates.ts';
+import { describeWorkflow, instantiateWorkflow, newWorkflowId, renderWorkflow, seatsFromAgents, validateWorkflow } from './workflow.ts';
 import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -562,7 +564,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 该代表这次实际属于哪些组：原本的组 + 未到期的借调目标组。
   // 借调成员因此能收到目标组的频道，而到期后自动退回原组——
   // "临时"不靠人记得收回，靠 effectiveGroups 每个读取方都算一次。
-  const homeGroup=typeof task.groupId==='string'?task.groupId:undefined;
+  // 组标识统一校验：非法值在这里就报错，而不是变成"组没生效"。
+  // 分派时组是可选的，缺省即不进组。
+  const homeGroup=optionalGroupId(task.groupId);
   const groups=effectiveGroups({homeGroup,secondments:secondmentStore.active(),agentId:crew.id});
   const channelFor=groups.length
    ?groups.map(id=>renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),id,8),'')).filter(Boolean).join('\n\n')
@@ -618,35 +622,47 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 组内推举：围绕一个任务的协作要有人牵头。
  // 结果是**候选**，人类在 F2 确认后才生效——自主推举省的是协调成本，
  // 不是编制决定权。
- pi.registerTool({name:'kepos_group',label:'同组协作与推举',description:'读取或统计一个工作小组的通信与推举。同组代表可交换状态、就具体问题讨论、明确表达异议；通道内不含推理过程与结论（那两样必须各自独立形成）。action=status 看组内消息与当前推举结果；action=elect 统计推举（组员在 discuss 消息里写「推举：某某」）。推举结果是候选，需要人类确认。',parameters:Type.Object({groupId:Type.String({maxLength:64}),action:Type.Union([Type.Literal('status'),Type.Literal('elect')]),limit:Type.Optional(Type.Integer({minimum:1,maximum:60}))}),async execute(_id,params,_signal,_update,ctx){
+ pi.registerTool({name:'kepos_group',label:'同组协作与推举',description:'读取、发言或统计一个工作小组的通信与推举。同组代表可交换状态、就具体问题讨论、明确表达异议；通道内不含推理过程与结论（那两样必须各自独立形成）。action=status 看组内消息与当前推举结果；action=post 由总理代发一条消息（代表自己用进程内的 kepos_group 工具发）；action=elect 统计推举（组员在 discuss 消息里写「推举：某某」）。推举结果是候选，需要人类确认。',parameters:Type.Object({groupId:Type.String({maxLength:64}),action:Type.Union([Type.Literal('status'),Type.Literal('post'),Type.Literal('elect')]),kind:Type.Optional(Type.Union([Type.Literal('status'),Type.Literal('discuss'),Type.Literal('challenge')],{description:'post 时的消息种类'})),text:Type.Optional(Type.String({maxLength:1200,description:'post 的正文'})),limit:Type.Optional(Type.Integer({minimum:1,maximum:60}))}),async execute(_id,params,_signal,_update,ctx){
   const archiveRoot=join(ctx.cwd,ARCHIVE_DIR);
-  const messages=readGroupMessages(archiveRoot,params.groupId,params.limit??20);
+  // 组标识统一校验：写错的组名会变成"组没生效"，那是最难查的一类问题。
+  const groupResult=normalizeGroupId(params.groupId);
+  if(groupResult.ok!==true)throw Error(groupResult.reason);
+  const groupId=groupResult.groupId;
+  // 代发消息：总理本人也可以是组里的一个声音（例如转达人类的决定）。
+  // 代表的 groupId 校验必须放在用之前——否则非法 id 会走进后面按组过滤的逻辑。
+  if(params.action==='post'){
+   if(!params.text?.trim())throw Error('post 需要 text');
+   const kind:any=params.kind||'status';
+   const message=postGroupMessage(archiveRoot,{groupId,taskId:'premier',agent:'总理',kind,text:params.text});
+   return{content:[{type:'text',text:`已发到组 ${groupId}（${kind}）：${message.id}`}],details:message};
+  }
+  const messages=readGroupMessages(archiveRoot,groupId,params.limit??20);
   // 组成员来自当前会话的任务，按 groupId 过滤——不信任消息里自称的身份。
   const members=pool.tasks
-   .filter(task=>task.groupId===params.groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())
+   .filter(task=>task.groupId===groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())
    .map(task=>({taskId:task.id,agent:task.agent}));
   // 组内消息与推举结果对两个动作都一样，只算一次。
   const result=tallyElection(messages,members);
   const outcome=electionOutcome(result,members.length);
   if(params.action==='status'){
-   const data={groupId:params.groupId,members:members.map(m=>m.agent),messages:messages.length,election:{ballots:result.ballots,candidates:result.candidates,...outcome},channel:renderGroupChannel(messages,'')};
+   const data={groupId,members:members.map(m=>m.agent),messages:messages.length,election:{ballots:result.ballots,candidates:result.candidates,...outcome},channel:renderGroupChannel(messages,'')};
    return{content:[{type:'text',text:boundedJson(data)}],details:data};
   }
   // 评估每位候选人：档案（职责/模型）+ 历史（完成率/失败类别）。
   // 报告只给依据与条件式建议，批准与否由人类决定。
-  const goal=pool.tasks.find(task=>task.groupId===params.groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())?.title;
+  const goal=pool.tasks.find(task=>task.groupId===groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())?.title;
   const assessments=result.candidates.map(candidate=>assessCandidate({
    candidate,
    profile:config.agents.find(agent=>agent.name===candidate.agent),
    tasks:pool.tasks,
    goal,
   }));
-  const report=buildElectionReport({groupId:params.groupId,goal,electorate:members.length,ballots:result.ballots,tied:result.tied,assessments});
+  const report=buildElectionReport({groupId,goal,electorate:members.length,ballots:result.ballots,tied:result.tied,assessments});
   // 登记为待批：人类在 F2 里看报告并决定。
   // 只有真的有人可推举时才提交，平票或无人可推的时间点不制造待办。
   const submitted=report.candidates.some(item=>item.verdict!=='avoid')?electionStore.submit(report):undefined;
-  if(desk&&submitted){desk.notice=`推举呈报待批准 · 组 ${params.groupId} · F2 → 推举呈报`;scheduleRepaint();}
-  const data={groupId:params.groupId,electorate:members.length,ballots:result.ballots,tied:result.tied,decided:outcome.decided,reason:outcome.reason,report,submitted:submitted?.id};
+  if(desk&&submitted){desk.notice=`推举呈报待批准 · 组 ${groupId} · F2 → 推举呈报`;scheduleRepaint();}
+  const data={groupId,electorate:members.length,ballots:result.ballots,tied:result.tied,decided:outcome.decided,reason:outcome.reason,report,submitted:submitted?.id};
   return{content:[{type:'text',text:renderElectionReport(report)}],details:data};
  }});
  pi.registerTool({name:'kepos_vote',label:'代表团表决',description:'汇总一次代表团表决并呈报人类。代表票来自各任务产出末尾的约定行 VOTE: yes|no|abstain - 理由；主 Agent 自己的票用 main 传入，展示时标注（分派方，注意利益关联）。是否终止空转/预算任务、是否改变方向等重大决定由人类裁决，本工具只汇总呈现。',parameters:Type.Object({question:Type.String({maxLength:300}),votes:Type.Array(Type.Object({agent:Type.String(),choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}),{maxItems:48,minItems:1}),main:Type.Optional(Type.Object({choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}))}),async execute(_id,params){
@@ -808,13 +824,72 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(!outcome)return{content:[{type:'text',text:'未执行预检（报告不满足条件或已预检过）'}],details:undefined};
   return{content:[{type:'text',text:precheckReport({report:params.report,result:outcome.result,attempts:outcome.attempts})}],details:outcome.result};
  }});
+ pi.registerTool({name:'kepos_workflow',label:'工作流',description:'把"这套团队按这个顺序做这类任务"存成可复用的工作流：席位配方（名字/角色/模型）+ 计划模板（步骤/依赖/组/验收）。action=list 列出；get 看细节；create 把当前编制与给定步骤存成新工作流；run 按某个工作流开始一次任务（需要 goal，会把 {goal} 替换进去并补齐缺失席位）。实例化不会重建已存在的代表。',parameters:Type.Object({
+  action:Type.Union(['list','get','create','run'].map(value=>Type.Literal(value))),
+  id:Type.Optional(Type.String({maxLength:80,description:'工作流 id（get / run 时需要）'})),
+  name:Type.Optional(Type.String({maxLength:80,description:'create 时的名称'})),
+  description:Type.Optional(Type.String({maxLength:300})),
+  goal:Type.Optional(Type.String({maxLength:2000,description:'run 时本次任务的目标；会替换步骤里的 {goal}'})),
+  steps:Type.Optional(Type.Array(Type.Object({
+   id:Type.String(),task:Type.String({description:'步骤描述，可用 {goal} 占位'}),
+   seat:Type.Optional(Type.String({description:'派给哪个席位（按名匹配）'})),
+   roleKey:Type.Optional(Type.String({description:'或按角色匹配'})) ,
+   dependsOn:Type.Optional(Type.Array(Type.String())),
+   groupId:Type.Optional(Type.String({maxLength:64,description:'本步骤所属组：同组步骤共享组通道'})),
+   acceptance:Type.Optional(Type.Array(Type.String())),
+   seconds:Type.Optional(Type.Integer({minimum:1})),
+   requiresHuman:Type.Optional(Type.Boolean()),
+  }),{maxItems:40,description:'create 时的计划模板；run 时忽略'}))
+ }),async execute(_id,params,_signal,_update,ctx){
+  const list=config.workflows||[];
+  if(params.action==='list'){
+   const data=list.map(workflow=>({id:workflow.id,name:workflow.name,description:workflow.description,...{summary:describeWorkflow(workflow)}}));
+   return{content:[{type:'text',text:boundedJson(data)}],details:{workflows:data}};
+  }
+  if(params.action==='get'){
+   const workflow=list.find(item=>item.id===params.id);
+   if(!workflow)throw Error('没有这个工作流：'+(params.id||'(未指定)'));
+   return{content:[{type:'text',text:renderWorkflow(workflow)}],details:workflow};
+  }
+  if(params.action==='create'){
+   if(!params.name?.trim())throw Error('create 需要 name');
+   if(!params.steps?.length)throw Error('create 需要至少一个步骤');
+   const workflow:any={
+    id:newWorkflowId(),name:params.name.trim(),
+    ...(params.description?{description:params.description}:{}),
+    // 席位取自当前编制：模板记录的是团队形状，不是它的历史。
+    seats:seatsFromAgents(config.agents),
+    steps:params.steps,
+    createdAt:Date.now(),updatedAt:Date.now(),source:'premier',
+   };
+   const check=validateWorkflow(workflow);
+   if(!check.ok)throw Error('工作流不合法：'+check.errors.join('；'));
+   config.workflows=[...list,workflow];save();
+   return{content:[{type:'text',text:`已保存工作流「${workflow.name}」（${describeWorkflow(workflow)}）：${workflow.id}`}],details:workflow};
+  }
+  // run
+  const workflow=list.find(item=>item.id===params.id);
+  if(!workflow)throw Error('没有这个工作流：'+(params.id||'(未指定)'));
+  if(!params.goal?.trim())throw Error('run 需要 goal');
+  const instantiated=instantiateWorkflow(workflow,{
+   goal:params.goal,defaultModel:ctx.model?.id||'',defaultProvider:ctx.model?.provider,
+   locale:councilLocale(process.env.KEPOS_LOCALE),existingAgents:config.agents,
+  });
+  if(instantiated.ok!==true)throw Error('实例化失败：'+instantiated.errors.join('；'));
+  // 席位与计划一起落：先补席位再提交，失败时编制不会停在半个状态。
+  if(instantiated.seats.length){config.agents.push(...instantiated.seats);save();refreshSupervisionPrompt();}
+  const mission=scheduler.enqueue({...instantiated.mission,cwd:ctx.cwd,parentSessionId:ctx.sessionManager.getSessionId(),sessionFile:ctx.sessionManager.getSessionFile()});
+  scheduler.start();
+  const data={workflow:workflow.id,plan:planSummary(mission),addedSeats:instantiated.seats.map(seat=>seat.name),warnings:instantiated.warnings};
+  return{content:[{type:'text',text:boundedJson(data)}],details:data};
+ }});
  pi.registerTool({name:'kepos_metrics',label:'运行度量',description:'只读指标：重复委派、二次追问、提前完成、Watchdog 误报、记忆质量。每项都给出分子/分母与口径说明；样本不足时明说，不返回 0% 假装健康。用于验证优化是否真的生效，不要凭感觉判断。',parameters:Type.Object({metric:Type.Optional(Type.String({maxLength:40,description:'只取一项：duplicate_delegation / second_ask / premature_done / watchdog / memory；缺省全部'}))}),async execute(_id,params){
   const results=collectMetrics(db(),params.metric);
   return{content:[{type:'text',text:formatMetrics(results)}],details:{metrics:results}};
  }});
  pi.registerTool({name:'kepos_events',label:'增量任务事件',description:`按 cursor 读取当前父会话或项目的任务状态、工具调用、${SUPERVISION_INTERVAL_SECONDS/60}分钟复核点和完成事件，避免全量轮询。只读。`,parameters:Type.Object({cursor:Type.Optional(Type.Integer({minimum:0})),limit:Type.Optional(Type.Integer({minimum:1,maximum:200})),project:Type.Optional(Type.String())}),async execute(_id,params,_signal,_update,ctx){const data=readWorkerEvents(db(),{cursor:params.cursor??0,parentSessionId:ctx.sessionManager.getSessionId(),cwd:params.project||undefined,limit:params.limit??100});return{content:[{type:'text',text:JSON.stringify(data)}],details:data};}});
  pi.registerTool({name:'kepos_history',label:'会话历史代际',description:'只读查询当前会话的 SQLite 历史镜像。默认返回代际目录；提供 generation 可读取指定快照，query 可搜索所有保留消息。不会修改 Pi 上下文或恢复旧执行。',parameters:Type.Object({generation:Type.Optional(Type.Integer({minimum:1})),query:Type.Optional(Type.String({maxLength:200}))}),async execute(_id,params,_signal,_update,ctx){const path=ctx.sessionManager.getSessionFile();const logical=path&&config.sessionLinks[path];if(!logical)return{content:[{type:'text',text:'当前会话尚未建立持久历史映射'}],details:undefined};let data:any=keposSessionStore.generations(logical);if(params.generation||params.query!==undefined){let records=params.generation?keposSessionStore.getGeneration(logical,params.generation):keposSessionStore.getMessages(logical,true);records=records.filter(m=>['user','assistant','toolResult'].includes(m.role)||['compaction','branch_summary'].includes(String(m.metadata.piType)));if(params.query!==undefined)records=records.filter(m=>(JSON.stringify(m.content)??'').toLowerCase().includes(params.query!.toLowerCase()));data=records.slice(-12).map(m=>({uid:m.messageUid,role:m.role,content:m.content,archived:m.archived}));}return{content:[{type:'text',text:boundedJson(data)}],details:{logicalSessionId:logical}};}});
- pi.registerTool({name:'kepos_plan',label:'长程任务计划',description:`建立或监督由只读步骤组成的 DAG 计划。每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核运行步骤；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的步骤自动进入人类门禁。默认严格审批：门禁只能由人类批准；代理审批模式下可用 action=approve+jobId 自主批准并留痕。步骤应带 acceptance（1-8 条可验证条目）：完成 ≠ 通过，用 action=check 逐条勾选，未勾满时完成会记为 premature_done。`,parameters:Type.Object({action:Type.Union(['create','list','get','events','pause','cancel','approve','check'].map(x=>Type.Literal(x))),id:Type.Optional(Type.String()),goal:Type.Optional(Type.String()),jobs:Type.Optional(Type.Array(Type.Object({id:Type.String(),agent:Type.String(),task:Type.String(),dependsOn:Type.Optional(Type.Array(Type.String())),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS})),requiresHuman:Type.Optional(Type.Boolean()),acceptance:Type.Optional(Type.Array(Type.Union([Type.String(),Type.Object({check:Type.String(),passes:Type.Optional(Type.Boolean())})]),{description:'1-8 条可在只读前提下验证的验收标准。完成不说完成，逐条拿出证据。',minItems:1,maxItems:8})),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')])),readAllow:Type.Optional(Type.Array(Type.String()))}),{maxItems:100,minItems:1})),jobId:Type.Optional(Type.String()),passed:Type.Optional(Type.Array(Type.Union([Type.String(),Type.Integer({minimum:1})]),{description:'action=check 时勾选的条目：序号（1 起）或条目原文；必须逐条点名'})),cursor:Type.Optional(Type.Integer({minimum:0})),maxChars:Type.Optional(Type.Integer({minimum:200,maximum:6000}))}),async execute(_id,params,_signal,_update,ctx){
+ pi.registerTool({name:'kepos_plan',label:'长程任务计划',description:`建立或监督由只读步骤组成的 DAG 计划。每 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核运行步骤；超过 ${HUMAN_APPROVAL_THRESHOLD_SECONDS/60} 分钟的步骤自动进入人类门禁。默认严格审批：门禁只能由人类批准；代理审批模式下可用 action=approve+jobId 自主批准并留痕。步骤应带 acceptance（1-8 条可验证条目）：完成 ≠ 通过，用 action=check 逐条勾选，未勾满时完成会记为 premature_done。`,parameters:Type.Object({action:Type.Union(['create','list','get','events','pause','cancel','approve','check'].map(x=>Type.Literal(x))),id:Type.Optional(Type.String()),goal:Type.Optional(Type.String()),jobs:Type.Optional(Type.Array(Type.Object({id:Type.String(),agent:Type.String(),task:Type.String(),dependsOn:Type.Optional(Type.Array(Type.String())),seconds:Type.Optional(Type.Integer({minimum:1,maximum:MAX_TASK_SECONDS})),requiresHuman:Type.Optional(Type.Boolean()),acceptance:Type.Optional(Type.Array(Type.Union([Type.String(),Type.Object({check:Type.String(),passes:Type.Optional(Type.Boolean())})]),{description:'1-8 条可在只读前提下验证的验收标准。完成不说完成，逐条拿出证据。',minItems:1,maxItems:8})),groupId:Type.Optional(Type.String({maxLength:64,description:'本步骤所属的工作小组：同组步骤共享组通道，可交换状态与证据，但仍读不到彼此的结论'})),readScope:Type.Optional(Type.Union([Type.Literal('project'),Type.Literal('machine')])),readAllow:Type.Optional(Type.Array(Type.String()))}),{maxItems:100,minItems:1})),jobId:Type.Optional(Type.String()),passed:Type.Optional(Type.Array(Type.Union([Type.String(),Type.Integer({minimum:1})]),{description:'action=check 时勾选的条目：序号（1 起）或条目原文；必须逐条点名'})),cursor:Type.Optional(Type.Integer({minimum:0})),maxChars:Type.Optional(Type.Integer({minimum:200,maximum:6000}))}),async execute(_id,params,_signal,_update,ctx){
   const parent=ctx.sessionManager.getSessionId();let result:any;
   if(params.action==='create'){
    if(!params.goal||!params.jobs?.length)throw Error('创建计划需要 goal 和 jobs');
@@ -1053,7 +1128,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','跨组借调','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','跨组借调':'secondments','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','跨组借调','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','工作流','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','跨组借调':'secondments','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','工作流':'workflows','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -1090,7 +1165,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举代理总代','elections'],['直接推选代理总代','deputy'],['跨组借调','secondments'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举代理总代','elections'],['直接推选代理总代','deputy'],['跨组借调','secondments'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['工作流','workflows'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1192,6 +1267,42 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  // 自动化能力：三项独立开关，全部默认关闭。
+ // 工作流：席位配方 + 计划模板，与总理的工具共用同一个实例化函数。
+ if(action.kind==='workflows'){
+  const list=config.workflows||[];
+  if(!list.length){
+   // 空列表不弹一个只有"返回"的框：直接说清怎么创建。
+   ui.notify('还没有工作流。可以先用「把当前编制存成工作流」把现在的 48 席与步骤存成模板，或让总理用 kepos_workflow create。','info');
+   return;
+  }
+  const label=(item:any)=>`${item.name} · ${describeWorkflow(item)}`;
+  const pick=await ui.select(`工作流（${list.length}）`,[...list.map(label),'返回']);
+  const workflow=list.find(item=>label(item)===pick);
+  if(!workflow)return;
+  const detail=renderWorkflow(workflow);
+  const decision=await ui.select(detail.slice(0,900),['按此工作流开始','删除这个工作流','返回']);
+  if(decision==='按此工作流开始'){
+   const goal=await ui.input('本次目标','例如：给登录模块加多因子认证');
+   if(!goal?.trim())return;
+   const instantiated=instantiateWorkflow(workflow,{
+    goal:goal.trim(),defaultModel:ctx.model?.id||'',defaultProvider:ctx.model?.provider,
+    locale:councilLocale(process.env.KEPOS_LOCALE),existingAgents:config.agents,
+   });
+   if(instantiated.ok!==true){ui.notify('实例化失败：'+instantiated.errors.join('；'),'warning');return;}
+   if(instantiated.seats.length){config.agents.push(...instantiated.seats);save();refreshSupervisionPrompt();}
+   const mission=scheduler.enqueue({...instantiated.mission,cwd:ctx.cwd,parentSessionId:ctx.sessionManager.getSessionId(),sessionFile:ctx.sessionManager.getSessionFile()});
+   scheduler.start();
+   ui.notify(`已按「${workflow.name}」开始 · ${mission.jobs.length} 步${instantiated.seats.length?` · 新增 ${instantiated.seats.length} 席`:''}${instantiated.warnings.length?` · ${instantiated.warnings[0]}`:''}`,'info');
+   return;
+  }
+  if(decision==='删除这个工作流'){
+   const ok=await ui.confirm('删除工作流',`「${workflow.name}」将被移除。已经按它启动的计划与代表不受影响。`);
+   if(!ok)return;
+   config.workflows=list.filter(item=>item.id!==workflow.id);save();
+   ui.notify('已删除工作流 '+workflow.name,'info');
+  }
+  return;
+ }
  // 会启动任务的（派发 / 预检）在 automation.ts 里与审批档绑定：
  // 只有代理档才放行，严格与只读档一律停用。这里只负责呈现与切换。
  if(action.kind==='automation'){

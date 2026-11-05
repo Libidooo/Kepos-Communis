@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import { dataRoot } from './paths.ts';
 import { sandboxEnv, type ReadScope } from './worker-sandbox.ts';
 import { ARCHIVE_DIR } from './archive.ts';
+import { GROUP_DIR, groupDirName } from './group-channel.ts';
 import { workerEnv } from './worker-env.ts';
 export { workerEnv } from './worker-env.ts';
 
@@ -103,12 +104,26 @@ Put the detailed working above that summary. The transcript is still retained as
   // 只挡前者时，readScope=project 会把项目根的 .kepos 一起放行，
   // 僚属就能读到同项目其他僚属的结论——正是禁止的互读。
   const archiveDir = join(profile.cwd, ARCHIVE_DIR);
-  Object.assign(env, sandboxEnv({ mode: profile.readScope === 'machine' ? 'machine' : 'project', allow: profile.readAllow ?? [], deny: [dataRoot, archiveDir] }));
+  // 组通道的目录例外：同组代表要能读写本组的消息文件，但归档其余部分仍然拒绝。
+  // 用 allowWithinDeny 精确到单个组目录——它只把"被整目录 deny 覆盖、但按设计
+  // 应可读"的位置还原回来，不扩大 readScope=project 的边界。
+  // 只有代表进组：僚属不读归档，也不参与组通道（人类裁定）。
+  const groupId = profile.representative ? String(profile.groupId || '').trim() : '';
+  const groupRoot = groupId ? join(archiveDir, GROUP_DIR, groupDirName(groupId)) : '';
+  Object.assign(env, sandboxEnv({
+    mode: profile.readScope === 'machine' ? 'machine' : 'project',
+    allow: profile.readAllow ?? [],
+    deny: [dataRoot, archiveDir],
+    ...(groupRoot ? { allowWithinDeny: [groupRoot] } : {}),
+  }));
   // 代表侧工具需要知道归档根与代表名：派生请求与裁决都写在这个目录下。
   if (profile.representative) {
     env.KEPOS_ARCHIVE_ROOT = archiveDir;
     env.KEPOS_AGENT_NAME = profile.agentName || '';
     env.KEPOS_TASK_ID = profile.taskId || '';
+    // 组 id 决定代表进程里是否注册 kepos_group：此前这个变量从未被赋值，
+    // 于是组工具在代表进程里根本不存在，组通道永远没有消息。
+    if (groupId) env.KEPOS_GROUP_ID = groupId;
     // 本任务是否由在任代理总代执行：跨组借调只有它能发起。
     if (profile.deputy) env.KEPOS_DEPUTY = '1';
     // 外部 CLI 授权：只下发本任务已批准的那些，代表据此决定能启动什么。
