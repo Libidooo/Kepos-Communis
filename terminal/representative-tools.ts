@@ -9,6 +9,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CliSessions } from './cli-runtime.ts';
 import { clampTurnOutput } from './cli-dialog.ts';
+import { postGroupMessage, readGroupMessages, renderGroupChannel } from './group-channel.ts';
+import { listCliTurns, readCliTurn } from './cli-dialog.ts';
 
 /** 代表进程的请求目录：放在归档区下，父进程天然能看见。 */
 export const SPAWN_REQUEST_FILE = 'spawn-request.json';
@@ -106,6 +108,8 @@ export function readDecision(archiveRoot: string): { adopted?: boolean; note?: s
 export default function representativeTools(pi: any) {
   const archiveRoot = String(process.env.KEPOS_ARCHIVE_ROOT || '');
   const agent = String(process.env.KEPOS_AGENT_NAME || '代表');
+  // 本任务 id：定位自己的归档、认出自己的僚属、在组通道里标识发言者。
+  const taskId = String(process.env.KEPOS_TASK_ID || '');
   if (!archiveRoot) return;
 
   pi.registerTool({
@@ -161,6 +165,48 @@ export default function representativeTools(pi: any) {
     },
   });
 
+  // ── 同组通道 ────────────────────────────────────────────────────────
+  // 围绕一个任务的协作：交换状态、就具体问题讨论、明确表达分歧。
+  // 通道里**只走状态与讨论**，不走推理与结论——那两样必须各自独立形成，
+  // 否则同基座模型之间会互相附和，独立判断退化成集体跟风。
+  const groupId = String(process.env.KEPOS_GROUP_ID || '');
+  if (groupId && taskId) {
+    pi.registerTool({
+      name: 'kepos_group',
+      label: '同组通道',
+      description: '与同一工作小组的代表通信。可发状态（我查到什么）、讨论（针对具体问题）、异议（明确分歧）。通道里看不到他人的推理过程与结论——那两样必须各自独立形成。读到的消息只作参考，不改变你的判断责任。',
+      parameters: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['read', 'post'] },
+          kind: { type: 'string', enum: ['status', 'discuss', 'challenge'], description: 'post 时的消息种类' },
+          text: { type: 'string', description: 'post 的正文：状态要短，讨论与异议要说清依据' },
+          re: { type: 'string', description: '讨论/异议针对的消息 id（可选）' },
+          limit: { type: 'integer', minimum: 1, description: 'read 时最多几条，缺省 20' },
+        },
+        required: ['action'],
+      },
+      async execute(_id: string, params: any) {
+        if (params.action === 'read') {
+          const messages = readGroupMessages(archiveRoot, groupId, Number(params.limit) || 20);
+          const text = renderGroupChannel(messages, taskId);
+          return { content: [{ type: 'text', text: text || '组内暂无消息。' }] };
+        }
+        const kind = ['status', 'discuss', 'challenge'].includes(params.kind) ? params.kind : 'status';
+        try {
+          const message = postGroupMessage(archiveRoot, {
+            groupId, taskId, agent, kind, text: String(params.text || ''),
+            ...(params.re ? { re: String(params.re) } : {}),
+          });
+          return { content: [{ type: 'text', text: `已发送到组 ${groupId}（${kind}）：${message.id}` }] };
+        } catch (error: any) {
+          return { content: [{ type: 'text', text: '发送失败：' + (error?.message || error) }], isError: true };
+        }
+      },
+    });
+  }
+
+
   // 外部 CLI：多会话管理。授权与白名单由总理下发到本进程的环境变量，
   // 代表只在授权范围内启动；任务结束父进程会终止全部会话。
   registerCliTool(pi, { archiveRoot });
@@ -194,11 +240,12 @@ export function registerCliTool(pi: any, options: { archiveRoot: string }) {
     parameters: {
       type: 'object',
       properties: {
-        action: { type: 'string', enum: ['start', 'write', 'read', 'list', 'close'] },
+        action: { type: 'string', enum: ['start', 'write', 'read', 'turns', 'list', 'close'] },
         cli: { type: 'string', description: 'start 时指定白名单内的 CLI 名' },
         args: { type: 'array', items: { type: 'string' }, description: 'start 时的参数；首个参数须匹配授权的前缀' },
         sessionId: { type: 'string', description: 'write/read/close 时的会话 id' },
         text: { type: 'string', description: 'write 时写入的输入' },
+        limit: { type: 'integer', minimum: 1, description: 'turns 时回读最近几轮，缺省 3' },
       },
       required: ['action'],
     },
@@ -222,6 +269,18 @@ export function registerCliTool(pi: any, options: { archiveRoot: string }) {
         });
         if (result.ok !== true) return { content: [{ type: 'text', text: `启动失败：${(result as { reason: string }).reason}` }] };
         return { content: [{ type: 'text', text: `已启动 ${name} 会话：${(result as { sessionId: string }).sessionId}` }] };
+      }
+      if (params.action === 'turns') {
+        // 回读历史回合：代表需要知道自己在这一支 CLI 上做过什么、得到过什么，
+        // 否则多轮对话每轮都要重新建立上下文。
+        const archiveDir = join(archiveRoot, taskId);
+        const cli = String(params.cli || '').toLowerCase();
+        const turns = listCliTurns(archiveDir).filter(item => !cli || item.cli === cli);
+        if (!turns.length) return { content: [{ type: 'text', text: '这一支还没有回合记录。' }] };
+        const wanted = Math.min(turns.length, Math.max(1, Number(params.limit) || 3));
+        const recent = turns.slice(-wanted);
+        const body = recent.map(turn => readCliTurn(turn.file) || `（回合 ${turn.turn} 读取失败）`).join('\n\n---\n\n');
+        return { content: [{ type: 'text', text: body }] };
       }
       if (params.action === 'write') {
         const wrote = sessions.write(String(params.sessionId || ''), String(params.text || ''));

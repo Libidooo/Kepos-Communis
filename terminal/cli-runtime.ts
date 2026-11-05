@@ -13,6 +13,15 @@
 //   - 会话绑定到授权：任务结束，会话一律终止。
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { clampTurnOutput, cliTurnFile, renderCliTurn } from './cli-dialog.ts';
+import { existsSync, readdirSync } from 'node:fs';
+
+/** 该 CLI 已有多少份回合记录：下一个序号即在其后追加。 */
+function nextTurn(archiveRoot: string, cli: string): number {
+  const safe = String(cli).replace(/[^a-z0-9-]/gi, '').toLowerCase();
+  try { return readdirSync(archiveRoot).filter(name => name.startsWith(`cli-${safe}-`) && name.endsWith('.md')).length + 1; }
+  catch { return 1; }
+}
 import { join } from 'node:path';
 import type { CliAllowEntry } from './store.ts';
 
@@ -143,32 +152,25 @@ export class CliSessions {
     child.on('close', (code: number | null) => {
       session.exited = true;
       session.exitCode = code ?? undefined;
-      // 会话结束后把这一轮写成归档，与 kepos_spawn 的产物同构。
+      // 会话结束后把这一轮写成归档。格式统一走 cli-dialog.renderCliTurn——
+      // 此前这里手写了一份几乎相同的 markdown，两份格式会各自漂移，
+      // 而回读入口（listCliTurns/readCliTurn）只认其中一种。
       try {
         mkdirSync(input.archiveRoot, { recursive: true });
-        const file = join(input.archiveRoot, `cli-${id}.md`);
-        writeFileSync(file, [
-          `# 外部 CLI 会话 · ${input.cli}`,
-          '',
-          `- 会话：${id}`,
-          `- 开始：${new Date(session.startedAt).toISOString()}`,
-          `- 退出码：${code ?? '—'}`,
-          ...(session.error ? [`- 错误：${session.error}`] : []),
-          '',
-          '## 命令',
-          '',
-          '```text',
-          `${input.cli} ${checkedArgs.args.join(' ')}`,
-          '```',
-          '',
-          '## 输出',
-          '',
-          '```text',
-          session.output || '（无输出）',
-          '```',
-          '',
-        ].join('\n'), 'utf8');
-      } catch (archiveError: any) { session.error = session.error || `归档失败：${archiveError?.message || archiveError}`; }
+        // 回合序号按该 CLI 已有文件数递增：同一会话多轮时不能互相覆盖。
+        const turn = nextTurn(input.archiveRoot, input.cli);
+        const clamped = clampTurnOutput(session.output || '');
+        writeFileSync(cliTurnFile(input.archiveRoot, input.cli, turn), renderCliTurn({
+          turn, cli: input.cli,
+          prompt: `${input.cli} ${checkedArgs.args.join(' ')}`,
+          output: clamped.output,
+          exitCode: code ?? undefined,
+          at: session.startedAt,
+          durationMs: Date.now() - session.startedAt,
+          ...(clamped.truncated ? { truncated: true } : {}),
+          ...(session.error ? { error: session.error } : {}),
+        }), 'utf8');
+      } catch { /* 归档失败不影响会话本身 */ }
     });
     return { ok: true, sessionId: id };
   }

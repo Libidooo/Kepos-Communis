@@ -29,6 +29,9 @@ import { credentialsReady } from './cli-runtime.ts';
 import { cliGrantUsable } from './cli-grant.ts';
 import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
+import { readGroupMessages, renderGroupChannel } from './group-channel.ts';
+import { ARCHIVE_DIR } from './archive.ts';
+import { electionOutcome, tallyElection } from './group-election.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
@@ -521,7 +524,14 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 记忆注入：把该代表此前有效记忆拼成索引，附在任务文本前面。
   // 硬上限 200 行；结尾声明仅供参考——旧记忆不能覆盖本任务的实际证据。
   const memoryIndex=renderMemoryIndex(memoryPipeline.list(crew.id||crew.name));
-  const launched=memoryIndex?{...task,task:`${memoryIndex}\n\n---\n\n${String(task.task||'')}`}:task;
+  // 同组通道：把已有的组内消息一并带上。声明"只含状态与讨论"不是客套——
+  // 通道里确实不走推理与结论，代表要据此知道这些内容不构成对判断的引导。
+  const groupId=typeof task.groupId==='string'?task.groupId:undefined;
+  const groupChannel=groupId
+   ?renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),groupId,12),'')
+   :'';
+  const preamble=[memoryIndex,groupChannel].filter(Boolean).join('\n\n');
+  const launched=preamble?{...task,task:`${preamble}\n\n---\n\n${String(task.task||'')}`}:task;
   // memoryInjected 只用于度量分组：哪一组任务在派发时看过该代表的历史记忆。
   return {...launched,crew,skills:resolved,mcp:false,mcpServers,tools,memoryInjected:Boolean(memoryIndex)};
  }
@@ -560,6 +570,27 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return{content:[{type:'text',text:JSON.stringify(data)}],isError:['UNKNOWN','UNKNOWN_HANDLE'].includes(result.state),details:data};
  }});
  const VOTE_LABELS:{[key:string]:string}={yes:'赞成',no:'反对',abstain:'弃权'};
+ // 组内推举：围绕一个任务的协作要有人牵头。
+ // 结果是**候选**，人类在 F2 确认后才生效——自主推举省的是协调成本，
+ // 不是编制决定权。
+ pi.registerTool({name:'kepos_group',label:'同组协作与推举',description:'读取或统计一个工作小组的通信与推举。同组代表可交换状态、就具体问题讨论、明确表达异议；通道内不含推理过程与结论（那两样必须各自独立形成）。action=status 看组内消息与当前推举结果；action=elect 统计推举（组员在 discuss 消息里写「推举：某某」）。推举结果是候选，需要人类确认。',parameters:Type.Object({groupId:Type.String({maxLength:64}),action:Type.Union([Type.Literal('status'),Type.Literal('elect')]),limit:Type.Optional(Type.Integer({minimum:1,maximum:60}))}),async execute(_id,params,_signal,_update,ctx){
+  const archiveRoot=join(ctx.cwd,ARCHIVE_DIR);
+  const messages=readGroupMessages(archiveRoot,params.groupId,params.limit??20);
+  // 组成员来自当前会话的任务，按 groupId 过滤——不信任消息里自称的身份。
+  const members=pool.tasks
+   .filter(task=>task.groupId===params.groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())
+   .map(task=>({taskId:task.id,agent:task.agent}));
+  if(params.action==='status'){
+   const result=tallyElection(messages,members);
+   const outcome=electionOutcome(result,members.length);
+   const data={groupId:params.groupId,members:members.map(m=>m.agent),messages:messages.length,election:{ballots:result.ballots,candidates:result.candidates,...outcome},channel:renderGroupChannel(messages,'')};
+   return{content:[{type:'text',text:boundedJson(data)}],details:data};
+  }
+  const result=tallyElection(messages,members);
+  const outcome=electionOutcome(result,members.length);
+  const data={groupId:params.groupId,electorate:members.length,...result,...outcome};
+  return{content:[{type:'text',text:boundedJson(data)}],details:data};
+ }});
  pi.registerTool({name:'kepos_vote',label:'代表团表决',description:'汇总一次代表团表决并呈报人类。代表票来自各任务产出末尾的约定行 VOTE: yes|no|abstain - 理由；主 Agent 自己的票用 main 传入，展示时标注（分派方，注意利益关联）。是否终止空转/预算任务、是否改变方向等重大决定由人类裁决，本工具只汇总呈现。',parameters:Type.Object({question:Type.String({maxLength:300}),votes:Type.Array(Type.Object({agent:Type.String(),choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}),{maxItems:48,minItems:1}),main:Type.Optional(Type.Object({choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}))}),async execute(_id,params){
   const tally:any={yes:0,no:0,abstain:0};for(const vote of params.votes)tally[vote.choice]++;
   const record={at:Date.now(),question:params.question,votes:params.votes,main:params.main,tally};

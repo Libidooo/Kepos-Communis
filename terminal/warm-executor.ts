@@ -26,7 +26,22 @@ export type WorkerProfile = { cwd: string; model: string; provider: string; tool
  /** 代表/僚属的归档根目录，供代表侧工具写入派生请求与裁决。 */ archiveRoot?: string;
  /** 代表名，写入裁决文档。 */ agentName?: string;
  /** 本任务 id：代表侧工具据此管理 CLI 会话。 */ taskId?: string;
+ /** 自己派生的僚属任务 id：它们的归档对本代表可读（档案馆，不是别人的草稿）。 */ subordinateTaskIds?: string[];
+ /** 同组标识：同组代表可以通信（状态与讨论），但不读彼此归档。 */ groupId?: string;
  /** 本任务已获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }> };
+/**
+ * 执行器复用键：只含"决定进程如何启动"的字段。
+ *
+ * taskId / groupId / subordinateTaskIds 是每任务唯一的环境变量值，
+ * 不改变进程本身。算进 key 会让每个任务的键都不同，执行器永远无法复用，
+ * 并发槽占满后队列再也推不动（任务永久停在 QUEUED）。
+ * 构造与比较必须共用这一处，两边算法一漂移就是死锁。
+ */
+export function reusableProfileKey(profile: WorkerProfile): string {
+ const { taskId: _t, groupId: _g, subordinateTaskIds: _s, ...reusable } = profile as any;
+ return JSON.stringify(reusable);
+}
+
 export class WarmExecutor {
  readonly child: ChildProcess;
  readonly key: string;
@@ -47,7 +62,7 @@ export class WarmExecutor {
  private pingTimer?: ReturnType<typeof setInterval>;
 
  constructor(readonly profile: WorkerProfile, spawnWorker: typeof spawn = spawn) {
-  this.key = JSON.stringify(profile);
+  this.key = reusableProfileKey(profile);
   // MCP is a per-task temporary grant: only servers the human configured may pass, and
   // only their tools are exposed via patterns. An empty grant list means no MCP at all.
   const mcpServers = profile.mcp ? (profile.mcpServers ?? []) : [];

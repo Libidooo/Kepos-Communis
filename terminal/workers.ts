@@ -7,6 +7,7 @@ import { root, type Crew } from './store.ts';
 import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { canRepresent } from './watch-purpose.ts';
+import { reusableProfileKey } from './warm-executor.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
@@ -357,7 +358,8 @@ export class WorkerPool {
    representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants };
  }
  private executor(profile: WorkerProfile, extraSlots = 0): WorkerExecutor | undefined {
-  const key = JSON.stringify(profile);
+  // 与 WarmExecutor 构造共用同一函数：两边算法一漂移就是永久死锁。
+  const key = reusableProfileKey(profile);
   for (const executor of this.executors) {
    // A terminating process occupies a slot until its close event is confirmed.
    if (executor.dead) { this.executors.delete(executor); continue; }
@@ -591,6 +593,10 @@ export class WorkerPool {
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
+  // 代表进程靠这个定位自己的归档与会话；此时 executor 尚未创建，不影响复用键（key 也排除了它）。
+  profile.taskId = id;
+  if (metadata.groupId) profile.groupId = metadata.groupId;
+  if (profile.representative) profile.subordinateTaskIds = this.tasks.filter(t => t.parentWorkerId === id).map(t => t.id);
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
   this.capabilities.set(id, capability);
   const task: Task = { id, agent: crew.name, ...(crew.id ? { agentId: crew.id } : {}), ...(metadata.purpose ? { purpose: metadata.purpose } : {}), ...(metadata.groupId ? { groupId: metadata.groupId } : {}), role: crew.role, title: instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };

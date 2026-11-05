@@ -5,6 +5,7 @@ import {mkdtempSync,mkdirSync} from 'node:fs';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {WorkerPool,MAX_CONCURRENT_CHILDREN,DEFAULT_TASK_SECONDS,configureWorkerBudget} from '../dist/terminal/workers.js';
+import {reusableProfileKey} from '../dist/terminal/warm-executor.js';
 import {KeposDatabase} from '../dist/terminal/database.js';
 
 const crew={id:'expert',name:'Expert',role:'investigate',model:'fixture',provider:'fixture'};
@@ -20,7 +21,9 @@ function fixture(t,concurrency=1){
  const create=profile=>{
   if(profile.role==='spawn-failure')throw Error('injected spawn failure');
   const child=new EventEmitter();child.pid=100+executors.length;
-  const e={child,key:JSON.stringify(profile),profile,busy:false,dead:false,stopping:false,uses:0,messages:[],
+  // 复用键必须与真实 WarmExecutor 用同一个函数：夹具自己拼一个，
+  // 就会重现"每个任务 key 都不同 → 执行器无法复用 → 队列推不动"。
+  const e={child,key:reusableProfileKey(profile),profile,busy:false,dead:false,stopping:false,uses:0,messages:[],
    reserve(){this.busy=true;},release(){this.busy=false;this.onEvent=undefined;this.onExit=undefined;},
    async ready(){},async reset(){this.uses++;},async request(type,args){if(type==='prompt')this.messages.push(args.message);return{disposition:'started'};},
    kill(){if(this.dead||this.stopping)return;this.stopping=true;queueMicrotask(()=>{this.dead=true;alive--;child.emit('close',0);this.onExit?.(Error('closed'));});},

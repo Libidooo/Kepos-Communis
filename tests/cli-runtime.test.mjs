@@ -126,3 +126,41 @@ test('an unlisted executable cannot be started through the session manager', () 
   assert.deepEqual(sessions.list('any'), []);
   void existsSync;
 });
+
+// 回合记录：代表要能回读自己在这一支 CLI 上做过什么、得到过什么。
+// 此前 cli-runtime 手写了一份 markdown，而 cli-dialog 的渲染与回读从未被使用——
+// 两套格式会各自漂移。现在只有一个格式。
+test('CLI turns are written in the format the reader understands', async () => {
+  const {mkdtempSync, readdirSync, readFileSync} = await import('node:fs');
+  const {tmpdir} = await import('node:os');
+  const {join} = await import('node:path');
+  const {renderCliTurn, cliTurnFile, readCliTurn, listCliTurns} = await import('../dist/terminal/cli-dialog.js');
+  const root = mkdtempSync(join(tmpdir(), 'kepos-cli-turn-'));
+  const turn = {turn: 1, cli: 'codex', prompt: 'codex exec "list files"', output: 'a.ts\nb.ts', exitCode: 0, at: 1000, durationMs: 1200};
+  const file = cliTurnFile(root, 'codex', 1);
+  const {writeFileSync} = await import('node:fs');
+  writeFileSync(file, renderCliTurn(turn), 'utf8');
+
+  // 渲染结果能被回读出口认出：标题、输入、输出都在。
+  const text = readCliTurn(file);
+  assert.match(text, /外部 CLI 回合 1 · codex/);
+  assert.match(text, /## 输入/);
+  assert.match(text, /codex exec "list files"/);
+  assert.match(text, /a\.ts/);
+  assert.match(text, /退出码：0/);
+  // 列表按序号排序，回读最近几轮时顺序正确。
+  writeFileSync(cliTurnFile(root, 'codex', 2), renderCliTurn({...turn, turn: 2, output: 'second'}), 'utf8');
+  const turns = listCliTurns(root);
+  assert.deepEqual(turns.map(t => t.turn), [1, 2]);
+  assert.equal(readdirSync(root).filter(f => f.startsWith('cli-codex-')).length, 2);
+});
+
+test('different CLIs keep separate turn files', async () => {
+  const {mkdtempSync} = await import('node:fs');
+  const {tmpdir} = await import('node:os');
+  const {join} = await import('node:path');
+  const {cliTurnFile} = await import('../dist/terminal/cli-dialog.js');
+  const root = mkdtempSync(join(tmpdir(), 'kepos-cli-sep-'));
+  assert.notEqual(cliTurnFile(root, 'codex', 1), cliTurnFile(root, 'claude', 1), 'each CLI numbers its own turns');
+  assert.match(cliTurnFile(root, 'codex', 3), /cli-codex-003\.md$/);
+});

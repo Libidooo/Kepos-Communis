@@ -71,3 +71,36 @@ test('the sandbox extension registers a tool_call guard that blocks outside read
  const untouched=await guard({toolName:'edit',input:{path:join(tmpdir(),'elsewhere.txt')}},{});
  assert.equal(untouched,undefined,'read tools only; the pool already refuses mutating tools');
 });
+
+// 归档是**档案馆**：代表要能读自己和自己僚属的历史，才知道自己这一支干过什么。
+// 别人的归档仍然读不到——例外只还原"本应可读却被整目录 deny 覆盖"的位置。
+test('a representative may read its own archive and its subordinates, but not others',() => {
+  const root = '/proj/.kepos';
+  const policy = {
+    mode: 'project', cwd: '/proj', home: '/home/u',
+    allow: [], deny: ['/proj/.kepos'],
+    allowWithinDeny: ['/proj/.kepos/t-self', '/proj/.kepos/t-child', '/proj/.kepos/roles'],
+  };
+  assert.equal(readDenied('/proj/.kepos/t-self/report.md', policy), null, 'own archive is readable');
+  assert.equal(readDenied('/proj/.kepos/t-child/transcript.md', policy), null, 'a subordinate archive is readable');
+  assert.equal(readDenied('/proj/.kepos/roles/auditor.md', policy), null, 'role definitions are readable');
+  // 别人的归档仍然被拒。
+  assert.ok(readDenied('/proj/.kepos/t-other/report.md', policy), 'another representative archive stays denied');
+  void root;
+});
+
+test('the archive exception never weakens credential protection', () => {
+  const policy = {
+    mode: 'machine', cwd: '/proj', home: '/home/u',
+    allow: [], deny: ['/home/u/.kepos'],
+    // 恶意配置：把凭据目录也写进例外，凭据检查仍须先命中。
+    allowWithinDeny: ['/home/u/.kepos', '/home/u/.ssh'],
+  };
+  assert.ok(readDenied('/home/u/.ssh/id_rsa', policy), 'credentials are refused before any exception');
+  assert.equal(readDenied('/home/u/.kepos/x.md', policy), null, 'the archive exception itself applies');
+});
+
+test('without an exception the whole archive stays denied', () => {
+  const policy = { mode: 'project', cwd: '/proj', home: '/home/u', allow: [], deny: ['/proj/.kepos'] };
+  assert.ok(readDenied('/proj/.kepos/t-self/report.md', policy), 'no exception means no archive access');
+});
