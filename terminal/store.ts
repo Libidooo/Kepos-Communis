@@ -4,7 +4,8 @@ import { dirname, join, resolve } from 'node:path';
 import { SessionManager } from '@earendil-works/pi-coding-agent';
 import { db } from './database.ts';
 import { root } from './paths.ts';
-import { ARCHIVE_DIR } from './archive.ts';
+import { ARCHIVE_DIR, syncRoleDocs } from './archive.ts';
+import { councilRole } from './council-roles/index.ts';
 import { readProfiles, syncAgentsFile, syncProfiles } from './profile-file.ts';
 import { migrateAutomation } from './automation.ts';
 import { ProfileHistory, type AgentProfile } from './profiles.ts';
@@ -200,6 +201,20 @@ export function exportWorkspaceFiles(config: Config, cwd: string): { agents: boo
     const synced = syncProfiles(archiveRoot, config.agents);
     result.profiles = synced.written;
     result.skipped.push(...synced.skipped);
+    // 角色定义也落一份到 roles/：它此前只存在于代码里，
+    // 人想核对"这个代表被要求做什么"只能读源码，换个 harness 也带不走。
+    // 档案 md 里是"这位代表的具体职责"，角色 md 里是"这个角色的标准定义"，两者互补。
+    const roleKeys = [...new Set(config.agents.map(agent => agent.roleKey).filter((key): key is string => !!key))];
+    if (roleKeys.length) {
+      const docs = roleKeys
+        .map(key => councilRole(key as any))
+        .filter((role): role is NonNullable<typeof role> => !!role)
+        .map(role => ({
+          key: role.key, zhName: role.zhName, enName: role.enName, scope: role.zhScope,
+          method: role.zhMethod, deliverables: role.zhDeliverables, skillFocus: role.zhSkillFocus, skillHints: role.skillHints,
+        }));
+      if (docs.length) syncRoleDocs(cwd, docs);
+    }
   } catch (error) {
     result.skipped.push(String(error));
   }

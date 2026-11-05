@@ -138,3 +138,29 @@ export function listArchivedTasks(cwd: string): string[] {
       .filter(name => existsSync(join(root, name, 'report.md')) || existsSync(join(root, name, 'transcript.md')));
   } catch { return []; }
 }
+
+/**
+ * 把角色定义写进归档的 roles/ 目录。
+ *
+ * 为什么要落盘：角色提示词是系统行为的一部分，但它此前只存在于代码里。
+ * 人想核对"这个代表被要求做什么"只能读源码；换个 harness 也带不走。
+ * 写成 md 之后，它与任务归档一样可读、可 diff、可人工修订。
+ *
+ * 内容未变就不重写：角色定义很少变，每次保存都重写会让 mtime 全变，
+ * 人用 git 看 diff 时满屏噪声。
+ */
+export function syncRoleDocs(cwd: string, roles: ReadonlyArray<Parameters<typeof renderRoleDoc>[0]>, locale: 'zh-CN' | 'en' = 'zh-CN'): { written: number; skipped: number } {
+  const paths = archivePaths(cwd);
+  const result = { written: 0, skipped: 0 };
+  try { mkdirSync(paths.roles, { recursive: true }); } catch { return result; }
+  for (const role of roles) {
+    const file = join(paths.roles, `${role.key}.md`);
+    try {
+      const next = renderRoleDoc(role, locale);
+      if (existsSync(file) && readFileSync(file, 'utf8') === next) { result.skipped++; continue; }
+      writeFileSync(file, next, 'utf8');
+      result.written++;
+    } catch { result.skipped++; }
+  }
+  return result;
+}

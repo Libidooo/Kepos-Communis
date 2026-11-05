@@ -193,3 +193,22 @@ test('saveConfig itself never touches the filesystem',()=>{
   exportWorkspaceFiles(config,clean);
   assert.equal(existsSync(join(clean,AGENTS_FILE)),true,'the explicit call does write it');
 });
+
+// C1 要求"角色 md 文件也需要好好保存"。此前 roles/ 目录会被创建，但没人往里写。
+test('role definitions are written to the archive',()=>{
+  const setup=loadConfig();
+  setup.agents=[crew('r1','审查官',{roleKey:'auditor'})];
+  saveConfig(setup);
+  exportWorkspaceFiles(setup,workspace);
+  const file=join(workspace,'.kepos','roles','auditor.md');
+  assert.ok(existsSync(file),'the role document exists');
+  const text=readFileSync(file,'utf8');
+  assert.match(text,/# 审查官 · auditor/);
+  assert.match(text,/职责范围/);
+  assert.match(text,/工作方法/);
+  assert.match(text,/可人工修订/,'it says the file may be edited by hand');
+  // 内容未变就不重写，避免 mtime 全变把 diff 变成噪声。
+  const before=statSync(file).mtimeMs;
+  exportWorkspaceFiles(setup,workspace);
+  assert.equal(statSync(file).mtimeMs,before,'unchanged role docs are not rewritten');
+});
