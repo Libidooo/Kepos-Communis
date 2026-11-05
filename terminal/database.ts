@@ -91,6 +91,30 @@ export class KeposDatabase {
     attempts INTEGER NOT NULL
    );
    CREATE INDEX IF NOT EXISTS idx_precheck_finger ON precheck_runs(fingerprint,at);
+   -- 僚属派生超过三人时的审批记录：一个批准只放行一次派生。
+   CREATE TABLE IF NOT EXISTS subordinate_approvals(
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    parent_task_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    task TEXT NOT NULL,
+    state TEXT NOT NULL,
+    live INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_subap_parent ON subordinate_approvals(parent_task_id,state);
+   -- 组内推举呈报：组内推举只是提名，批准由人类做。
+   -- 报告必须留档——批的是谁、依据是什么，事后要能回看。
+   CREATE TABLE IF NOT EXISTS election_reports(
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    group_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    goal TEXT,
+    report TEXT NOT NULL,
+    approved_agent TEXT,
+    decided_at INTEGER
+   );
+   CREATE INDEX IF NOT EXISTS idx_election_state ON election_reports(state,at);
    PRAGMA user_version=1;
   `);});
   } catch(error) { this.sql.close(); throw error; }

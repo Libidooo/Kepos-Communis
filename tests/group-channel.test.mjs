@@ -8,6 +8,7 @@ const {
   MAX_MESSAGE_CHARS, MAX_MESSAGES_PER_GROUP,
 }=await import('../dist/terminal/group-channel.js');
 const {tallyElection, electionOutcome, coordinatorBrief, MIN_ELECTORATE}=await import('../dist/terminal/group-election.js');
+const {KeposDatabase}=await import('../dist/terminal/database.js');
 
 const fresh=()=>mkdtempSync(join(tmpdir(),'kepos-group-'));
 const msg=(over={})=>({groupId:'g1',taskId:'t1',agent:'审查官',kind:'status',text:'查完 auth 目录',...over});
@@ -112,4 +113,91 @@ test('the coordinator brief forbids acting like a superior',()=>{
   assert.match(text,/不能代替别人判断/);
   assert.match(text,/不要要求组员汇报思考过程/);
   assert.match(text,/结论必须各自独立形成/);
+});
+
+// ── 推举呈报 ────────────────────────────────────────────────────────────
+const { assessCandidate, buildElectionReport, rankAssessments, renderElectionReport, ElectionStore } =
+  await import('../dist/terminal/election-report.js');
+
+const profile = (over = {}) => ({ id: 'a1', name: '审查官', model: 'relay/x', provider: 'relay', role: '审查鉴权与依赖。只读。', roleKey: 'auditor', ...over });
+const task = (over = {}) => ({ id: 'w1', agent: '审查官', agentId: 'a1', state: 'SUCCEEDED', started: 100, ended: 200, profileRevision: 'r1', ...over });
+
+// 评估的优先级是"健康度 → 职责 → 票数"，不是反过来。
+test('a candidate with a clean history is ready, and the rationale points at the numbers', () => {
+  const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 3 }, profile: profile(), tasks: [task(), task({ id: 'w2' })] });
+  assert.equal(a.verdict, 'ready');
+  assert.match(a.rationale, /近 2 轮完成 2 轮/);
+  assert.equal(a.roleKey, 'auditor');
+});
+
+test('consecutive failures make a candidate unsuitable no matter how many votes it has', () => {
+  const failing = [task({ id: 'w1', state: 'FAILED', error: 'boom' }), task({ id: 'w2', state: 'FAILED', error: 'boom' }), task({ id: 'w3', state: 'FAILED', error: 'boom' })];
+  const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 9 }, profile: profile(), tasks: failing });
+  assert.equal(a.verdict, 'avoid');
+  assert.match(a.rationale, /连续 3 轮/);
+  assert.ok(a.issues.length > 0, 'the evidence is attached');
+  // 被全组推举但连续失败，排名仍应靠后。
+  const ready = assessCandidate({ candidate: { taskId: 't2', agent: '勘察官', votes: 1 }, profile: profile({ name: '勘察官' }), tasks: [task({ agentId: 'a2', agent: '勘察官' })] });
+  assert.equal(rankAssessments([a, ready])[0].name, '勘察官', 'a reliable candidate outranks a popular failing one');
+});
+
+test('no history is caution, not ready — an unknown is not a clean record', () => {
+  const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 2 }, profile: profile(), tasks: [] });
+  assert.equal(a.verdict, 'caution');
+  assert.match(a.rationale, /还没有足够的完成记录/);
+});
+
+test('the report recommends conditionally and never declares a winner', () => {
+  const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 2 }, profile: profile(), tasks: [task()] });
+  const report = buildElectionReport({ groupId: 'g1', goal: '审查鉴权', electorate: 3, ballots: 2, tied: false, assessments: [a] });
+  assert.match(report.recommendation, /若无异议，建议由/);
+  assert.match(report.approvalLine, /批准「审查官」在组 g1/);
+  assert.doesNotMatch(report.recommendation, /最佳人选/, 'the system does not make the judgement');
+});
+
+test('a tie is handed to the human instead of being resolved', () => {
+  const mk = (name) => assessCandidate({ candidate: { taskId: 't', agent: name, votes: 2 }, profile: profile({ name }), tasks: [task({ agent: name, agentId: name })] });
+  const report = buildElectionReport({ groupId: 'g1', electorate: 3, ballots: 4, tied: true, assessments: [mk('审查官'), mk('勘察官')] });
+  assert.match(report.recommendation, /请人类在候选之间指定/);
+  assert.match(report.recommendation, /系统不代为裁定/);
+});
+
+test('the rendered report leads with the decision and keeps evidence attached', () => {
+  const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 2 }, profile: profile(), tasks: [task({ state: 'FAILED', error: 'boom' })] });
+  const text = renderElectionReport(buildElectionReport({ groupId: 'g1', electorate: 3, ballots: 2, tied: false, assessments: [a] }));
+  assert.match(text, /# 推举呈报 · 组 g1/);
+  assert.match(text, /## 建议/);
+  assert.match(text, /## 待批准/);
+  assert.match(text, /## 候选人/);
+  assert.match(text, /职责：审查鉴权与依赖/);
+  assert.match(text, /批准与否由你决定/);
+});
+
+test('an approved coordinator is recorded and returned for the group', () => {
+  const db = new KeposDatabase(join(fresh(), 'k.sqlite'));
+  try {
+    const store = new ElectionStore(db);
+    const a = assessCandidate({ candidate: { taskId: 't1', agent: '审查官', votes: 2 }, profile: profile(), tasks: [task()] });
+    const report = buildElectionReport({ groupId: 'g1', electorate: 2, ballots: 2, tied: false, assessments: [a] });
+    const record = store.submit(report, 1000);
+    assert.equal(store.pending().length, 1);
+    assert.equal(store.coordinator('g1'), undefined, 'nothing is decided before a human approves');
+    assert.equal(store.approve(record.id, '审查官', 2000), true);
+    assert.equal(store.coordinator('g1'), '审查官');
+    assert.equal(store.pending().length, 0);
+    // 重复批准无效：决定只做一次。
+    assert.equal(store.approve(record.id, '别人', 3000), false);
+  } finally { db.close(); }
+});
+
+test('a newer submission makes the older pending one stale', () => {
+  const db = new KeposDatabase(join(fresh(), 'k2.sqlite'));
+  try {
+    const store = new ElectionStore(db);
+    const a = assessCandidate({ candidate: { taskId: 't', agent: '审查官', votes: 1 }, profile: profile(), tasks: [task()] });
+    const report = buildElectionReport({ groupId: 'g1', electorate: 2, ballots: 1, tied: false, assessments: [a] });
+    store.submit(report, 1000);
+    store.submit(report, 2000);
+    assert.equal(store.pending().length, 1, 'only the newest stays pending');
+  } finally { db.close(); }
 });

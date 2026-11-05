@@ -31,7 +31,8 @@ import { ConsolidationPipeline, candidateFromTask } from './memory-pipeline.ts';
 import { renderMemoryIndex } from './memory.ts';
 import { readGroupMessages, renderGroupChannel } from './group-channel.ts';
 import { ARCHIVE_DIR } from './archive.ts';
-import { electionOutcome, tallyElection } from './group-election.ts';
+import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
+import { ElectionStore, assessCandidate, buildElectionReport, renderElectionReport } from './election-report.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
@@ -40,6 +41,7 @@ import { collectMetrics, formatMetrics } from './kpi.ts';
 import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandidate, matchRule, validRules } from './watch.ts';
 import { AUTO_DISPATCH_PER_MINUTE, assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
 import { AUTOMATION_LABEL, automationAllowed, automationPrompt, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
+import { SubordinateApprovals, decideSpawn } from './subordinates.ts';
 import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
 import { APPROVAL_POLICIES, commandRisk, normalizePolicy, pathRisk, policyLabel, restrictTools, riskReason } from './approval.ts';
@@ -50,26 +52,46 @@ export { fit, historyLines };
 /** 存在 cli_grants 里的一条授权记录。 */
 type CliGrantRecord={id:string;taskId:string;cli:string;envKey?:string;argPrefixes?:string[];note?:string;grantedAt:number;expiresAt?:number;uses?:number;maxUses?:number};
 export interface KeposHost {login?:(ctx:any,provider?:string)=>Promise<void>;logout?:(ctx:any,provider?:string)=>Promise<void>;authStatus?:()=>unknown;}
+/**
+ * 默认编制席位数。这是**默认值，不是上限**：人类可以改 `config.councilSize`
+ * 把它调大或调小，也可以完全不依赖播种、自己逐个添加代表——
+ * 席位数量应当由任务流水线决定，不由常量决定。
+ */
 const DEFAULT_COUNCIL_ROLE_COUNT = 48;
-// 48 席显式种子：覆盖治理、代码、法律合规、文书、学术、政策、工具操作与产品。
-// 顺序决定初始化时的席位顺序；initCrew 也只在空席位上补齐，已有代表 ID 不受影响。
+/** 下限：低于一席不成其为议会。 */
+const MIN_COUNCIL_SIZE = 1;
+/** 上限受 Worker 并发池约束：席位多于槽位只会变成排队。 */
+const MAX_COUNCIL_SIZE = MAX_CONCURRENT_CHILDREN;
+// 48 席默认种子：覆盖治理、代码、法律合规、文书、学术、政策、工具操作与产品。
+//
+// 这是**默认配置**，不是固定编制。三条规则：
+//   1. 顺序决定初始化时的席位顺序；排序靠前的优先占席。
+//   2. 只在首次初始化时播种。之后编制完全属于人类——删席、改数、自建代表都留存。
+//   3. 人类可以用 config.councilSize 改席位数，也可以跳过播种自己逐个添加。
+//
+// 领域配额的取舍：产品与需求澄清排在学术专精之前，因为"从一句模糊目标开始"
+// 时最先需要的是把目标问清楚，而不是论文层面的方法论审查。学术角色保留到
+// 能覆盖完整写作流程，减少的是细分旁支（revision_coach 等仍可按需从 65 个里补）。
 // 代理总代不在编制内：它是人类从现任代表中推选的兼任职责（config.deputyAgentId）。
 const COUNCIL_SEED: readonly CouncilRoleKey[] = [
   // 治理与核心（6）
   'strategist', 'mediator', 'archivist', 'scribe', 'cartographer', 'integrity_gatekeeper',
-  // 代码与工程（10）
+  // 产品与需求（4）——从模糊目标出发时，这一步比任何专精都靠前
+  'product_manager', 'requirements_analyst', 'ux_researcher', 'market_researcher',
+  // 代码与工程（12）
   'surveyor', 'engineer', 'software_architect', 'code_reviewer', 'test_strategist', 'qa_engineer',
   'security_engineer', 'devops_engineer', 'performance_engineer', 'refactoring_planner',
+  'api_contract_analyst', 'migration_planner',
   // 法律合规（5）
   'legal_counsel', 'contract_reviewer', 'compliance_officer', 'privacy_officer', 'ip_officer',
-  // 文书与发表（5）
-  'academic_editor', 'publication_readiness_auditor', 'submission_editor', 'policy_brief_editor', 'peer_response_officer',
-  // 学术研究（9）
-  'research_architect', 'literature_strategist', 'source_verifier', 'methodologist', 'statistical_reviewer',
-  'ethics_reviewer', 'peer_reviewer', 'devils_advocate', 'reproducibility_auditor',
-  // 政策（6）
-  'policy_researcher', 'policy_analyst', 'regulatory_monitor', 'impact_assessor', 'stakeholder_mapper', 'consultation_reviewer',
-  // 核验与工具操作（7）
+  // 文书与发表（4）
+  'academic_editor', 'publication_readiness_auditor', 'submission_editor', 'policy_brief_editor',
+  // 学术研究（7）
+  'research_architect', 'literature_strategist', 'source_verifier', 'methodologist',
+  'statistical_reviewer', 'devils_advocate', 'reproducibility_auditor',
+  // 政策（5）
+  'policy_researcher', 'policy_analyst', 'regulatory_monitor', 'impact_assessor', 'stakeholder_mapper',
+  // 核验与工具操作（5）
   'auditor', 'verifier', 'sentinel', 'toolsmith', 'data_analyst', 'dependency_engineer', 'incident_investigator',
 ];
 export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
@@ -167,6 +189,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const watchCandidates=new WatchCandidates(db());
  // 静默预检的判定记录：同一条报告只跑一次三席并行。
  const precheckStore=new PrecheckStore(db());
+ // 组内推举的呈报：组内推举只是提名，批准由人类做。
+ const electionStore=new ElectionStore(db());
  /**
   * 静默预检：一条 bug 报告进来，先派几名代表从不同角度试着复现。
   * 只有真的复现出来才打扰人——这是 M3 的全部意义。
@@ -273,18 +297,24 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const applyApprovalPolicy=()=>{if(!baselineTools.length)return;try{pi.setActiveTools(currentPolicy()==='readonly'?restrictTools(baselineTools):baselineTools);}catch(error){desk&&(desk.notice='审批模式切换失败：'+clean(error));scheduleRepaint();}};
  function initializeCrew(ctx:any){
   if(ctx.mode!=='tui'||!ctx.model?.id||ctx.model.id==='unknown')return;
-  // 按 48 席清单补齐空席：已有的代表（含用户手工配置的）一律保留 ID、名称与模型，
-  // 只在缺少该角色时新开席位。清空全部代表后才会重新播种。
-  const locale=councilLocale(process.env.KEPOS_LOCALE);const existingKeys=new Set(config.agents.map(agent=>agent.roleKey).filter((key):key is CouncilRoleKey=>!!key));const existingNames=new Set(config.agents.map(agent=>agent.name));let changed=false;
+  // 播种只在**从没初始化过**时发生：席位是默认配置，不是每次启动都要凑齐的名单。
+  // 一旦初始化过，编制就是人类的东西——他删掉一席、改成 5 席、或者自己造 30 席，
+  // 下次启动都不该被"补回来"。这条规则是"用户创造的配置会留存"的实现前提。
+  if(config.initialized){return;}
+  const locale=councilLocale(process.env.KEPOS_LOCALE);
+  const existingKeys=new Set(config.agents.map(agent=>agent.roleKey).filter((key):key is CouncilRoleKey=>!!key));
+  const existingNames=new Set(config.agents.map(agent=>agent.name));
+  // 席位数量可配置：默认 48，人类可以调成任意值。已有代表永远先占名额。
+  const target=Math.max(MIN_COUNCIL_SIZE,Math.min(MAX_COUNCIL_SIZE,Math.floor(config.councilSize??DEFAULT_COUNCIL_ROLE_COUNT)));
   const seedOrder=COUNCIL_SEED.map(key=>councilRole(key)).filter((role):role is NonNullable<typeof role>=>!!role);
   for(const role of [...seedOrder,...COUNCIL_ROLES.filter(role=>!COUNCIL_SEED.includes(role.key))]){
-   if(config.agents.length>=DEFAULT_COUNCIL_ROLE_COUNT)break;
+   if(config.agents.length>=target)break;
    if(existingKeys.has(role.key))continue;
    const name=roleName(role,locale);if(existingNames.has(name))continue;
    config.agents.push({id:randomUUID(),name,roleKey:role.key,role:rolePrompt(role,locale),model:ctx.model.id,provider:ctx.model.provider});
-   existingKeys.add(role.key);existingNames.add(name);changed=true;
+   existingKeys.add(role.key);existingNames.add(name);
   }
-  if(!config.initialized||changed){config.initialized=true;save();}
+  config.initialized=true;save();
  }
  const createLinkedSession=(ctx:any,cwd:string,title:string)=>{const piPath=createSessionFile(cwd,title,sessionDir(ctx));const logical=keposSessionStore.createSession({cwd,title,piSessionFile:piPath});config.sessionLinks[piPath]=logical.logicalSessionId;save();return piPath;};
  const repaint=()=>desk?.refresh();const scheduleRepaint=()=>{if(repaintTimer)return;repaintTimer=setTimeout(()=>{repaintTimer=undefined;repaint();},75);};pool.change=scheduleRepaint;
@@ -530,7 +560,13 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const groupChannel=groupId
    ?renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),groupId,12),'')
    :'';
-  const preamble=[memoryIndex,groupChannel].filter(Boolean).join('\n\n');
+  // 已批准的协调者告知全组：协调职责不是权限，是"信息从这里汇总"。
+  const coordinator=groupId?electionStore.coordinator(groupId):undefined;
+  const coordinatorNote=coordinator&&crew.name===coordinator
+   ?coordinatorBrief(crew.name,groupId!,config.agents.filter(a=>pool.tasks.some(t=>t.groupId===groupId&&t.agent===a.name)).map(a=>a.name))
+   :coordinator?`组内协调由「${coordinator}」牵头：把状态与证据发到组通道，不要直接把判断交给它。`:'';
+  const groupPreamble=[groupChannel,coordinatorNote].filter(Boolean).join('\n\n');
+  const preamble=[memoryIndex,groupPreamble].filter(Boolean).join('\n\n');
   const launched=preamble?{...task,task:`${preamble}\n\n---\n\n${String(task.task||'')}`}:task;
   // memoryInjected 只用于度量分组：哪一组任务在派发时看过该代表的历史记忆。
   return {...launched,crew,skills:resolved,mcp:false,mcpServers,tools,memoryInjected:Boolean(memoryIndex)};
@@ -588,8 +624,22 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }
   const result=tallyElection(messages,members);
   const outcome=electionOutcome(result,members.length);
-  const data={groupId:params.groupId,electorate:members.length,...result,...outcome};
-  return{content:[{type:'text',text:boundedJson(data)}],details:data};
+  // 评估每位候选人：档案（职责/模型）+ 历史（完成率/失败类别）。
+  // 报告只给依据与条件式建议，批准与否由人类决定。
+  const goal=pool.tasks.find(task=>task.groupId===params.groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())?.title;
+  const assessments=result.candidates.map(candidate=>assessCandidate({
+   candidate,
+   profile:config.agents.find(agent=>agent.name===candidate.agent),
+   tasks:pool.tasks,
+   goal,
+  }));
+  const report=buildElectionReport({groupId:params.groupId,goal,electorate:members.length,ballots:result.ballots,tied:result.tied,assessments});
+  // 登记为待批：人类在 F2 里看报告并决定。
+  // 只有真的有人可推举时才提交，平票或无人可推的时间点不制造待办。
+  const submitted=report.candidates.some(item=>item.verdict!=='avoid')?electionStore.submit(report):undefined;
+  if(desk&&submitted){desk.notice=`推举呈报待批准 · 组 ${params.groupId} · F2 → 推举呈报`;scheduleRepaint();}
+  const data={groupId:params.groupId,electorate:members.length,ballots:result.ballots,tied:result.tied,decided:outcome.decided,reason:outcome.reason,report,submitted:submitted?.id};
+  return{content:[{type:'text',text:renderElectionReport(report)}],details:data};
  }});
  pi.registerTool({name:'kepos_vote',label:'代表团表决',description:'汇总一次代表团表决并呈报人类。代表票来自各任务产出末尾的约定行 VOTE: yes|no|abstain - 理由；主 Agent 自己的票用 main 传入，展示时标注（分派方，注意利益关联）。是否终止空转/预算任务、是否改变方向等重大决定由人类裁决，本工具只汇总呈现。',parameters:Type.Object({question:Type.String({maxLength:300}),votes:Type.Array(Type.Object({agent:Type.String(),choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}),{maxItems:48,minItems:1}),main:Type.Optional(Type.Object({choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}))}),async execute(_id,params){
   const tally:any={yes:0,no:0,abstain:0};for(const vote of params.votes)tally[vote.choice]++;
@@ -995,7 +1045,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','代表复盘笔记','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','从档案导入代表','代表复盘笔记','推举呈报','推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举呈报':'elections','推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -1032,7 +1082,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举呈报','elections'],['推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1086,6 +1136,27 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  if(action.kind==='crew'){await crewForm(local,action.id);ui.notify(`成员配置已更新 · ${config.agents.length} 位成员`);return;}
+ // 僚属派生超过三名时的审批队列：一个批准只放行一次派生。
+ // 单独一个入口而不是塞进自动化菜单——它是具体的待办事项，不是能力开关。
+ if(action.kind==='subordinate-approvals'){
+  const approvals=new SubordinateApprovals(db());
+  const pending=approvals.pending();
+  if(!pending.length){ui.notify('没有待批的僚属派生请求。','info');return;}
+  const label=(item:any)=>`${item.agent} 已有 ${item.live} 个僚属 · ${clean(item.task).slice(0,70)}`;
+  const pick=await ui.select(`待批僚属派生（${pending.length}）`,[...pending.map(label),'返回']);
+  const item=pending.find(entry=>label(entry)===pick);
+  if(!item)return;
+  const decision=await ui.select(`${item.agent} · 已有 ${item.live} 个僚属在跑\n\n${item.task}\n\n再派生一个需要你的批准。`,['批准这一次','拒绝','返回']);
+  if(decision==='批准这一次'){
+   approvals.decide(item.id,true);
+   // 代表下一轮轮询会读到这条批准并立刻派出去。
+   ui.notify(`已批准 ${item.agent} 再派生一个僚属；它会在下一轮轮询时派出。`,'info');
+  }else if(decision==='拒绝'){
+   approvals.decide(item.id,false);
+   ui.notify(`已拒绝 ${item.agent} 的派生请求。`,'info');
+  }
+  return;
+ }
  // 自动化能力：三项独立开关，全部默认关闭。
  // 会启动任务的（派发 / 预检）在 automation.ts 里与审批档绑定：
  // 只有代理档才放行，严格与只读档一律停用。这里只负责呈现与切换。
@@ -1132,6 +1203,30 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 不做"文件变了就自动生效"——那会让一次手滑直接改变正在运行的编制。
  // 复盘笔记：失败任务整理出来的"下次该怎么委派"。
  // 这些记忆会自动注入该代表的下一次派发，所以这里只是让人能看见并手动作废。
+ // 推举呈报：组内推举只是提名，这里是人类批准的地方。
+ // 报告带着当时的票数与健康度快照——那些数字过几周就会变，
+ // 所以批准时要看的是"当时凭什么"，而不是重新算一遍。
+ if(action.kind==='elections'){
+  const pending=electionStore.pending();
+  if(!pending.length){ui.notify('没有待批准的推举。组内推举后会自动呈报。','info');return;}
+  const label=(record:any)=>`组 ${record.groupId} · ${record.report.ballots} 票 · ${record.report.recommendation.slice(0,60)}`;
+  const pick=await ui.select(`推举呈报（${pending.length} 待批）`,pending.map(label));
+  const record=pending[pending.map(label).indexOf(pick)];
+  if(!record)return;
+  const decision=await ui.select(renderElectionReport(record.report),['批准','驳回','返回']);
+  if(decision==='批准'){
+   // 批准谁：默认按建议，平票时让人点名。
+   const recommended=record.report.tied?undefined:record.report.candidates[0]?.name;
+   const names=record.report.candidates.map((item:any)=>item.name);
+   const chosen=recommended??await ui.select('批准哪位承担协调职责？',names);
+   if(!chosen||!names.includes(chosen))return;
+   electionStore.approve(record.id,chosen);
+   ui.notify(`已批准「${chosen}」在组 ${record.groupId} 中承担协调职责`,'info');
+   return;
+  }
+  if(decision==='驳回'){electionStore.reject(record.id);ui.notify('已驳回该推举呈报','info');}
+  return;
+ }
  if(action.kind==='lessons'){
   const failed=new Set(pool.tasks.filter(task=>['失败','超时','已中断'].includes(String(task.status||''))).map(task=>task.id));
   const rows:any[]=[];
@@ -1211,7 +1306,26 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images,options)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true,...options}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3),watch:()=>watchCandidates.recent(20)};
   // 代表派生请求：代表进程写文件，这里轮询接手。僚属由代表发起、代表负责，
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
-  spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{try{const rep=pool.tasks.find(t=>t.id===taskId);if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,request.skills?Array.from(READ_ONLY_TOOLS):Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});return{ok:true};}catch(error){return{ok:false,reason:clean(error)};}}});
+  spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{
+   try{
+    const rep=pool.tasks.find(t=>t.id===taskId);
+    if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};
+    // 派生门槛：硬上限、以及"同时超过三名需要人类审批"。
+    // 这条必须在真正开进程之前判定——批不批是人的决定，不是代表的。
+    const decision=decideSpawn(db(),taskId,{agent:rep.agent,task:request.task});
+    if(decision.action==='refuse')return{ok:false,reason:decision.reason};
+    if(decision.action==='approve'){
+     // 不派，但要让人类看得见：走紧急通道并进 F2 待批列表。
+     if(desk){desk.urgent(`僚属派生待批 · ${rep.agent} · ${clean(request.task).slice(0,80)}`);scheduleRepaint();}
+     if(process.stdout.isTTY)process.stdout.write('\x07');
+     return{ok:false,reason:'已提交人类审批：'+decision.reason};
+    }
+    const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};
+    const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));
+    pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});
+    return{ok:true};
+   }catch(error){return{ok:false,reason:clean(error)};}
+  }});
   spawnPoller.start(()=>pool.tasks.filter(t=>!terminalStates.has(t.status||'')).map(t=>t.id),ctx.cwd);
   // 事件驱动值守：M1 只记录候选，M2 在 proxy 档 + 语义评估通过时才自动派发。
   // 关闭是默认——监听器在没人看的时候自己开任务，是这一层最危险的可能。

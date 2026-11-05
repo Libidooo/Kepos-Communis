@@ -18,10 +18,12 @@ test('Council prompts preserve evidence, Skill, and read-only boundaries in both
   const zh = rolePrompt(role, 'zh-CN');
   const en = rolePrompt(role, 'en');
   assert.match(zh, /Skill/);
-  assert.match(zh, /不得修改文件/);
+  assert.match(zh, /默认只读/);
+  assert.match(zh, /不修改文件/);
   assert.match(zh, /置信度/);
   assert.match(en, /Skill policy/);
-  assert.match(en, /do not modify files/);
+  assert.match(en, /read-only by default/i);
+  assert.match(en, /modify files/i);
   assert.match(en, /confidence/);
  }
  assert.match(rolePrompt(councilRole('integrity_gatekeeper'), 'zh-CN'), /academic-pipeline/);
@@ -68,4 +70,43 @@ test('every role prompt carries the opening and closing discipline',async()=>{
    }
   }
  }
+});
+
+// 0.4 给代表加了记忆与派生能力，提示词必须跟上。
+// 能力与说明矛盾时，代表要么不敢用，要么用了之后以为自己在越权。
+test('the role prompt describes the capabilities a representative actually has',()=>{
+  const text=rolePrompt(councilRole('auditor'),'zh-CN');
+  assert.match(text,/记忆/,'memory exists and must be described');
+  assert.match(text,/线索，不要当证据/,'memory is a lead, not evidence');
+  assert.match(text,/kepos_spawn/,'subordinate spawning exists');
+  assert.match(text,/kepos_report/,'and ruling on their reports exists');
+  assert.match(text,/超过三名僚属需要人类审批/,'the approval threshold is stated');
+  assert.match(text,/只允许一层/,'nesting stops at one level');
+});
+
+// 旧文案写"不得批准行动"，与代表实际持有的裁决工具冲突。
+test('the boundary no longer contradicts the tools the representative holds',()=>{
+  const text=rolePrompt(councilRole('verifier'),'zh-CN');
+  assert.doesNotMatch(text,/不得批准行动/,'removed the self-contradicting clause');
+  assert.match(text,/默认只读/,'read-only is the default, not the absolute');
+  assert.match(text,/随任务结束失效/,'grants expire with the task');
+  assert.match(text,/不得批准计划门禁/,'gate approval stays the human\'s');
+});
+
+test('the english prompt carries the same three additions',()=>{
+  const text=rolePrompt(councilRole('auditor'),'en');
+  assert.match(text,/Prior memory/);
+  assert.match(text,/kepos_spawn/);
+  assert.match(text,/Above three concurrent subordinates/);
+  assert.match(text,/One level only/);
+});
+
+// 每个角色都走同一个 rolePrompt，所以三条新纪律对全部 48 席生效。
+test('every seeded role inherits the same discipline without exception',()=>{
+  for(const role of COUNCIL_ROLES){
+    const text=rolePrompt(role,'zh-CN');
+    assert.match(text,/#|你是 Kepos 理事会的/,'renders');
+    assert.match(text,/记忆/,'memory discipline on every role');
+    assert.match(text,/kepos_spawn/,'spawn discipline on every role');
+  }
 });
