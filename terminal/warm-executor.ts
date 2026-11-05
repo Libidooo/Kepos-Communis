@@ -104,17 +104,24 @@ Put the detailed working above that summary. The transcript is still retained as
   // 只挡前者时，readScope=project 会把项目根的 .kepos 一起放行，
   // 僚属就能读到同项目其他僚属的结论——正是禁止的互读。
   const archiveDir = join(profile.cwd, ARCHIVE_DIR);
-  // 组通道的目录例外：同组代表要能读写本组的消息文件，但归档其余部分仍然拒绝。
-  // 用 allowWithinDeny 精确到单个组目录——它只把"被整目录 deny 覆盖、但按设计
-  // 应可读"的位置还原回来，不扩大 readScope=project 的边界。
-  // 只有代表进组：僚属不读归档，也不参与组通道（人类裁定）。
+  // deny 的例外清单。两件事都要放行，缺一个就有功能静默失效：
+  //   1. 档案馆：代表读自己 + 自己僚属的归档（知道自己这一支干过什么）。
+  //   2. 组通道：同组代表读写本组消息文件（协作要能通信）。
+  // 别人的归档仍然拒绝，凭据位置的检查在 deny 之前、永远生效。
   const groupId = profile.representative ? String(profile.groupId || '').trim() : '';
-  const groupRoot = groupId ? join(archiveDir, GROUP_DIR, groupDirName(groupId)) : '';
+  const safeSegment = (value: string) => String(value).replace(/[^A-Za-z0-9_-]/g, '');
+  const allowWithinDeny = [
+    // 自己派生的僚属归档对本代表可读；僚属自己读不到任何归档（下面 representative 才加）。
+    ...(profile.representative && profile.taskId ? [join(archiveDir, safeSegment(profile.taskId))] : []),
+    ...(profile.representative ? (profile.subordinateTaskIds ?? []).map(id => join(archiveDir, safeSegment(id))) : []),
+    ...(profile.representative ? [join(archiveDir, 'roles')] : []),
+    ...(groupId ? [join(archiveDir, GROUP_DIR, groupDirName(groupId))] : []),
+  ];
   Object.assign(env, sandboxEnv({
     mode: profile.readScope === 'machine' ? 'machine' : 'project',
     allow: profile.readAllow ?? [],
     deny: [dataRoot, archiveDir],
-    ...(groupRoot ? { allowWithinDeny: [groupRoot] } : {}),
+    ...(allowWithinDeny.length ? { allowWithinDeny } : {}),
   }));
   // 代表侧工具需要知道归档根与代表名：派生请求与裁决都写在这个目录下。
   if (profile.representative) {

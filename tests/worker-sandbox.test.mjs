@@ -104,3 +104,23 @@ test('without an exception the whole archive stays denied', () => {
   const policy = { mode: 'project', cwd: '/proj', home: '/home/u', allow: [], deny: ['/proj/.kepos'] };
   assert.ok(readDenied('/proj/.kepos/t-self/report.md', policy), 'no exception means no archive access');
 });
+
+// 两处例外必须同时存在：档案馆（自己+僚属）与组通道。
+// 并发改动曾经只留了组通道，代表于是读不到自己的档案——
+// 功能静默失效，测试却全绿，因为没有测试同时断言两者。
+test('the archive exception and the group channel both survive together', () => {
+  const policy = {
+    mode: 'project', cwd: '/proj', home: '/home/u', allow: [],
+    deny: ['/proj/.kepos'],
+    allowWithinDeny: ['/proj/.kepos/t-self', '/proj/.kepos/t-child', '/proj/.kepos/roles', '/proj/.kepos/groups/g1'],
+  };
+  // 档案馆
+  assert.equal(readDenied('/proj/.kepos/t-self/report.md', policy), null, 'own archive');
+  assert.equal(readDenied('/proj/.kepos/t-child/transcript.md', policy), null, 'subordinate archive');
+  assert.equal(readDenied('/proj/.kepos/roles/auditor.md', policy), null, 'role docs');
+  // 组通道
+  assert.equal(readDenied('/proj/.kepos/groups/g1/00001.json', policy), null, 'group channel');
+  // 别人的归档与别的组仍然拒绝
+  assert.ok(readDenied('/proj/.kepos/t-other/report.md', policy), 'another representative stays denied');
+  assert.ok(readDenied('/proj/.kepos/groups/g2/00001.json', policy), 'another group stays denied');
+});
