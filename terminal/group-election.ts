@@ -25,7 +25,13 @@ export type Candidate = { taskId: string; agent: string; votes: number };
  * 只认明确表态：消息种类必须是 discuss，且正文里出现推举标记。
  * 不猜意图——把"我觉得 B 挺合适"当成投票会让结果充满解释空间。
  */
-const NOMINATE = /(?:推举|推选|elect|nominate)\s*[:：]?\s*([^\n,，。;；]{1,40})/i;
+// 推举标记必须是一句中明确的表态。
+// 此前只匹配"推举：某某"，于是「我不同意推举：勘察官」和「要不要推举：勘察官？」
+// 都被算成支持票——注释说"不猜意图"，正则却在猜。
+// 现在要求：标记在句首或标点之后、紧跟冒号与被推举者，且该句不含否定/征询词。
+const NOMINATE = /(?:^|[\u3000-\u303f\uff00-\uffef,;:\s])(?:\u6211)?(?:\u63a8\u4e3e|\u63a8\u9009|elect|nominate)\s*[:\uff1a]\s*([^\n,\u3001\uff0c\u3002;\uff1b?!\uff1f]{1,40})/iu;
+/** 出现这些词说明该句不是表态，而是否定或征询。 */
+const NOT_A_BALLOT = /(不同意|反对|不赞成|不必|不要|无需|是否|要不要|该不该|不如|maybe|should we|do not|don't)/i;
 
 /**
  * 统计推举结果。
@@ -47,6 +53,9 @@ export function tallyElection(messages: readonly GroupMessage[], members: Readon
     if (message.kind !== 'discuss') continue;
     const match = NOMINATE.exec(message.text);
     if (!match) continue;
+    // 整句含否定或征询词就不算票：「我不同意推举 X」和「要不要推举 X」
+    // 都不是支持，把它们算成票等于系统替发言人表了态。
+    if (NOT_A_BALLOT.test(message.text)) continue;
     const wanted = match[1].trim();
     // 精确名优先，其次唯一前缀匹配；多个可能就丢弃这张票，不猜。
     let target = byName.get(wanted);

@@ -66,6 +66,15 @@ export function assessCandidate(input: {
 
   let verdict: CandidateAssessment['verdict'] = 'ready';
   let rationale = `近 ${history.sampleSize} 轮完成 ${history.sampleSize - history.failureCount} 轮，历史正常`;
+  // 没有配置就没有候选人：票可能投给了一个已删除或改名的代表。
+  // 这种情况不能说"首次牵头"——那是给一个不存在的人安排工作。
+  if (!profile) {
+    return {
+      name: candidate.agent, votes: candidate.votes, role: '（未找到配置）', model: '—', provider: '',
+      history, issues: [], verdict: 'avoid',
+      rationale: '找不到该代表的配置：可能已删除或改名，重新推举前先确认',
+    };
+  }
   // 连续失败是最强的负面信号：它说明最近的状态有问题，而协作正要开始。
   if (history.consecutiveFailures >= 3) {
     verdict = 'avoid';
@@ -150,10 +159,14 @@ export function buildElectionReport(input: {
   else if (ranked.some(item => item.verdict === 'caution')) recommendation = `候选人都有需要留意的地方：建议先诊断再决定；若必须现在推举，可考虑「${ranked[0].name}」并加强复核。`;
   else recommendation = '所有候选人都存在未解决的失败记录，建议暂不推举。';
 
-  const top = input.tied ? undefined : ranked[0];
+  // 待批准那一行必须和建议一致：只有确实可推举的人才写进"待批准"。
+  // 否则建议说"暂不推举"、待批准却写着某人的名字，只看后者的人会批错。
+  const top = input.tied ? undefined : ready[0];
   const approvalLine = top
     ? `推举「${top.name}」兼任代理总代${input.goal ? `（组 ${input.groupId}：${input.goal.slice(0, 80)}）` : `（组 ${input.groupId}）`}`
-    : `组 ${input.groupId} 的代理总代推举需要人类裁定`;
+    : ranked.length
+      ? `组 ${input.groupId} 暂无合适的推举人选：${input.tied ? '得票并列，请指定' : '候选人都有未解决的记录，先诊断'}`
+      : `组 ${input.groupId} 还没有推举表态`;
   return { groupId: input.groupId, goal: input.goal, electorate: input.electorate, ballots: input.ballots, tied: input.tied, candidates: ranked, recommendation, approvalLine };
 }
 

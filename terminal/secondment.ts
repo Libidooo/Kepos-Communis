@@ -174,8 +174,16 @@ export function describeSecondmentRequest(input: { agent: string; fromGroup: str
 export class SecondmentStore {
   constructor(private readonly database: import('./database.ts').KeposDatabase) {}
 
-  /** 记一条借调。只在总理批准后调用。 */
+  /**
+   * 记一条借调。只在总理批准后调用。
+   *
+   * 这里也拒一次重复：校验函数只在调用方跑，而"一人只能有一个生效借调"
+   * 是数据本身的约束。少了这道防线，两条记录会同时生效，
+   * 于是这个人在两个组里都可见——而 forAgent 只会返回其中一条，另一条成了幽灵。
+   */
   add(secondment: Secondment): Secondment {
+    const existing = this.forAgent(secondment.agentId, secondment.approvedAt);
+    if (existing) throw Error(`该代表已有生效借调（组 ${existing.toGroup}），不能同时加入组 ${secondment.toGroup}`);
     this.database.prepare('INSERT INTO secondments(id,agent_id,agent,from_group,to_group,reason,requested_by,approved_at,expires_at,released_at) VALUES(?,?,?,?,?,?,?,?,?,NULL)')
       .run(secondment.id, secondment.agentId, secondment.agent, secondment.fromGroup, secondment.toGroup, secondment.reason, secondment.requestedBy, secondment.approvedAt, secondment.expiresAt);
     return secondment;

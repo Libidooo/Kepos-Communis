@@ -115,3 +115,19 @@ test('reaping marks every expired row and reports them once',()=>{
     assert.deepEqual(store.reapExpired(Date.now()),[],'reaping twice returns nothing');
   }finally{db.close();}
 });
+
+// 约束必须落在数据层：校验函数只在调用方跑，漏一处就是两条记录同时生效，
+// 这个人在两个组里都可见，而 forAgent 只返回一条——另一条成了幽灵。
+test('the store refuses a second live secondment for the same person',()=>{
+  const db=fresh();
+  try{
+    const store=new SecondmentStore(db);
+    store.add(make({agentId:'a1',toGroup:'g-a'}));
+    assert.throws(()=>store.add(make({agentId:'a1',toGroup:'g-c',now:2000})),/已有生效借调/);
+    assert.equal(store.active(3000).filter(item=>item.agentId==='a1').length,1);
+    // 归还之后可以再借到别的组。
+    const live=store.forAgent('a1',3000);
+    store.release(live.id,4000);
+    assert.doesNotThrow(()=>store.add(make({agentId:'a1',toGroup:'g-c',now:5000})));
+  }finally{db.close();}
+});

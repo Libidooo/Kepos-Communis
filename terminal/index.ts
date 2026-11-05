@@ -1502,6 +1502,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
      if(permission.allowed!==true)return{ok:false,reason:permission.reason};
      const target=config.agents.find(agent=>agent.id===request.agent||agent.name===request.agent);
      if(!target)return{ok:false,reason:'找不到被借调的代表'};
+     // 目标组必须是发起者自己所在的组：代表自己填的 toGroup 不能凭空造一个组，
+     // 否则借调会把一个人塞进一个没有主人、也没有通道的组。
+     const applicantGroup=String(applicant.groupId||'').trim();
+     if(!applicantGroup||request.toGroup!==applicantGroup)return{ok:false,reason:`目标组必须是发起者所在的组（${applicantGroup||'未在组中'}）`};
      const existing=secondmentStore.active();
      const check=validateSecondment({agentId:target.id,fromGroup:request.fromGroup,toGroup:request.toGroup,reason:request.reason,existing});
      if(check.ok!==true)return{ok:false,reason:(check as {reason:string}).reason};

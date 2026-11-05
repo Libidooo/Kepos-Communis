@@ -199,3 +199,44 @@ test('a newer submission makes the older pending one stale', () => {
     assert.equal(store.pending().length, 1, 'only the newest stays pending');
   } finally { db.close(); }
 });
+
+// 票可能投给已删除或改名的代表。这种情况不是"首次牵头"，
+// 而是"这个人不存在"——给不存在的人安排工作是最糟的静默失败。
+test('a candidate with no configuration is rejected, not treated as a newcomer', () => {
+  const a = assessCandidate({ candidate: { taskId: 't', agent: '已删除的人', votes: 3 }, tasks: [] });
+  assert.equal(a.verdict, 'avoid');
+  assert.match(a.rationale, /找不到该代表的配置/);
+  assert.doesNotMatch(a.rationale, /首次/);
+  // 它也不该因为票数高就排到前面。
+  const ready = assessCandidate({ candidate: { taskId: 't2', agent: '审查官', votes: 1 }, profile: profile(), tasks: [task()] });
+  assert.equal(rankAssessments([a, ready])[0].name, '审查官');
+});
+
+// 建议与"待批准"必须指向同一个人（或都说没有）。
+// 建议说"暂不推举"而待批准写着某人名字，只看后者的人会批错。
+test('the approval line never names someone the recommendation rejected', () => {
+  const failing = [task({ id: 'w1', state: 'FAILED', error: 'x' }), task({ id: 'w2', state: 'FAILED', error: 'x' }), task({ id: 'w3', state: 'FAILED', error: 'x' })];
+  const avoid = assessCandidate({ candidate: { taskId: 't', agent: '审查官', votes: 9 }, profile: profile(), tasks: failing });
+  const report = buildElectionReport({ groupId: 'g1', electorate: 3, ballots: 9, tied: false, assessments: [avoid] });
+  assert.match(report.recommendation, /建议暂不推举/);
+  assert.doesNotMatch(report.approvalLine, /推举「审查官」/, 'the approval line must not name a rejected candidate');
+  assert.match(report.approvalLine, /暂无合适的推举人选/);
+});
+
+test('an empty candidate list says so instead of naming nobody', () => {
+  const report = buildElectionReport({ groupId: 'g1', electorate: 2, ballots: 0, tied: false, assessments: [] });
+  assert.match(report.recommendation, /没有可评估的候选人/);
+  assert.match(report.approvalLine, /还没有推举表态/);
+});
+
+// 注释说"不猜意图"，正则此前却在猜：否定句和疑问句都被算成支持票。
+test('a denial or a question is not a nomination',()=>{
+  const members=[{taskId:'a',agent:'审查官'},{taskId:'b',agent:'勘察官'}];
+  const say=(text)=>({groupId:'g',taskId:'a',agent:'审查官',kind:'discuss',text,at:1});
+  for(const text of ['我不同意推举：勘察官','反对推举：勘察官','要不要推举：勘察官？','是否推举：勘察官','不必推举：勘察官','do not nominate: 勘察官']){
+    assert.equal(tallyElection([say(text)],members).ballots,0,`counted a ballot from: ${text}`);
+  }
+  // 正常表态仍然算票，包括句中带標点的写法。
+  assert.equal(tallyElection([say('推举：勘察官')],members).ballots,1);
+  assert.equal(tallyElection([say('另外，推举：勘察官')],members).ballots,1);
+});
