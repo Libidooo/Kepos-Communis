@@ -19,9 +19,9 @@ const make=(over={})=>createSecondment({agentId:'a1',agent:'审查官',fromGroup
 test('only the deputy chair may request a cross-group secondment',()=>{
   assert.equal(canRequestSecondment({}).allowed,false);
   assert.match(canRequestSecondment({}).reason,/没有在任的代理总代/);
-  assert.equal(canRequestSecondment({requesterTaskId:'t1',deputyTaskId:'t2'}).allowed,false);
-  assert.match(canRequestSecondment({requesterTaskId:'t1',deputyTaskId:'t2'}).reason,/只有代理总代/);
-  assert.equal(canRequestSecondment({requesterTaskId:'t2',deputyTaskId:'t2'}).allowed,true);
+  assert.equal(canRequestSecondment({requesterAgent:'审查官',deputyAgent:'总代甲'}).allowed,false);
+  assert.match(canRequestSecondment({requesterAgent:'审查官',deputyAgent:'总代甲'}).reason,/只有代理总代/);
+  assert.equal(canRequestSecondment({requesterAgent:'总代甲',deputyAgent:'总代甲'}).allowed,true);
 });
 
 test('a secondment requires a real reason and a different target group',()=>{

@@ -57,10 +57,13 @@ export function secondmentActive(secondment: Secondment | undefined, now = Date.
  *
  * 只有代理总代。普通代表不能自己跨组拉人——那会绕开治理链，
  * 变成"谁需要谁自己借"，而没有人对全局的编制状态负责。
+ *
+ * 判定看的是执行者身份而不是任务 id：调用方手里有"这个任务由谁执行"，
+ * 却未必持有代理总代的任务 id（它可能还没被派发）。
  */
-export function canRequestSecondment(input: { requesterTaskId?: string; deputyTaskId?: string }): { allowed: boolean; reason: string } {
-  if (!input.deputyTaskId) return { allowed: false, reason: '没有在任的代理总代，跨组协作无处对接' };
-  if (input.requesterTaskId !== input.deputyTaskId) return { allowed: false, reason: '只有代理总代可以发起跨组借调' };
+export function canRequestSecondment(input: { requesterAgent?: string; deputyAgent?: string }): { allowed: boolean; reason: string } {
+  if (!input.deputyAgent) return { allowed: false, reason: '没有在任的代理总代，跨组协作无处对接' };
+  if (input.requesterAgent !== input.deputyAgent) return { allowed: false, reason: '只有代理总代可以发起跨组借调' };
   return { allowed: true, reason: '' };
 }
 

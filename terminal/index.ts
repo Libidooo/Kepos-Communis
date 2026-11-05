@@ -33,7 +33,7 @@ import { readGroupMessages, renderGroupChannel } from './group-channel.ts';
 import { ARCHIVE_DIR } from './archive.ts';
 import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
 import { ElectionStore, assessCandidate, buildElectionReport, renderElectionReport } from './election-report.ts';
-import { SECONDMENT_SECONDS, SecondmentStore, canRequestSecondment, createSecondment, validateSecondment } from './secondment.ts';
+import { SECONDMENT_SECONDS, SecondmentStore, canRequestSecondment, createSecondment, describeSecondmentRequest, effectiveGroups, validateSecondment } from './secondment.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
@@ -559,13 +559,16 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const memoryIndex=renderMemoryIndex(memoryPipeline.list(crew.id||crew.name));
   // 同组通道：把已有的组内消息一并带上。声明"只含状态与讨论"不是客套——
   // 通道里确实不走推理与结论，代表要据此知道这些内容不构成对判断的引导。
-  const groupId=typeof task.groupId==='string'?task.groupId:undefined;
-  // 借调成员：它们按到期时间临时属于目标组，所以组通道对它们可见。
-  // effectiveGroups 会排除已到期的记录——"临时"不能靠人记得收回。
-  const borrowed=secondmentStore.active().filter(item=>item.agentId===crew.id&&item.toGroup===groupId);
-  const groupChannel=groupId
-   ?renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),groupId,12),'')
+  // 该代表这次实际属于哪些组：原本的组 + 未到期的借调目标组。
+  // 借调成员因此能收到目标组的频道，而到期后自动退回原组——
+  // "临时"不靠人记得收回，靠 effectiveGroups 每个读取方都算一次。
+  const homeGroup=typeof task.groupId==='string'?task.groupId:undefined;
+  const groups=effectiveGroups({homeGroup,secondments:secondmentStore.active(),agentId:crew.id});
+  const channelFor=groups.length
+   ?groups.map(id=>renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),id,8),'')).filter(Boolean).join('\n\n')
    :'';
+  const groupChannel=channelFor;
+  const groupId=homeGroup;
   // 已批准的协调者告知全组：协调职责不是权限，是"信息从这里汇总"。
   const coordinator=groupId?electionStore.coordinator(groupId):undefined;
   const coordinatorNote=coordinator&&crew.name===coordinator
@@ -622,14 +625,13 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const members=pool.tasks
    .filter(task=>task.groupId===params.groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())
    .map(task=>({taskId:task.id,agent:task.agent}));
+  // 组内消息与推举结果对两个动作都一样，只算一次。
+  const result=tallyElection(messages,members);
+  const outcome=electionOutcome(result,members.length);
   if(params.action==='status'){
-   const result=tallyElection(messages,members);
-   const outcome=electionOutcome(result,members.length);
    const data={groupId:params.groupId,members:members.map(m=>m.agent),messages:messages.length,election:{ballots:result.ballots,candidates:result.candidates,...outcome},channel:renderGroupChannel(messages,'')};
    return{content:[{type:'text',text:boundedJson(data)}],details:data};
   }
-  const result=tallyElection(messages,members);
-  const outcome=electionOutcome(result,members.length);
   // 评估每位候选人：档案（职责/模型）+ 历史（完成率/失败类别）。
   // 报告只给依据与条件式建议，批准与否由人类决定。
   const goal=pool.tasks.find(task=>task.groupId===params.groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())?.title;
@@ -1371,16 +1373,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
      const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
      const applicant=pool.tasks.find(task=>task.id===taskId);
      // 只有代理总代能发起：普通代表跨组拉人会绕开治理链。
-     const permission=canRequestSecondment({requesterTaskId:taskId,deputyTaskId:deputy?taskId:undefined});
-     if(!deputy||!applicant||applicant.agent!==deputy.name)return{ok:false,reason:'只有代理总代可以发起跨组借调'};
-     void permission;
+     const permission=canRequestSecondment({requesterAgent:applicant?.agent,deputyAgent:deputy?.name});
+     if(permission.allowed!==true)return{ok:false,reason:permission.reason};
      const target=config.agents.find(agent=>agent.id===request.agent||agent.name===request.agent);
      if(!target)return{ok:false,reason:'找不到被借调的代表'};
      const existing=secondmentStore.active();
      const check=validateSecondment({agentId:target.id,fromGroup:request.fromGroup,toGroup:request.toGroup,reason:request.reason,existing});
      if(check.ok!==true)return{ok:false,reason:(check as {reason:string}).reason};
-     // 总理评估：这里不做模型调用——条件都是确定的（组不同、未重复、未超上限、有原因）。
-     // 写进记录后由界面可见；到期自动收回。
+     // 总理评估：条件都是确定的（组不同、未重复、未超上限、有原因），所以不需要模型调用。
+     // 但评估结论要留下完整依据——只在通知栏闪一行，事后无从判断当初批了什么。
+     const summary=describeSecondmentRequest({agent:target.name,fromGroup:request.fromGroup,toGroup:request.toGroup,reason:request.reason,requestedBy:deputy.name});
+     try{briefingStore.record({target:'premier',targetName:deputy.name,text:summary,delivery:'queued',note:'跨组借调（静默批准，无需人类）'});}catch{}
      const record=createSecondment({agentId:target.id,agent:target.name,fromGroup:request.fromGroup,toGroup:request.toGroup,reason:request.reason,requestedBy:deputy.name});
      secondmentStore.add(record);
      if(desk){desk.notice=`跨组借调已批准 · ${target.name}：组 ${request.fromGroup} → ${request.toGroup} · ${Math.round(SECONDMENT_SECONDS/60)} 分钟后自动收回`;scheduleRepaint();}

@@ -45,7 +45,19 @@ export type GroupMessage = {
   re?: string;
 };
 
-const safe = (value: string) => String(value ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+/**
+ * 组 id 的目录安全化。
+ *
+ * 导出而非私有：沙箱要放行"本组目录"时，必须与这里算出**同一个**路径。
+ * 两处各写一遍清洗规则，迟早漂移成"能写不能读"——那种故障极难查，
+ * 因为两侧看起来都正常。
+ */
+export const safe = (value: string) => String(value ?? '').replace(/[^A-Za-z0-9_-]/g, '');
+
+/** 组的目录名（不含归档根），沙箱放行时用同一份计算。 */
+export function groupDirName(groupId: string): string {
+  return safe(groupId);
+}
 
 export function groupDir(archiveRoot: string, groupId: string): string {
   return join(archiveRoot, GROUP_DIR, safe(groupId));
@@ -126,9 +138,4 @@ export function renderGroupChannel(messages: readonly GroupMessage[], selfTaskId
     return `- [${label[message.kind] ?? message.kind}] ${who}：${message.text}`;
   });
   return ['## 同组通道（只含状态与讨论，不含他人推理与结论）', '', ...lines].join('\n');
-}
-
-/** 这条消息是不是发给我的（不含自己发的）。 */
-export function addressedElsewhere(message: GroupMessage, selfTaskId: string): boolean {
-  return message.taskId !== selfTaskId;
 }
