@@ -33,6 +33,7 @@ import { readGroupMessages, renderGroupChannel } from './group-channel.ts';
 import { ARCHIVE_DIR } from './archive.ts';
 import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
 import { ElectionStore, assessCandidate, buildElectionReport, renderElectionReport } from './election-report.ts';
+import { SECONDMENT_SECONDS, SecondmentStore, canRequestSecondment, createSecondment, validateSecondment } from './secondment.ts';
 import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
@@ -191,6 +192,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  const precheckStore=new PrecheckStore(db());
  // 组内推举的呈报：组内推举只是提名，批准由人类做。
  const electionStore=new ElectionStore(db());
+ // 跨组临时借调：代理总代发起、总理批准、到期自动收回。
+ const secondmentStore=new SecondmentStore(db());
  /**
   * 静默预检：一条 bug 报告进来，先派几名代表从不同角度试着复现。
   * 只有真的复现出来才打扰人——这是 M3 的全部意义。
@@ -557,6 +560,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 同组通道：把已有的组内消息一并带上。声明"只含状态与讨论"不是客套——
   // 通道里确实不走推理与结论，代表要据此知道这些内容不构成对判断的引导。
   const groupId=typeof task.groupId==='string'?task.groupId:undefined;
+  // 借调成员：它们按到期时间临时属于目标组，所以组通道对它们可见。
+  // effectiveGroups 会排除已到期的记录——"临时"不能靠人记得收回。
+  const borrowed=secondmentStore.active().filter(item=>item.agentId===crew.id&&item.toGroup===groupId);
   const groupChannel=groupId
    ?renderGroupChannel(readGroupMessages(join(ctx.cwd,ARCHIVE_DIR),groupId,12),'')
    :'';
@@ -1045,7 +1051,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','跨组借调','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','跨组借调':'secondments','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -1082,7 +1088,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify('已移除：'+pick);return;
  }
  if(action.kind==='palette'){
-  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举代理总代','elections'],['直接推选代理总代','deputy'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
+  const menuEntries:[string,any][]=[['新建项目','project'],['新对话','new'],['移除项目','project-remove'],['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['推举代理总代','elections'],['直接推选代理总代','deputy'],['跨组借调','secondments'],['分派只读任务','delegate'],['查看/取消任务','cancel'],['更换主 Agent 模型','model'],['切换主题','theme'],['管理长程计划','missions'],['自动化能力','automation'],['审批模式','approval']];
   const commandEntries=(pi.getCommands?.()||[]).filter((command:any)=>!['kepos','kepos'].includes(String(command.name)));
   const entries:string[]=[...menuEntries.map(([label])=>'操作 · '+label),...commandEntries.map((command:any)=>'命令 · /'+command.name+(command.description?' · '+command.description:'')),'会话 · /reload 重载扩展','会话 · /pi 进入 Pi 命令行'];
   const pick=await ui.select('命令面板 · 输入筛选',entries);if(!pick)return;
@@ -1229,6 +1235,27 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 不做"文件变了就自动生效"——那会让一次手滑直接改变正在运行的编制。
  // 复盘笔记：失败任务整理出来的"下次该怎么委派"。
  // 这些记忆会自动注入该代表的下一次派发，所以这里只是让人能看见并手动作废。
+ // 跨组借调：只有代理总代能发起，总理静默批准，到期自动收回。
+ // 这里同时是"收回"的触发点：过期记录在打开菜单时被清理并告知。
+ if(action.kind==='secondments'){
+  const reaped=secondmentStore.reapExpired();
+  if(reaped.length)ui.notify(`已自动收回 ${reaped.length} 项到期借调：${reaped.map(item=>item.agent).join('、')}`,'info');
+  const live=secondmentStore.active();
+  if(!live.length){ui.notify('当前没有生效中的跨组借调。\n代理总代可以在任务中用 kepos_secondment 发起，请求会静默转呈总理评估。','info');return;}
+  const label=(item:any)=>`${item.agent}　组 ${item.fromGroup} → ${item.toGroup}　剩 ${Math.max(0,Math.round((item.expiresAt-Date.now())/60000))} 分钟`;
+  const pick=await ui.select(`跨组借调（${live.length} 生效中）`,live.map(label));
+  const chosen=live[live.map(label).indexOf(pick)];
+  if(!chosen)return;
+  if(await ui.confirm('提前归还？',`${chosen.agent}
+
+原因：${chosen.reason}
+
+归还后该代表立即退出组 ${chosen.toGroup} 的通信频道。`)){
+   secondmentStore.release(chosen.id);
+   ui.notify(`已归还 ${chosen.agent} 到组 ${chosen.fromGroup}`,'info');
+  }
+  return;
+ }
  // 推举呈报：组内推举只是提名，这里是人类批准的地方。
  // 报告带着当时的票数与健康度快照——那些数字过几周就会变，
  // 所以批准时要看的是"当时凭什么"，而不是重新算一遍。
@@ -1335,7 +1362,32 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  let action:any;try{action=await ctx.ui.custom<any>((tui,theme,_keys,done)=>{let modalBusy=false;desk=new Desk(tui,theme,ctx,config,sessions,pool,(text,images,options)=>pi.sendUserMessage(images&&images.length?[{type:"text",text},...images]:text,{expandPromptTemplates:true,...options}),done,pi.getCommands(),undefined,async action=>{if(modalBusy)return;modalBusy=true;try{await workspaceAction(action,ctx);}finally{modalBusy=false;desk?.invalidate();desk?.refresh();}});if(reloadNotice){desk.notice=reloadNotice;reloadNotice='';}desk.approvalPolicy=()=>currentPolicy();desk.monitor={tasks:()=>taskSummaries(db()),evidence:(id:string)=>taskEvidence(db(),id),plans:()=>planSummaries(db()),watchdog:(id:string)=>watchdogStore.list(id,3),watch:()=>watchCandidates.recent(20)};
   // 代表派生请求：代表进程写文件，这里轮询接手。僚属由代表发起、代表负责，
   // 但实际 spawn 必须在本进程执行——子进程没有创建同级进程的能力。
-  spawnPoller=new SpawnRequestPoller({onSpawn:async(taskId,request)=>{
+  spawnPoller=new SpawnRequestPoller({
+   // 跨组借调：代理总代发起 → 总理评估 → 批准后生效。
+   // 这一步**静默进行**，不经人类：借调不扩权（被借调者保持原有工具、模型与只读边界），
+   // 只是临时进入另一个组的通信频道，到期自动收回。
+   onSecondment:async(taskId,request)=>{
+    try{
+     const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
+     const applicant=pool.tasks.find(task=>task.id===taskId);
+     // 只有代理总代能发起：普通代表跨组拉人会绕开治理链。
+     const permission=canRequestSecondment({requesterTaskId:taskId,deputyTaskId:deputy?taskId:undefined});
+     if(!deputy||!applicant||applicant.agent!==deputy.name)return{ok:false,reason:'只有代理总代可以发起跨组借调'};
+     void permission;
+     const target=config.agents.find(agent=>agent.id===request.agent||agent.name===request.agent);
+     if(!target)return{ok:false,reason:'找不到被借调的代表'};
+     const existing=secondmentStore.active();
+     const check=validateSecondment({agentId:target.id,fromGroup:request.fromGroup,toGroup:request.toGroup,reason:request.reason,existing});
+     if(check.ok!==true)return{ok:false,reason:(check as {reason:string}).reason};
+     // 总理评估：这里不做模型调用——条件都是确定的（组不同、未重复、未超上限、有原因）。
+     // 写进记录后由界面可见；到期自动收回。
+     const record=createSecondment({agentId:target.id,agent:target.name,fromGroup:request.fromGroup,toGroup:request.toGroup,reason:request.reason,requestedBy:deputy.name});
+     secondmentStore.add(record);
+     if(desk){desk.notice=`跨组借调已批准 · ${target.name}：组 ${request.fromGroup} → ${request.toGroup} · ${Math.round(SECONDMENT_SECONDS/60)} 分钟后自动收回`;scheduleRepaint();}
+     return{ok:true};
+    }catch(error){return{ok:false,reason:clean(error)};}
+   },
+   onSpawn:async(taskId,request)=>{
    try{
     const rep=pool.tasks.find(t=>t.id===taskId);
     if(!rep)return{ok:false,reason:'找不到发起请求的代表任务'};

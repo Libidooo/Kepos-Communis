@@ -115,6 +115,21 @@ export class KeposDatabase {
     decided_at INTEGER
    );
    CREATE INDEX IF NOT EXISTS idx_election_state ON election_reports(state,at);
+   -- 跨组临时借调：只有代理总代发起、总理批准，到期自动失效。
+   -- 记录必须留档：借调本身不扩权，但"谁在哪个组里"是治理事实。
+   CREATE TABLE IF NOT EXISTS secondments(
+    id TEXT PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    agent TEXT NOT NULL,
+    from_group TEXT NOT NULL,
+    to_group TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    requested_by TEXT NOT NULL,
+    approved_at INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    released_at INTEGER
+   );
+   CREATE INDEX IF NOT EXISTS idx_secondment_active ON secondments(to_group,expires_at);
    PRAGMA user_version=1;
   `);});
   } catch(error) { this.sql.close(); throw error; }

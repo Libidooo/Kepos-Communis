@@ -6,15 +6,19 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ARCHIVE_DIR } from './archive.ts';
-import { clearSpawnRequest, readSpawnRequest, type SpawnRequest } from './representative-tools.ts';
+import { clearSecondmentRequest, clearSpawnRequest, readSecondmentRequest, readSpawnRequest, type SecondmentRequest, type SpawnRequest } from './representative-tools.ts';
 
 export type SpawnHandler = (taskId: string, request: SpawnRequest) => Promise<{ ok: boolean; reason?: string }>;
+/** 借调申请的处理：由父进程转呈总理评估（静默批准，不经人类）。 */
+export type SecondmentHandler = (taskId: string, request: SecondmentRequest) => Promise<{ ok: boolean; reason?: string }>;
 
 export type SpawnPollOptions = {
   /** 轮询间隔，缺省 2 秒：够快让人看不出延迟，又不至于空转。 */
   intervalMs?: number;
   /** 每个代表同时只处理一个请求，避免一次派生出十几个僚属。 */
   onSpawn: SpawnHandler;
+  /** 可选：处理跨组借调申请。没有它时申请会被忽略（不误报为成功）。 */
+  onSecondment?: SecondmentHandler;
 };
 
 /**
@@ -45,6 +49,15 @@ export class SpawnRequestPoller {
       if (this.busy.has(taskId)) continue;
       const root = join(cwd, ARCHIVE_DIR, String(taskId).replace(/[^A-Za-z0-9_-]/g, ''));
       if (!existsSync(root)) continue;
+      // 借调申请与派生请求共用一个轮询周期：两者都是"子进程发起、父进程执行"。
+      if (this.options.onSecondment) {
+        const secondment = readSecondmentRequest(root);
+        if (secondment) {
+          try { await this.options.onSecondment(taskId, secondment); }
+          catch { /* 申请失败不能影响派生处理 */ }
+          finally { clearSecondmentRequest(root); }
+        }
+      }
       const request = readSpawnRequest(root);
       // requestedAt 为 0 说明文件已被标记处理过。
       if (!request || !request.requestedAt) continue;

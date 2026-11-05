@@ -14,6 +14,8 @@ import { listCliTurns, readCliTurn } from './cli-dialog.ts';
 
 /** 代表进程的请求目录：放在归档区下，父进程天然能看见。 */
 export const SPAWN_REQUEST_FILE = 'spawn-request.json';
+/** 跨组借调申请：同上，由父进程轮询后转呈总理。 */
+export const SECONDMENT_REQUEST_FILE = 'secondment-request.json';
 export const DECISION_FILE = 'decision.md';
 
 export type SpawnRequest = {
@@ -165,6 +167,48 @@ export default function representativeTools(pi: any) {
     },
   });
 
+  // ── 跨组借调申请（只有代理总代可用）──────────────────────────────────
+  // 跨项目协作只能走这条路径：代理总代把别组成员临时加入自己组，
+  // 用完归还。申请写进归档，由父进程转呈总理评估——静默批准，不上报人类。
+  if (process.env.KEPOS_DEPUTY === '1') {
+    pi.registerTool({
+      name: 'kepos_secondment',
+      label: '跨组借调',
+      description: '把另一个小组的代表临时加入你的组，用完归还。只有代理总代可以发起。借调不扩权：被借调者保持原有工具、模型与只读边界，只是临时进入你的通信频道。请求会转呈总理评估批准，无需人类介入。',
+      parameters: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: '被借调的代表名或配置 id' },
+          fromGroup: { type: 'string', description: '该代表原本所属的组' },
+          toGroup: { type: 'string', description: '要加入的组（通常是你的组）' },
+          reason: { type: 'string', description: '为什么这次协作需要它：一句话说清' },
+        },
+        required: ['agent', 'fromGroup', 'toGroup', 'reason'],
+      },
+      async execute(_id: string, params: any) {
+        try {
+          const request = {
+            id: `sr_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+            agent: String(params.agent || '').trim(),
+            fromGroup: String(params.fromGroup || '').trim(),
+            toGroup: String(params.toGroup || '').trim(),
+            reason: String(params.reason || '').trim(),
+            requestedBy: agent,
+            requestedByTaskId: taskId,
+            requestedAt: Date.now(),
+          };
+          if (!request.agent || !request.fromGroup || !request.toGroup || !request.reason) {
+            return { content: [{ type: 'text', text: '借调需要：代表、来源组、目标组、原因。' }], isError: true };
+          }
+          writeFileSync(join(archiveRoot, SECONDMENT_REQUEST_FILE), JSON.stringify(request), 'utf8');
+          return { content: [{ type: 'text', text: `已提交借调申请，等待总理评估：${request.agent} 从组 ${request.fromGroup} 借到组 ${request.toGroup}` }] };
+        } catch (error: any) {
+          return { content: [{ type: 'text', text: '提交失败：' + (error?.message || error) }], isError: true };
+        }
+      },
+    });
+  }
+
   // ── 同组通道 ────────────────────────────────────────────────────────
   // 围绕一个任务的协作：交换状态、就具体问题讨论、明确表达分歧。
   // 通道里**只走状态与讨论**，不走推理与结论——那两样必须各自独立形成，
@@ -304,4 +348,44 @@ export function registerCliTool(pi: any, options: { archiveRoot: string }) {
   const cleanup = () => { try { sessions.closeAll(taskId); } catch { /* 已退出 */ } };
   process.on('exit', cleanup);
   process.on('SIGTERM', () => { cleanup(); process.exit(0); });
+}
+
+/** 借调申请的形状：比派生请求多来源/目标组与原因。 */
+export type SecondmentRequest = {
+  id: string;
+  agent: string;
+  fromGroup: string;
+  toGroup: string;
+  reason: string;
+  requestedBy: string;
+  requestedByTaskId: string;
+  requestedAt: number;
+};
+
+/** 读一份待处理的借调申请；没有或已处理返回 null。 */
+export function readSecondmentRequest(archiveRoot: string): SecondmentRequest | null {
+  const file = join(archiveRoot, SECONDMENT_REQUEST_FILE);
+  if (!existsSync(file)) return null;
+  try {
+    const parsed = JSON.parse(readFileSync(file, 'utf8'));
+    // handled 标记：父进程处理过就不再重复执行。
+    if (!parsed || !parsed.requestedAt) return null;
+    if (!parsed.agent || !parsed.fromGroup || !parsed.toGroup || !parsed.reason) return null;
+    return {
+      id: String(parsed.id ?? ''),
+      agent: String(parsed.agent),
+      fromGroup: String(parsed.fromGroup),
+      toGroup: String(parsed.toGroup),
+      reason: String(parsed.reason),
+      requestedBy: String(parsed.requestedBy ?? ''),
+      requestedByTaskId: String(parsed.requestedByTaskId ?? ''),
+      requestedAt: Number(parsed.requestedAt) || 0,
+    };
+  } catch { return null; }
+}
+
+/** 标记借调申请已处理。 */
+export function clearSecondmentRequest(archiveRoot: string): void {
+  const file = join(archiveRoot, SECONDMENT_REQUEST_FILE);
+  try { if (existsSync(file)) writeFileSync(file, JSON.stringify({ handled: true }) + '\n'); } catch { /* 忽略 */ }
 }
