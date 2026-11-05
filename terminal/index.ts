@@ -23,7 +23,7 @@ import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
 import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
 import { readWorkerEvents } from './events.ts';
-import { WorkerPool, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
+import { WorkerPool, configureWorkerDeputy, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
 import { SpawnRequestPoller } from './spawn-poller.ts';
 import { credentialsReady } from './cli-runtime.ts';
 import { cliGrantUsable } from './cli-grant.ts';
@@ -134,6 +134,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 每开一个新任务 / 新对话都从 0 重新计算——不存在跨任务累计。
  const DEFAULT_TASK_TOKEN_BUDGET = 2_000_000;
  configureWorkerBudget(()=>({perTaskTokens:DEFAULT_TASK_TOKEN_BUDGET,...(config.budget||{})}));
+ // 在任代理总代由配置决定；代表进程靠这个标记决定是否注册跨组借调工具。
+ configureWorkerDeputy(()=>config.deputyAgentId);
  /**
  * 一次最小生成：记忆整理、watchdog 判定、语义评估共用。
  *
@@ -340,7 +342,18 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    // 同组证据：任务结束时把它产出里"## 结论"之前的部分写进组内可见目录。
    // 结论不写入——切分在源头完成，读取方就无从读到别人的判断。
    if(event.task.groupId){
-    try{publishEvidence({archiveRoot:join(event.task.cwd||'',ARCHIVE_DIR),groupId:event.task.groupId,task:event.task as any});}catch{}
+    const archiveRoot=join(event.task.cwd||'',ARCHIVE_DIR);
+    try{
+     publishEvidence({archiveRoot,groupId:event.task.groupId,task:event.task as any});
+     // 组收尾：组内最后一个任务结算后清掉证据目录。
+     // 必须等全部结束——还有同伴在跑时删掉，它会突然读不到刚发布的进展。
+     // 经验不在这里：记忆按代表存库、技能按 slug 存盘、工作流存结构，都不受影响。
+     const live=pool.tasks.filter(task=>task.groupId===event.task.groupId&&!terminalStates.has(task.status||'')).length;
+     if(retireGroupIfDone({archiveRoot,groupId:event.task.groupId,liveTasks:live})&&desk){
+      desk.notice=`组 ${event.task.groupId} 已收尾 · 证据已清理（经验留在代表记忆与技能提议里）`;
+      scheduleRepaint();
+     }
+    }catch{}
    }
    const candidate=candidateFromTask(event.task as any);
    if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}
@@ -582,9 +595,13 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const groupId=homeGroup;
   // 已批准的协调者告知全组：协调职责不是权限，是"信息从这里汇总"。
   const coordinator=groupId?electionStore.coordinator(groupId):undefined;
-  const coordinatorNote=coordinator&&crew.name===coordinator
-   ?coordinatorBrief(crew.name,groupId!,config.agents.filter(a=>pool.tasks.some(t=>t.groupId===groupId&&t.agent===a.name)).map(a=>a.name))
-   :coordinator?`组内协调由「${coordinator}」牵头：把状态与证据发到组通道，不要直接把判断交给它。`:'';
+  // 成员名单直接用这次实际有效的组员：包含借调进来的人，
+  // 也不再用嵌套 some() 反查——那既慢又会漏掉没有本会话任务的人。
+  const groupMembers=pool.tasks.filter(item=>item.groupId===groupId).map(item=>item.agent);
+  const coordinatorNote=!coordinator?''
+   :crew.name===coordinator
+    ?coordinatorBrief(crew.name,groupId as string,[...new Set(groupMembers)])
+    :`组内协调由「${coordinator}」牵头：把状态与证据发到组通道，不要直接把判断交给它。`;
   // 同组证据：拿到的是别人产出里"## 结论"之前的段落，事实可以共享，判断不行。
   // 这一步让"同组可读彼此证据"从文档承诺变成运行时行为——此前它只写在 CHANGELOG 里。
   // selfTaskId 传空：任务此刻还没有 id（派发前组装），而组内已发布的证据
@@ -652,14 +669,24 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }
   const messages=readGroupMessages(archiveRoot,groupId,params.limit??20);
   // 组成员来自当前会话的任务，按 groupId 过滤——不信任消息里自称的身份。
-  const members=pool.tasks
-   .filter(task=>task.groupId===groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())
-   .map(task=>({taskId:task.id,agent:task.agent}));
+  // 组成员 = 本会话里属于该组的任务 + 被借调进该组的代表。
+  // 少了后半段，借调进来的人虽然能看到频道，票却不被计入、也选不上——
+  // 那让借调只剩"旁听"，与它"临时成为组员"的用意不符。
+  const memberMap=new Map<string,{taskId:string;agent:string}>();
+  for(const task of pool.tasks){
+   if(task.groupId===groupId&&task.parentSessionId===ctx.sessionManager.getSessionId())memberMap.set(task.id,{taskId:task.id,agent:task.agent});
+  }
+  for(const loan of secondmentStore.active()){
+   if(loan.toGroup!==groupId)continue;
+   // 借调成员可能还没有本会话的任务：用它的配置 id 作为稳定标识。
+   if(![...memberMap.values()].some(item=>item.agent===loan.agent))memberMap.set(loan.id,{taskId:loan.agentId,agent:loan.agent});
+  }
+  const members=[...memberMap.values()];
   // 组内消息与推举结果对两个动作都一样，只算一次。
   const result=tallyElection(messages,members);
   const outcome=electionOutcome(result,members.length);
   if(params.action==='status'){
-   const data={groupId,members:members.map(m=>m.agent),messages:messages.length,election:{ballots:result.ballots,candidates:result.candidates,...outcome},channel:renderGroupChannel(messages,'')};
+   const data={groupId,members:members.map(m=>m.agent),messages:messages.length,election:{ballots:result.ballots,candidates:result.candidates,...outcome},channel:renderGroupChannel(messages,'premier')};
    return{content:[{type:'text',text:boundedJson(data)}],details:data};
   }
   // 评估每位候选人：档案（职责/模型）+ 历史（完成率/失败类别）。
@@ -673,10 +700,18 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }));
   const report=buildElectionReport({groupId,goal,electorate:members.length,ballots:result.ballots,tied:result.tied,assessments});
   // 登记为待批：人类在 F2 里看报告并决定。
-  // 只有真的有人可推举时才提交，平票或无人可推的时间点不制造待办。
-  const submitted=report.candidates.some(item=>item.verdict!=='avoid')?electionStore.submit(report):undefined;
+  // 只有真有人可推举时才提交——全都不合适时提交一份"建议不要批"的报告，
+  // 只会让待批列表里堆着没有决定可做的项。
+  const viable=report.candidates.filter(item=>item.verdict!=='avoid');
+  const submitted=viable.length?electionStore.submit(report):undefined;
+  // 没提交时必须说清为什么：只给 submitted:undefined，调用方分不清
+  // "没人合适"和"推举失败"——那会让它重试一个注定失败的推举。
+  const notSubmittedReason=viable.length?undefined
+   :!report.candidates.length?'组内还没有推举表态'
+   :'所有候选人都存在未解决的记录，先诊断再推举';
   if(desk&&submitted){desk.notice=`推举呈报待批准 · 组 ${groupId} · F2 → 推举呈报`;scheduleRepaint();}
-  const data={groupId,electorate:members.length,ballots:result.ballots,tied:result.tied,decided:outcome.decided,reason:outcome.reason,report,submitted:submitted?.id};
+  else if(desk&&notSubmittedReason){desk.notice=`未呈报：${notSubmittedReason}`;scheduleRepaint();}
+  const data={groupId,electorate:members.length,ballots:result.ballots,tied:result.tied,decided:outcome.decided,reason:outcome.reason,report,submitted:submitted?.id,...(notSubmittedReason?{notSubmittedReason}:{})};
   return{content:[{type:'text',text:renderElectionReport(report)}],details:data};
  }});
  pi.registerTool({name:'kepos_vote',label:'代表团表决',description:'汇总一次代表团表决并呈报人类。代表票来自各任务产出末尾的约定行 VOTE: yes|no|abstain - 理由；主 Agent 自己的票用 main 传入，展示时标注（分派方，注意利益关联）。是否终止空转/预算任务、是否改变方向等重大决定由人类裁决，本工具只汇总呈现。',parameters:Type.Object({question:Type.String({maxLength:300}),votes:Type.Array(Type.Object({agent:Type.String(),choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}),{maxItems:48,minItems:1}),main:Type.Optional(Type.Object({choice:Type.Union(['yes','no','abstain'].map(x=>Type.Literal(x))),reason:Type.Optional(Type.String({maxLength:200}))}))}),async execute(_id,params){

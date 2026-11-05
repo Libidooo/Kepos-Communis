@@ -267,3 +267,32 @@ test('startup sweeps tasks of silent owners even when their pid looks alive (PID
  const keptTask=kept.tasks.find(x=>x.id==='w-fake');
  assert.equal(keptTask.state,'STARTING','fresh sibling owner task survives the sweep');
 });
+
+// 代理总代标记必须真的注入到 profile：代表进程靠它决定是否注册跨组借调工具。
+// 此前消费端写了、生产端没写，KEPOS_DEPUTY 永远是空——那个工具从来没存在过。
+test('the deputy flag reaches the profile only for the elected representative', async t => {
+  const {configureWorkerDeputy, reusableProfileKey} = await import('../dist/terminal/workers.js').then(async m => ({
+    ...m, reusableProfileKey: (await import('../dist/terminal/warm-executor.js')).reusableProfileKey,
+  }));
+  const f = fixture(t, 2);
+  const made = [];
+  const pool2 = new f.pool.constructor(f.database, profile => {
+    made.push(profile);
+    const child = new EventEmitter(); child.pid = 900 + made.length;
+    return { child, key: reusableProfileKey(profile), profile, busy: true, dead: false, stopping: false, uses: 0,
+      reserve() { this.busy = true; }, release() { this.busy = false; },
+      async ready() {}, async reset() {}, async request() { return { disposition: 'started' }; }, kill() {} };
+  }, { concurrency: 2 });
+  try {
+    configureWorkerDeputy(() => 'deputy-id');
+    pool2.launch({ id: 'deputy-id', name: '总代甲', role: 'r', model: 'm', provider: 'p' }, 'a', f.dir, 's', 5, undefined, 'p', [], []);
+    pool2.launch({ id: 'other-id', name: '审查官', role: 'r', model: 'm', provider: 'p' }, 'b', f.dir, 's', 5, undefined, 'p', [], []);
+    await turn();
+    assert.equal(made.length, 2);
+    assert.equal(made[0].deputy, true, 'the elected representative carries the flag');
+    assert.equal(made[1].deputy, undefined, 'a non-deputy does not');
+  } finally {
+    configureWorkerDeputy(() => undefined);
+    pool2.close();
+  }
+});

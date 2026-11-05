@@ -40,6 +40,15 @@ export type BudgetConfig = { perTaskTokens?: number; perTaskCost?: number; daily
 // without touching the operator's real configuration.
 let budgetProvider: () => BudgetConfig = () => ({});
 export function configureWorkerBudget(provider: () => BudgetConfig) { budgetProvider = provider; }
+/**
+ * 在任代理总代的配置 id。
+ *
+ * 由宿主注入而不是在这里读配置：WorkerPool 不该知道配置存在哪里。
+ * 代表进程需要一个 KEPOS_DEPUTY 标记才知道自己有跨组借调的资格——
+ * 这个标记此前从未被赋值，于是那个工具从来没注册过。
+ */
+let deputyProvider: () => string | undefined = () => undefined;
+export function configureWorkerDeputy(provider: () => string | undefined) { deputyProvider = provider; }
 export const spentTokens = (usage: any) => usage?.totalTokens || (usage?.input || 0) + (usage?.output || 0) + (usage?.cacheRead || 0);
 
 export class WorkerPool {
@@ -596,6 +605,9 @@ export class WorkerPool {
   // 代表进程靠这个定位自己的归档与会话；此时 executor 尚未创建，不影响复用键（key 也排除了它）。
   profile.taskId = id;
   if (metadata.groupId) profile.groupId = metadata.groupId;
+  // 本任务是否由在任代理总代执行：代表进程据此注册跨组借调工具。
+  const deputyId = deputyProvider();
+  if (deputyId && crew.id === deputyId) profile.deputy = true;
   if (profile.representative) profile.subordinateTaskIds = this.tasks.filter(t => t.parentWorkerId === id).map(t => t.id);
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
   this.capabilities.set(id, capability);
