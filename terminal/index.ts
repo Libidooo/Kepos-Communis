@@ -978,11 +978,12 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const decision=await ui.select(`${proposal.slug}\n\n${steps}\n\n边界：仅在同类任务中套用；执行前核对路径与命令。`,['采纳并安装','丢弃这份提议','返回']);
   if(decision==='采纳并安装'){
    // 采纳包含两步：把文件移进 skills/，并真的加进代表的 skills[]。
-   // 只移文件不接线等于装了没人用——代表通过 skills[] 才会引用到它。
+   // 顺序很重要：先确认绑给谁，再移动文件。反过来一旦移动后才发现没有可绑定的代表，
+   // 提议已经离开 skills-proposed，人就再也找不到它，而技能实际没人用。
+   const owner=config.agents.find(agent=>agent.name===proposal.agent)||config.agents[0];
+   if(!owner){ui.notify(`没有可绑定的代表：无法安装 ${proposal.slug}`,'warning');return;}
    try{
     adoptProposal(agentDir,proposal.slug);
-    const owner=config.agents.find(agent=>agent.name===proposal.agent)||config.agents[0];
-    if(!owner){ui.notify(`已安装技能 ${proposal.slug}，但没有可绑定的代表`,'warning');return;}
     owner.skills=[...new Set([...(owner.skills||[]),proposal.slug])];
     refreshSupervisionPrompt();save();
     ui.notify(`已安装技能 ${proposal.slug} 并加入「${owner.name}」的 skills · 下次派发生效`);
@@ -1268,6 +1269,18 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(action.kind==='pi'){ctx.ui.notify('已进入 Pi 命令行；输入 /kepos 重新打开议案。','info');return;}
   if(action.kind==='native-exit'){ctx.ui.setEditorText(action.text);ctx.ui.notify(`已返回原生 Pi；按 Enter 执行 ${action.text}。尚未执行，也未发送给模型。`,'info');return;}
  if(action.kind==='abort'){ctx.abort();pool.cancelAll();await ctx.waitForIdle();continue;}
+ // 右侧项目/会话列表按 Enter 进入历史会话。
+ // Desk 只会 finish({kind:'switch'}) 并关闭自己；真正的切换必须在这里做——
+ // 这个分支此前缺失，于是回车没有任何反应，看起来像"列表不能进"。
+ if(action.kind==='switch'){
+  if(!action.path){ctx.ui.notify('该会话没有可用路径','warning');continue;}
+  // 这里不查 blocked(ctx)：Desk 在发出这个动作之前已经确认过"可以切换"
+  // （它自己的 sending/isIdle 判定更贴近实际状态）。再拦一次只会造成
+  // "列表里按回车没反应，还不知道为什么"——而这个提示在 overlay 关闭后
+  // 往往一闪而过，等于没有。
+  await ctx.switchSession(action.path,{withSession:async fresh=>reopen(fresh)});
+  return;
+ }
  }catch(e){ctx.ui.notify(clean(e),'error');}
  }
  }

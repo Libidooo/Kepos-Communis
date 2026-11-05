@@ -374,3 +374,33 @@ test('the plan console shows acceptance progress beside the step count',()=>{
   assert.ok(!frame.includes('0/0 验收'), 'a plan without acceptance shows no bar');
   desk.dispose();
 });
+
+// 右侧会话列表按 Enter 进入历史会话。Desk 只发出 {kind:'switch'} 并关闭自己，
+// 真正的切换在外层做——那个分支曾缺失，导致回车毫无反应。
+test('Enter on a session row emits a switch action for the outer layer', () => {
+  let emitted;
+  const ctx = { cwd: home, isIdle: () => true, model: undefined, sessionManager: { getSessionFile: () => '/current.jsonl', getSessionId: () => 'local', getSessionName: () => 'current', getBranch: () => [], getEntries: () => [] } };
+  const sessions = [{ path: '/old.jsonl', cwd: home, name: '旧对话' }];
+  const desk = new Desk({ terminal: { rows: 35 }, requestRender() {} }, { fg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, sessions, { tasks: [], children: new Map() }, () => {}, a => { emitted = a; });
+  desk.setFocus('projects');
+  // 行 0 是项目本身，行 1 是会话。
+  desk.selected = desk.rows().findIndex(r => r.kind === 'session');
+  assert.ok(desk.selected >= 0, 'a session row exists to select');
+  desk.handleInput('\r');
+  assert.deepEqual(emitted, { kind: 'switch', path: '/old.jsonl' }, 'the outer layer receives the switch request');
+  desk.dispose();
+});
+
+// 选中当前会话时不该"切换"到自己，只是把焦点交回输入区。
+test('Enter on the current session hands focus back to the input', () => {
+  let emitted;
+  const ctx = { cwd: home, isIdle: () => true, model: undefined, sessionManager: { getSessionFile: () => '/current.jsonl', getSessionId: () => 'local', getSessionName: () => 'current', getBranch: () => [], getEntries: () => [] } };
+  const sessions = [{ path: '/current.jsonl', cwd: home, name: '当前对话' }];
+  const desk = new Desk({ terminal: { rows: 35 }, requestRender() {} }, { fg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, sessions, { tasks: [], children: new Map() }, () => {}, a => { emitted = a; });
+  desk.setFocus('projects');
+  desk.selected = desk.rows().findIndex(r => r.kind === 'session');
+  desk.handleInput('\r');
+  assert.equal(emitted, undefined, 'no switch for the session already open');
+  assert.equal(desk.focus, 'input');
+  desk.dispose();
+});
