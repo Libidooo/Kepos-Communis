@@ -167,7 +167,7 @@ export type InstantiateResult =
  */
 export function instantiateWorkflow(
   workflow: Workflow,
-  input: { goal: string; defaultModel: string; defaultProvider?: string; locale?: CouncilLocale; existingAgents: readonly AgentProfile[]; now?: number },
+  input: { goal: string; defaultModel: string; defaultProvider?: string; locale?: CouncilLocale; existingAgents: readonly AgentProfile[] },
 ): InstantiateResult {
   const check = validateWorkflow(workflow);
   if (!check.ok) return { ok: false, errors: check.errors };
@@ -175,7 +175,6 @@ export function instantiateWorkflow(
   if (!goal) return { ok: false, errors: ['需要本次目标'] };
 
   const locale = input.locale ?? 'zh-CN';
-  const now = input.now ?? Date.now();
   const warnings: string[] = [];
   const existing = [...input.existingAgents];
   const created: AgentProfile[] = [];

@@ -12,9 +12,8 @@
 //   - 只注入该 CLI 指定的那一个环境变量，其余一律不传。
 //   - 会话绑定到授权：任务结束，会话一律终止。
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { clampTurnOutput, cliTurnFile, renderCliTurn } from './cli-dialog.ts';
-import { existsSync, readdirSync } from 'node:fs';
 
 /** 该 CLI 已有多少份回合记录：下一个序号即在其后追加。 */
 function nextTurn(archiveRoot: string, cli: string): number {
@@ -22,7 +21,6 @@ function nextTurn(archiveRoot: string, cli: string): number {
   try { return readdirSync(archiveRoot).filter(name => name.startsWith(`cli-${safe}-`) && name.endsWith('.md')).length + 1; }
   catch { return 1; }
 }
-import { join } from 'node:path';
 import type { CliAllowEntry } from './store.ts';
 
 export type CliSession = {

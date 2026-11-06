@@ -61,22 +61,9 @@ const COMPACT: Record<string, string[]> = {
   I: ['111', '010', '010', '010', '010', '010', '111'],
 };
 
-const MICRO: Record<string, string[]> = {
-  K: ['101', '101', '110', '100', '110', '101', '101'],
-  E: ['111', '100', '110', '100', '111', '100', '111'],
-  P: ['110', '101', '110', '100', '100', '100', '100'],
-  O: ['010', '101', '101', '101', '101', '101', '010'],
-  S: ['011', '100', '010', '001', '001', '110', '000'],
-  C: ['011', '100', '100', '100', '100', '100', '011'],
-  M: ['101', '111', '111', '101', '101', '101', '101'],
-  U: ['101', '101', '101', '101', '101', '101', '010'],
-  N: ['101', '111', '111', '111', '111', '111', '101'],
-  I: ['111', '010', '010', '010', '010', '010', '111'],
-};
-
 type Point = { x: number; y: number };
 type Rect = Point & { width: number; height: number };
-type Variant = 'display' | 'compact' | 'micro';
+type Variant = 'display' | 'compact';
 export type SplashSample = { x: number; y: number; part: 'desktop' | 'plaque'; coverage: number };
 export type SplashLectern = {
   id: number; angle: number; center: Point; outward: Point;
@@ -117,7 +104,7 @@ function makeWordmark(font: Record<string, string[]>, variant: Variant, block = 
   const second = textGrid(font, 'COMMUNIS');
   const lines = [...first, ...gap, ...second];
   // Row ranges let each word take its own treatment: KEPOS solid, COMMUNIS outlined.
-  const firstEnd = first.length, secondStart = first.length + gap.length;
+  const secondStart = first.length + gap.length;
   const fontWidth = Math.max(...lines.map(line => line.length)), fontHeight = lines.length;
   // A terminal sub-pixel is 5x10 px, so one glyph pixel is square only at 2 sub-columns by 1 sub-row.
   // Scaling `block` multiplies BOTH axes by the same factor, keeping the face undistorted.
@@ -171,20 +158,6 @@ function inside(point: Point, polygon: Point[]): boolean {
     sign = Math.sign(cross);
   }
   return true;
-}
-
-function sampleSurface(lectern: SplashLectern, part: 'desktop' | 'plaque', polygon: Point[]): void {
-  const x0 = Math.floor(Math.min(...polygon.map(p => p.x)) * 2), x1 = Math.ceil(Math.max(...polygon.map(p => p.x)) * 2);
-  const y0 = Math.floor(Math.min(...polygon.map(p => p.y)) * 2), y1 = Math.ceil(Math.max(...polygon.map(p => p.y)) * 2);
-  for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
-    let hits = 0;
-    for (let sy = 0; sy < 4; sy++) for (let sx = 0; sx < 4; sx++) {
-      if (inside({ x: (x + (sx + .5) / 4) / 2, y: (y + (sy + .5) / 4) / 2 }, polygon)) hits++;
-    }
-    // Keep every touched sub-cell and let coverage modulate brightness: this anti-aliases edges
-    // instead of dropping half-cells, which is what produced the staircase silhouette.
-    if (hits >= 5)     lectern.samples.push({ x, y, part, coverage: hits / 16 });
-  }
 }
 
 const layoutCache = new Map<string, SplashLayout | null>();

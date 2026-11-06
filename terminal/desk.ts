@@ -18,7 +18,8 @@ import { describeCandidate } from './watch.ts';
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
  export const fitRight=(text:string,width:number)=>{const s=truncateFit(text,width);return ' '.repeat(Math.max(0,width-visibleWidth(s)))+s;};
 // stateColor 会返回 approval/queue/teal 等 Pi theme.fg 不认的色（graph-view 直出 SGR）；desk 侧映射到安全语义色。
-const safeStateColor=(color:string)=>color==='approval'?'warning':color==='queue'?'accent':['teal','blue','mauve','idle'].includes(color)?'muted':color;
+const STATE_COLOR_MAP: Record<string,string>={approval:'warning',queue:'accent',teal:'muted',blue:'muted',mauve:'muted',idle:'muted'};
+const safeStateColor=(color:string)=>STATE_COLOR_MAP[color]??color;
 export function historyLines(entries:any[],width:number,expanded:boolean|'summary'|'full'=false,theme?:any):string[]{
  const F=(color:string,value:string)=>theme?.fg?theme.fg(color,value):value;
  // 斜体辅助：工具调用与模型正文/用户输入在字形上也分层。
@@ -27,7 +28,7 @@ export function historyLines(entries:any[],width:number,expanded:boolean|'summar
  //   summary —— 默认。每次工具调用压成一行摘要，输出不展开。
  //   full    —— F5 展开。完整输出。
  //   false   —— 旧行为（长输出折头尾），保留给预览等场景。
- const toolMode:'summary'|'full'|'legacy'=expanded===true?'full':expanded==='summary'?'summary':expanded==='full'?'full':'legacy';
+ const toolMode:'summary'|'full'|'legacy'=expanded===true||expanded==='full'?'full':expanded==='summary'?'summary':'legacy';
  const lines:string[]=[];for(const entry of entries){if(entry.type==='compaction'||entry.type==='branch_summary'){lines.push(entry.type==='compaction'?'[上下文已压缩 / 以下为摘要]':'[分支背景摘要]',...wrapTextWithAnsi(clean(entry.summary),width),'');continue;}if(entry.type==='custom_message'&&entry.display===false)continue;if(entry.type!=='message'&&entry.type!=='custom_message')continue;const m=entry.message||{role:'custom',content:entry.content};if(m.role==='custom'&&m.display===false)continue;if(!['user','assistant','toolResult','custom'].includes(m.role))continue;
  // 错误必须可见：工具失败或工具结果带错误标记时，即使处于 summary 档也要展开。
  const failedTool=m.role==='toolResult'&&(m.isError===true||Boolean(m.errorMessage)||/^\s*(error|错误|✕)/i.test(String(typeof m.content==='string'?m.content:'')));

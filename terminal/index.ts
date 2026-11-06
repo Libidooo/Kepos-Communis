@@ -36,7 +36,7 @@ import { ARCHIVE_DIR } from './archive.ts';
 import { coordinatorBrief, electionOutcome, tallyElection } from './group-election.ts';
 import { ElectionStore, assessCandidate, buildElectionReport, renderElectionReport } from './election-report.ts';
 import { SECONDMENT_SECONDS, SecondmentStore, canRequestSecondment, createSecondment, describeSecondmentRequest, effectiveGroups, validateSecondment } from './secondment.ts';
-import { checkMandate, shieldOutput, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
+import { checkMandate, EFFORT_GUIDE, OPENING_STEPS } from './mandate.ts';
 import { acceptanceReviewPrompt, acceptanceState } from './acceptance.ts';
 import { WatchdogStore, parseVerdict, shouldJudge, verdictNotice, watchdogPrompt, type WatchdogJudge } from './watchdog.ts';
 import { adoptProposal, discardProposal, listProposals, writeProposal } from './skill-proposal.ts';
@@ -821,7 +821,6 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    return{content:[{type:'text',text:`已登记权限申请 ${request.id}\n${describeForHuman(request)}\n严格模式下需要人类确认后才会生效。`}],details:{request}};
   }
   if(params.action==='grant'){
-   const parent=ctx.sessionManager.getSessionId();
    // 代表当前持有的权限：来自已批准且任务未结束的授权。
    const holder=params.grantId?grants.find(g=>g.id===params.grantId):grants.filter(g=>g.state==='approved'&&!terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||'')).at(-1);
    if(!holder)throw Error('没有可用的已批准权限：先 request 并通过批准');

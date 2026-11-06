@@ -175,6 +175,9 @@ export function describeSecondmentRequest(input: { agent: string; fromGroup: str
 export class SecondmentStore {
   constructor(private readonly database: import('./database.ts').KeposDatabase) {}
 
+  /** 查询列清单只写一份：active 与 reap 各写一遍迟早漂移，多列少列都只在运行时暴露。 */
+  private static readonly COLUMNS = 'id,agent_id,agent,from_group,to_group,reason,requested_by,approved_at,expires_at';
+
   /**
    * 记一条借调。只在总理批准后调用。
    *
@@ -192,7 +195,7 @@ export class SecondmentStore {
 
   /** 未到期且未归还的全部借调。 */
   active(now = Date.now()): Secondment[] {
-    const rows = this.database.prepare('SELECT id,agent_id,agent,from_group,to_group,reason,requested_by,approved_at,expires_at FROM secondments WHERE released_at IS NULL AND expires_at>? ORDER BY approved_at DESC').all(now) as any[];
+    const rows = this.database.prepare(`SELECT ${SecondmentStore.COLUMNS} FROM secondments WHERE released_at IS NULL AND expires_at>? ORDER BY approved_at DESC`).all(now) as any[];
     return rows.map(toSecondment);
   }
 
@@ -212,7 +215,7 @@ export class SecondmentStore {
 
   /** 把到期的全部标记归还，返回被收回的那些。 */
   reapExpired(now = Date.now()): Secondment[] {
-    const rows = this.database.prepare('SELECT id,agent_id,agent,from_group,to_group,reason,requested_by,approved_at,expires_at FROM secondments WHERE released_at IS NULL AND expires_at<=?').all(now) as any[];
+    const rows = this.database.prepare(`SELECT ${SecondmentStore.COLUMNS} FROM secondments WHERE released_at IS NULL AND expires_at<=?`).all(now) as any[];
     const expired = rows.map(toSecondment);
     if (expired.length) {
       this.database.transaction(() => {

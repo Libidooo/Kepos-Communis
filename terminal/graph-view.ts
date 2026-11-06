@@ -293,7 +293,6 @@ export function renderCouncilList(tasks: GraphViewTask[], width: number, height:
 export function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   const agents = (snapshot.agents || []).slice(0, 48);
   const tasks = snapshot.tasks || [];
-  const byAgent = new Map(agents.map(agent => [agent.name, agent]));
   // 代表席始终显示它最近一项任务的状态色（完成/失败仍可读），
   // 但只有进行中的任务才让它离开原位去组小环——任务一结束就回位。
   const latestByAgent = new Map(

@@ -22,9 +22,6 @@ export const PROFILES_DIR = 'profiles';
 /** 工作区说明文件名：主流 harness 都读它。 */
 export const AGENTS_FILE = 'AGENTS.md';
 
-/** frontmatter 里出现的键，顺序固定——文件 diff 才有意义。 */
-const FIELD_ORDER = ['id', 'name', 'description', 'roleKey', 'model', 'provider', 'tools', 'skills', 'readScope', 'readAllow', 'mcpServers'] as const;
-
 /** 文件名只允许安全字符：它同时是 id 的显示形式。
  *  前导点必须去掉——`.` 与 `..` 是目录跳转，不是文件名。 */
 const safeName = (value: string) => {

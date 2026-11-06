@@ -67,7 +67,7 @@ export class ConsolidationPipeline {
   private readonly queue: ConsolidationCandidate[] = [];
   private running = false;
 
-  constructor(private readonly database: KeposDatabase, private readonly model: ConsolidationModel, private readonly onChange?: (message: string) => void) {
+  constructor(database: KeposDatabase, private readonly model: ConsolidationModel, private readonly onChange?: (message: string) => void) {
     this.memory = new RepresentativeMemory(database);
   }
 

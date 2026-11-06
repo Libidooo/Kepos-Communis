@@ -1,3 +1,22 @@
-import {preparePaths,activatePaths,type AppPaths} from './config.ts';
+import { preparePaths, activatePaths, type AppPaths } from './config.ts';
 import { keposDatabaseFile } from '../terminal/paths.ts';
-export async function retentionCommand(options:any,paths:AppPaths):Promise<void>{preparePaths(paths);activatePaths(paths);const {KeposDatabase}=await import('../terminal/database.ts');const {EventRetention}=await import('../terminal/retention.ts');const database=new KeposDatabase(keposDatabaseFile(paths.dataDir));try{const retention=new EventRetention(database);const days=options.days===undefined?30:Number(options.days);const maxRows=options.maxEvents===undefined?undefined:Number(options.maxEvents);const report=retention.run({maxAgeMs:Math.max(1,days)*86400000,maxRowsPerSource:maxRows});console.log(options.json?JSON.stringify(report,null,2):`Archived ${report.archived} events; pruned ${report.workersPruned??0} finished workers; ${report.remaining} live events remain.`);}finally{database.close();}}
+
+/** 事件留存清理的 CLI 入口：默认收 30 天，可按天数与行数收紧。 */
+export async function retentionCommand(options: any, paths: AppPaths): Promise<void> {
+  preparePaths(paths);
+  activatePaths(paths);
+  const { KeposDatabase } = await import('../terminal/database.ts');
+  const { EventRetention } = await import('../terminal/retention.ts');
+  const database = new KeposDatabase(keposDatabaseFile(paths.dataDir));
+  try {
+    const retention = new EventRetention(database);
+    const days = options.days === undefined ? 30 : Number(options.days);
+    const maxRows = options.maxEvents === undefined ? undefined : Number(options.maxEvents);
+    const report = retention.run({ maxAgeMs: Math.max(1, days) * 86400000, maxRowsPerSource: maxRows });
+    console.log(options.json
+      ? JSON.stringify(report, null, 2)
+      : `Archived ${report.archived} events; pruned ${report.workersPruned ?? 0} finished workers; ${report.remaining} live events remain.`);
+  } finally {
+    database.close();
+  }
+}

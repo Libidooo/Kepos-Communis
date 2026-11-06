@@ -17,7 +17,6 @@
 // 子进程发起的行为只能通过父进程可观察的副作用表达。
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ARCHIVE_DIR } from './archive.ts';
 
 /** 组通道目录：放在归档区下，父进程与同组代表都能看到。 */
 export const GROUP_DIR = 'groups';
