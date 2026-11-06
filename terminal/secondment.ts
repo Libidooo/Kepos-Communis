@@ -86,7 +86,8 @@ export function validateSecondment(input: {
   const from = String(input.fromGroup ?? '').trim();
   const to = String(input.toGroup ?? '').trim();
   const reason = String(input.reason ?? '').trim();
-  if (!input.agentId) return { ok: false, reason: '缺少被借调的代表' };
+  // 借调按配置 id 记录，缺 id 的代表借出去也收不回来——它无处可归。
+  if (!input.agentId) return { ok: false, reason: '缺少被借调的代表（该代表没有稳定配置 id，无法借调）' };
   if (!from || !to) return { ok: false, reason: '缺少来源组或目标组' };
   if (from === to) return { ok: false, reason: '来源组与目标组相同，无需借调' };
   if (!reason) return { ok: false, reason: '借调必须说明原因：为什么这次协作需要它' };

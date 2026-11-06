@@ -241,10 +241,17 @@ export class ElectionStore {
     return { id, at, groupId: report.groupId, state: 'pending', ...(report.goal ? { goal: report.goal } : {}), report };
   }
 
-  /** 待批列表，最新的在前。 */
-  pending(): ElectionRecord[] {
+  /**
+   * 待批列表，最新的在前。
+   *
+   * `groupAlive` 可选：组解散后，它那份推举已经没有决定可做，
+   * 继续挂在待批列表里只会让人以为还有事要处理。
+   * 记录本身保留（历史要能回溯），只是不再出现在待批。
+   */
+  pending(groupAlive?: (groupId: string) => boolean): ElectionRecord[] {
     const rows = this.database.prepare("SELECT id,at,group_id,state,goal,report,approved_agent,decided_at FROM election_reports WHERE state='pending' ORDER BY at DESC").all() as any[];
-    return rows.map(toRecord);
+    const records = rows.map(toRecord);
+    return groupAlive ? records.filter(record => groupAlive(record.groupId)) : records;
   }
 
   /** 人类批准：记下批的是谁，报告保留。 */
@@ -259,10 +266,18 @@ export class ElectionStore {
     return Number(result.changes) > 0;
   }
 
-  /** 某组当前已批准的协调者，供派发时注入职责说明。 */
-  coordinator(groupId: string): string | undefined {
+  /**
+   * 某组当前已批准的协调者，供派发时注入职责说明。
+   *
+   * `stillDeputy` 是必须的：组内推举批的是"兼任代理总代的那个人"。
+   * 人类一旦撤销或换人，旧的批准就失去了依附——继续认它，
+   * 等于让一个已经不是总代的人仍然拿着协调职责。
+   */
+  coordinator(groupId: string, stillDeputy: (agent: string) => boolean = () => true): string | undefined {
     const row = this.database.prepare("SELECT approved_agent FROM election_reports WHERE group_id=? AND state='approved' ORDER BY decided_at DESC LIMIT 1").get(groupId) as any;
-    return row?.approved_agent || undefined;
+    const agent = row?.approved_agent;
+    if (!agent) return undefined;
+    return stillDeputy(agent) ? agent : undefined;
   }
 }
 

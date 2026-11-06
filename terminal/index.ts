@@ -595,7 +595,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const groupChannel=channelFor;
   const groupId=homeGroup;
   // 已批准的协调者告知全组：协调职责不是权限，是"信息从这里汇总"。
-  const coordinator=groupId?electionStore.coordinator(groupId):undefined;
+  // 协调者必须仍是现任代理总代：组内推举批的是"兼任总代的那个人"，
+  // 人类撤销或换人之后，旧的批准失去依附，不该继续生效。
+  const incumbentDeputy=config.agents.find(agent=>agent.id===config.deputyAgentId)?.name;
+  const coordinator=groupId?electionStore.coordinator(groupId,name=>name===incumbentDeputy):undefined;
   // 成员名单直接用这次实际有效的组员：包含借调进来的人，
   // 也不再用嵌套 some() 反查——那既慢又会漏掉没有本会话任务的人。
   const groupMembers=pool.tasks.filter(item=>item.groupId===groupId).map(item=>item.agent);
@@ -1441,7 +1444,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 这里同时是"收回"的触发点：过期记录在打开菜单时被清理并告知。
  if(action.kind==='secondments'){
   const reaped=secondmentStore.reapExpired();
-  if(reaped.length)ui.notify(`已自动收回 ${reaped.length} 项到期借调：${reaped.map(item=>item.agent).join('、')}`,'info');
+  if(reaped.length){
+   // 说清"下一轮生效"：借调标记在派发时注入，已经在跑的任务不会立即失去频道。
+   // 含糊地说"已收回"会让人以为那个人此刻已经读不到了。
+   ui.notify(`已收回 ${reaped.length} 项到期借调：${reaped.map(item=>item.agent).join('、')}\n已在运行的任务仍在旧组里，它们的下一次派发才会退回原组。`,'info');
+  }
   const live=secondmentStore.active();
   if(!live.length){ui.notify('当前没有生效中的跨组借调。\n代理总代可以在任务中用 kepos_secondment 发起，请求会静默转呈总理评估。','info');return;}
   const label=(item:any)=>`${item.agent}　组 ${item.fromGroup} → ${item.toGroup}　剩 ${Math.max(0,Math.round((item.expiresAt-Date.now())/60000))} 分钟`;
@@ -1462,7 +1469,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 报告带着当时的票数与健康度快照——那些数字过几周就会变，
  // 所以批准时要看的是"当时凭什么"，而不是重新算一遍。
  if(action.kind==='elections'){
-  const pending=electionStore.pending();
+  // 组已解散的报告不再列在待批：它没有决定可做，记录仍保留供回溯。
+  const pending=electionStore.pending(groupId=>pool.tasks.some(task=>task.groupId===groupId&&task.parentSessionId===ctx.sessionManager.getSessionId()));
   if(!pending.length){ui.notify('没有待批准的推举。组内推举后会自动呈报。','info');return;}
   const label=(record:any)=>`组 ${record.groupId} · ${record.report.ballots} 票 · ${record.report.recommendation.slice(0,60)}`;
   const pick=await ui.select(`推举呈报（${pending.length} 待批）`,pending.map(label));

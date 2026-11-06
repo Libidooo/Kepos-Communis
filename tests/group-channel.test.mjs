@@ -240,3 +240,38 @@ test('a denial or a question is not a nomination',()=>{
   assert.equal(tallyElection([say('推举：勘察官')],members).ballots,1);
   assert.equal(tallyElection([say('另外，推举：勘察官')],members).ballots,1);
 });
+
+// 组内推举批的是"兼任代理总代的那个人"。人类撤销或换人后，
+// 旧的批准失去依附——继续认它等于让已卸任的人仍握着协调职责。
+test('an approval expires when its holder is no longer the deputy', () => {
+  const db = new KeposDatabase(join(fresh(), 'k3.sqlite'));
+  try {
+    const store = new ElectionStore(db);
+    const a = assessCandidate({ candidate: { taskId: 't', agent: '审查官', votes: 2 }, profile: profile(), tasks: [task()] });
+    const report = buildElectionReport({ groupId: 'g1', electorate: 2, ballots: 2, tied: false, assessments: [a] });
+    const record = store.submit(report, 1000);
+    store.approve(record.id, '审查官', 2000);
+    assert.equal(store.coordinator('g1'), '审查官', 'valid while still the deputy');
+    assert.equal(store.coordinator('g1', name => name === '审查官'), '审查官');
+    // 换人 / 撤销之后不再生效。
+    assert.equal(store.coordinator('g1', name => name === '总代乙'), undefined);
+    assert.equal(store.coordinator('g1', () => false), undefined, 'revoked means no coordinator');
+  } finally { db.close(); }
+});
+
+// 组解散后它那份推举没有决定可做，不该继续挂在待批列表里。
+// 记录保留（历史可回溯），只是不再出现在"待批"。
+test('a pending report for a dissolved group is not offered for approval', () => {
+  const db = new KeposDatabase(join(fresh(), 'k4.sqlite'));
+  try {
+    const store = new ElectionStore(db);
+    const mk = (group) => {
+      const a = assessCandidate({ candidate: { taskId: 't', agent: '审查官', votes: 1 }, profile: profile(), tasks: [task()] });
+      return store.submit(buildElectionReport({ groupId: group, electorate: 2, ballots: 1, tied: false, assessments: [a] }), 1000);
+    };
+    mk('alive'); mk('dead');
+    assert.equal(store.pending().length, 2, 'without a liveness check both are listed');
+    assert.equal(store.pending(g => g === 'alive').length, 1, 'only the live group is offered');
+    assert.equal(store.pending(() => false).length, 0);
+  } finally { db.close(); }
+});
