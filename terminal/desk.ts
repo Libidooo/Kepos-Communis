@@ -75,7 +75,7 @@ export type KeyHint = { key: string; label: string; help: string; when: Scope | 
 export const KEY_HINTS: readonly KeyHint[] = [
  { key: 'f10', label: 'F10 议会', help: 'F10：打开 / 关闭 48 席议会', when: 'always', footer: true },
  { key: 'f1', label: 'F1 帮助', help: 'F1：打开 / 关闭本帮助', when: 'always', footer: true },
- { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式（状态栏常驻显示：⛨ 严格 / ◐ 代理 / ○ 只读）', when: 'always', footer: true },
+ { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式（状态栏 ⛨ 严格 / ◐ 代理 / ○ 只读 芯片可点击直接切换）', when: 'always', footer: true },
  { key: 'f3', label: 'F3 任务', help: 'F3：当前会话的任务与书案详情', when: 'always', footer: true },
  { key: 'f8', label: 'F8 全局', help: 'F8：跨项目任务监控；议会内切换筛选', when: 'always', footer: true },
  { key: 'f11', label: 'F11 专注', help: 'F11：专注阅读（中栏最大化）', when: 'always', footer: true },
@@ -120,7 +120,7 @@ type Action={kind:string;path?:string;text?:string;id?:string;draft?:string};
 export class Desk {
  // 工具展示模式：默认 summary（一行摘要），F5 切到 full。
  get toolMode():'summary'|'full'{return this.expandedTools?'full':'summary';}
- editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
+ editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; policyRegion:{start:number;end:number}|null=null; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
  // notice 统一走 setter 盖时间戳。urgent 消息（失败 / 需人工 / 预算停止）粘住，
  // 只有 Esc 或用户下一个动作才清掉；普通消息 4 秒后让位给按键提示。
  // urgent 在场时普通通知一律丢弃：失败/门禁/预算必须被人看见，不能被"正在调用 X"顶掉。
@@ -617,7 +617,8 @@ export class Desk {
   return [header,...graph.lines,...input.map(line=>'› '+fit(line,Math.max(1,width-2))),noticeLine].slice(0,rows);
  }
  private renderFrame(width:number):string[]{
- this.width=width;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);if(this.graphView)return this.renderGraphFrame(width,rows);
+ // 点击区域先清空再按视图重建：议会视图与紧凑布局没有状态栏芯片，带着旧坐标会被误命中。
+ this.width=width;this.policyRegion=null;const strong=(s:string)=>this.theme.style?this.theme.style(s,{fg:'accent',bold:true}):this.theme.fg('accent',s);const rows=Math.max(1,this.tui.terminal.rows||30);if(this.graphView)return this.renderGraphFrame(width,rows);
  // 断点由正文最小宽度驱动：≥150 左24/中w-60/右30；120~149 左22/中w-70/右24；100~119 右24+单分隔；<100 单栏。
  // 正文宽度随窗口单调不减（109→110 列不再从 72 跳到 43）。maximize（F11）临时收起两侧。
  const roomy=width>=150;const wide=width>=120;const medium=width>=100;
@@ -721,13 +722,15 @@ export class Desk {
  // 审批模式常驻显示：此前只在 F2 菜单里能看到，操作时根本不知道自己处在哪种授权下。
  // 三态用不同的符号与颜色，缩小终端里也能一眼分辨：
  //   ⛨ 严格（默认，需要你逐次确认）  ◐ 代理（模型自主但留痕）  ○ 只读（模型不能改动）
+ // 芯片可点击切换（下划线即提示），与 F2 → 审批模式 走同一条路径——状态既是显示也是入口。
  const policy=this.approvalPolicy?.()||'human';
- const policyChip=policy==='readonly'
-  ?this.theme.fg('warning','○ 只读')
-  :policy==='proxy'
-   ?this.theme.fg('accent','◐ 代理')
-   :this.theme.fg('success','⛨ 严格');
- const row1=modeChip+' '+policyChip+' '+this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,Math.max(1,width-visibleWidth(modeText)-visibleWidth('○ 只读')-4)));
+ const policyText=policy==='readonly'?'○ 只读':policy==='proxy'?'◐ 代理':'⛨ 严格';
+ const policyColor=policy==='readonly'?'warning':policy==='proxy'?'accent':'success';
+ const policyChip=this.theme.style?this.theme.style(policyText,{fg:policyColor,underline:true}):this.theme.fg(policyColor,policyText);
+ // 记录芯片列区间供 handleMouse 命中；renderFrame 开头已清空，未走到此行的视图不会误触发。
+ const policyStart=visibleWidth(modeText)+1;
+ this.policyRegion={start:policyStart,end:policyStart+visibleWidth(policyText)};
+ const row1=modeChip+' '+policyChip+' '+this.theme.fg(contextUsage?.percent>=80?'warning':'accent',fitRight(statusLine,Math.max(1,width-visibleWidth(modeText)-visibleWidth(policyText)-4)));
  const prefixWidth=this._noticeUrgent&&noticePart?2:0;
  const row2=(noticePart?(this._noticeUrgent?this.theme.fg('warning','⚠ '+noticePart):this.theme.fg('muted',noticePart)):'')+this.theme.fg('dim',fit(footerText,Math.max(1,width-visibleWidth(noticePart)-prefixWidth)));
  return [...header,...body,...input,row1,row2];
@@ -842,6 +845,8 @@ export class Desk {
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-3,col:e.x-centerX},end:{row:e.y-3,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-3,e.y-3)),col:Math.max(0,Math.min(Math.max(1,this.centerWidth-4),e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}
  if((e.type==='click'||e.type==='press')&&e.y===(this.tui.terminal.rows||30)-1){const region=this.footerRegions.find(r=>e.x>=r.start&&e.x<r.end);if(region){if(e.type==='press')return{handled:true};const bytes=keyBytes[region.key];if(bytes)this.handleInput(bytes);return{handled:true};}}
+ // 审批芯片在底栏上一行行首：点击即打开审批模式切换，不必绕 F2 菜单。press 只吞不下发，拖选经过不触发。
+ if((e.type==='click'||e.type==='press')&&this.policyRegion&&e.y===(this.tui.terminal.rows||30)-2&&e.x>=this.policyRegion.start&&e.x<this.policyRegion.end){if(e.type==='press')return{handled:true};this.finish({kind:'approval'});return{handled:true};}
  if(e.type==='wheel'&&this.leftWidth&&e.x<this.leftWidth){const visible=Math.max(1,Math.floor(Math.max(1,this.bodyHeight-7)/3));const maxOffset=Math.max(0,this.config.agents.length-visible);this.crewOffset=Math.max(0,Math.min(maxOffset,this.crewOffset+Math.sign(e.wheelDelta||0)));this.crewIndex=this.crewOffset;this.setFocus('crew');this.refresh();return{handled:true};}
  if(e.type==='wheel'){const lines=this.displayLines.length?this.displayLines:this.history(Math.max(8,this.centerWidth-4));this.readStart=Math.max(0,(this.readStart===null?Math.max(0,lines.length-this.bodyHeight):this.readStart)+(e.wheelDelta||0)*3);if(this.readStart>=lines.length-this.bodyHeight)this.readStart=null;this.refresh();return{handled:true};}
  if(e.type!=='press'&&e.type!=='click')return;
