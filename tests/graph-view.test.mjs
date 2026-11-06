@@ -75,18 +75,18 @@ test('sidebar elapsed freezes at ended for finished tasks and never keeps counti
   const ended = started + 45_000;
   const tasks = [{ id: 't1', agent: 'A', state: 'SUCCEEDED', status: '完成', title: '旧任务', started, ended }];
   const snapshot = { agents: [{ id: 'a', name: 'A' }], tasks };
-  const view = renderGraph(snapshot, 140, 32, 0, 1, theme, false, {}, ended + 86_400_000);
+  const view = renderGraph(snapshot, 140, 32, 0, 1, theme, {}, ended + 86_400_000);
   const body = view.lines.join('\n');
   assert.match(body, /完成 · 45s/, 'elapsed freezes at ended');
   assert.equal(/6825\d+s|\d{6,}s/.test(body), false, 'no runaway counter');
   // 旧记录没有 ended：显示“耗时未记录”，也不能拿当前时间继续累计。
   const legacy = { agents: [{ id: 'a', name: 'A' }], tasks: [{ id: 't2', agent: 'A', status: '失败', started }] };
-  const legacyBody = renderGraph(legacy, 140, 32, 0, 1, theme, false, {}, started + 86_400_000).lines.join('\n');
+  const legacyBody = renderGraph(legacy, 140, 32, 0, 1, theme, {}, started + 86_400_000).lines.join('\n');
   assert.match(legacyBody, /耗时未记录/);
   assert.equal(/\d{5,}s/.test(legacyBody), false, 'legacy terminal tasks do not age');
 });
 
-test('council keyboard flow: draft Enter opens detail, Esc peels layers, F1 shows help', () => {
+test('council keyboard flow: draft Enter never sends, Esc peels layers, F1 shows help', () => {
   const config = { agents, projects: [], folded: [], drafts: {}, sessionLinks: {} };
   const context = { cwd: process.cwd(), model: { id: 'fixture' }, isIdle: () => true, sessionManager: { getSessionFile: () => 'fixture', getSessionId: () => 'fixture', getSessionName: () => 'fixture', getBranch: () => [] } };
   let sent = 0;
@@ -97,13 +97,11 @@ test('council keyboard flow: draft Enter opens detail, Esc peels layers, F1 show
   assert.equal(desk.graphFocus, 'ring');
   desk.handleInput('\x1b[B'); // down selects the first seat
   assert.equal(desk.graphSelected, 0);
-  desk.handleInput('\r'); // Enter opens the seat detail instead of sending the draft
-  assert.equal(desk.graphDetail, true);
+  desk.handleInput('\r'); // Enter on a taskless seat explains instead of sending the draft
+  assert.match(desk.notice, /没有进行中的任务/);
+  assert.equal(desk.councilDesk, false);
   assert.equal(sent, 0);
-  desk.handleInput('\x1b'); // Esc closes the detail first and stays in the council
-  assert.equal(desk.graphDetail, false);
-  assert.equal(desk.graphView, true);
-  desk.handleInput('\x1b'); // Esc again leaves the council
+  desk.handleInput('\x1b'); // nothing is open, Esc leaves the council directly
   assert.equal(desk.graphView, false);
   desk.handleInput('\x1b[21~'); // F10 again, then F1: help must be visible in the council
   desk.handleInput('\x1bOP');
@@ -243,8 +241,9 @@ test('council list: F8 opens with a filter, Enter locates the seat, selection st
   assert.match(frame, /全部任务/);
   assert.match(frame, /检查/);
   desk.handleInput('\x1b[B'); // down (single task, stays on it)
-  desk.handleInput('\r'); // Enter locates the seat and opens the detail
-  assert.equal(desk.graphDetail, true);
+  desk.handleInput('\r'); // Enter locates the seat and opens its desk
+  assert.equal(desk.councilDesk, true);
+  assert.equal(desk.councilDeskTaskId, 'task-a');
   assert.equal(desk.graphSelectedId, 'agent:a');
   snapshot.tasks.unshift({ id: 'new', agent: 'A', state: 'QUEUED', title: '新任务' });
   desk.render(140);
@@ -315,7 +314,7 @@ test('ring layout is stable between renders and dragging changes only the chosen
   const first = renderGraph(snapshot, 120, 32, 0, 1, theme);
   const second = renderGraph(snapshot, 120, 32, 0, 1, theme);
   assert.deepEqual(second.hits, first.hits);
-  const dragged = renderGraph(snapshot, 120, 32, 0, 1, theme, false, { 'agent:a': { x: 6, y: 2 } });
+  const dragged = renderGraph(snapshot, 120, 32, 0, 1, theme, { 'agent:a': { x: 6, y: 2 } });
   assert.equal(dragged.hits[1].x, first.hits[1].x + 6);
   assert.equal(dragged.hits[1].y, first.hits[1].y + 2);
   assert.deepEqual(dragged.hits[0], first.hits[0]);
@@ -338,19 +337,13 @@ test('mouse drag captures a seat and moves it in the terminal view', () => {
   desk.dispose();
 });
 
-test('node detail bubble stays inside a narrow terminal', () => {
-  const view = renderGraph({ agents, tasks: [{ id: 'task-a', agent: 'A', state: 'RUNNING', title: '检查中文任务', tool: 'read' }] }, 80, 18, 0, 1, theme, true);
-  assert.ok(view.lines.some(line => line.includes('检查中文任务')));
-  assert.ok(view.lines.every(line => visibleWidth(line) <= 80));
-});
-
 test('human approval uses a bright hammer and a bounded two-frame tremble', async () => {
   // 待审批的琥珀色现在来自主题 warning token；用真实主题渲染才能断言实际色值。
   const { loadThemeFromPath } = await import(new URL('../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js', import.meta.url));
   const real = loadThemeFromPath(fileURLToPath(new URL('../themes/kepos-default.json', import.meta.url)), 'truecolor');
   const snapshot = { agents, tasks: [{ id: 'gate', agent: 'A', state: 'NEEDS_HUMAN', title: '等待批准' }] };
-  const first = renderGraph(snapshot, 100, 24, 0, 1, real, false, {}, 0);
-  const next = renderGraph(snapshot, 100, 24, 0, 1, real, false, {}, 400);
+  const first = renderGraph(snapshot, 100, 24, 0, 1, real, {}, 0);
+  const next = renderGraph(snapshot, 100, 24, 0, 1, real, {}, 400);
   assert.ok(first.lines.join('').includes('⚠'));
   // 断言语义而非具体色值：审批色必须来自主题 warning token，
   // 这样主题改配色不会让测试变脆（旧断言写死了 #FFDF54，主题一改就红）。
@@ -388,11 +381,11 @@ test('real kepos-dark theme renders every running-task palette color without thr
   for (const width of [100, 140]) {
     // 逐个选中，确保每条链路都能经真实主题渲染且不抛错。
     for (const index of [0, 1, 2, 3]) {
-      const frame = renderGraph({ agents: crew, tasks }, width, 32, index, 1, real, true);
+      const frame = renderGraph({ agents: crew, tasks }, width, 32, index, 1, real);
       assert.ok(frame.lines.length > 0);
     }
     // 分组色现在来自主题 token，所以每帧都带 ANSI，且不再是伪造我们的硬编码 SGR。
-    const idle = renderGraph({ agents: crew, tasks }, width, 32, -1, 1, real, true);
+    const idle = renderGraph({ agents: crew, tasks }, width, 32, -1, 1, real);
     assert.ok(idle.lines.some(line => /\x1b\[38;2;\d+;\d+;\d+m/.test(line)), 'running seats emit theme colors');
     assert.equal(idle.lines.join('').includes('[0m'), false, 'no literal escapes leaked');
   }
@@ -426,9 +419,9 @@ test('streaming assistant text stays visible while the message mutates in place'
 });
 
 test('running seats pulse between glyphs while queued stays static', () => {
-  const run = now => renderGraph({ agents, tasks: [{ id: 'w', agent: 'A', state: 'RUNNING' }] }, 100, 24, -1, 1, theme, false, {}, now);
+  const run = now => renderGraph({ agents, tasks: [{ id: 'w', agent: 'A', state: 'RUNNING' }] }, 100, 24, -1, 1, theme, {}, now);
   assert.notDeepEqual(run(0).lines, run(700).lines, 'running seat breathes ◉/◎');
-  const queued = now => renderGraph({ agents, tasks: [{ id: 'q', agent: 'A', state: 'QUEUED' }] }, 100, 24, -1, 1, theme, false, {}, now);
+  const queued = now => renderGraph({ agents, tasks: [{ id: 'q', agent: 'A', state: 'QUEUED' }] }, 100, 24, -1, 1, theme, {}, now);
   assert.deepEqual(queued(0).lines, queued(600).lines, 'queued seat is static');
 });
 

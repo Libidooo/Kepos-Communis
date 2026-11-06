@@ -179,27 +179,6 @@ function colorize(row: Cell[], theme: any): string {
   }).join('');
 }
 
-function bubble(grid: Cell[][], node: VisualNode, width: number, height: number) {
-  const boxWidth = Math.min(38, width - 2), inner = boxWidth - 4;
-  const x = width >= 120 ? width - boxWidth - 2 : node.x + boxWidth + 2 < width ? node.x + 2 : Math.max(0, node.x - boxWidth - 1);
-  const y = Math.max(0, Math.min(height - 8, node.y - 3));
-  const task = node.task;
-  const rows = [
-    ` ${node.label}  ·  ${task?.status || task?.state || '未分配'}`,
-    `书案 ${task?.title || '尚未分配书案'}`,
-    `工具 ${task?.tool || '—'}`,
-    `进度 ${task?.checkpoint || '—'}`,
-    `输出 ${task?.output || '等待结果'}`,
-    'Esc 关闭详情 · F6 切到输入可发送',
-  ];
-  put(grid, x, y, '╭' + '─'.repeat(boxWidth - 2) + '╮', 'accent');
-  rows.forEach((row, index) => {
-    const content = cut(row, inner);
-    put(grid, x, y + index + 1, '│ ' + content + ' '.repeat(Math.max(0, inner - visibleWidth(content))) + ' │', index === 0 ? 'accent' : 'text');
-  });
-  put(grid, x, y + 7, '╰' + '─'.repeat(boxWidth - 2) + '╯', 'accent');
-}
-
 // 右侧常驻面板：框线容器 + 计数、可筛选任务列表、选中详情。列表负责寻找，详情负责判断和行动。
 // 议会简要：右上角动态高度卡片，只框住实际内容，不再拖一整列空框。
 function sidebar(grid: Cell[][], snapshot: GraphViewSnapshot, selected: VisualNode | undefined, width: number, height: number, now: number, council?: CouncilView) {
@@ -411,7 +390,7 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
   return { center, nodes, ringCount, tracks: track, track: tracks.length === 1 ? tracks[0] : undefined };
 }
 
-export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, detail = false, offsets: GraphOffsets = {}, now = Date.now(), council?: CouncilView): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
+export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: number, selected: number, zoom: number, theme: any, offsets: GraphOffsets = {}, now = Date.now(), council?: CouncilView): { lines: string[]; hits: GraphHit[]; selected: GraphHit } {
   const safeWidth = Math.max(24, width), safeHeight = Math.max(8, height);
   const grid: Cell[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => ({ char: ' ' })));
   const layout = layoutNodes(makeNodes(snapshot), safeWidth, safeHeight, zoom, offsets, !council?.desk);
@@ -562,11 +541,9 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   }
   const selectedNode = selected >= 0 ? layout.nodes.find(node => node.index === selected) : undefined;
   sidebar(grid, snapshot, selectedNode, safeWidth, safeHeight, now, council);
-  if (detail) bubble(grid, selectedNode || { id: 'main', label: '总理', kind: 'agent', groupKey: 'main', x: main.x, y: main.y, index: -1 }, safeWidth, safeHeight);
   const lines = grid.map(row => colorize(row, theme));
   const info = selected === -1 ? '总理 · Enter 输入目标' : selectedNode ? `${selectedNode.label} · ${selectedNode.task?.status || selectedNode.task?.state || '未激活'}${selectedNode.task?.reviewDue ? ' · 需要复核' : ''}` : `代表席 ${selected + 1} · 未配置`;
   lines.push(theme.fg('accent', truncateToWidth(`选中：${info} · ${layout.ringCount === 1 ? '一个议会环' : layout.ringCount + ' 个分组环'}`, safeWidth)));
-  if (detail && selectedNode?.task) { lines.push(theme.fg('muted', truncateToWidth(`任务：${selectedNode.task.title || '—'} · Esc 关闭详情 · Ctrl+X 取消该任务`, safeWidth))); if (selectedNode.task.error) lines.push(theme.fg('error', truncateToWidth(`错误：${selectedNode.task.error}`, safeWidth))); }
-  else lines.push(theme.fg('dim', truncateToWidth('议会 · ■ 代表  ⚠ 待审批 · 选中看链路 · Tab 列表 · F10 返回 · 拖动/缩放', safeWidth)));
+  lines.push(theme.fg('dim', truncateToWidth('议会 · ■ 代表  ⚠ 待审批 · 选中看链路 · Tab 列表 · F10 返回 · 拖动/缩放', safeWidth)));
   return { lines, hits, selected: selected === -1 ? main : hits.find(hit => hit.index === selected) || main };
 }
