@@ -75,7 +75,7 @@ export type KeyHint = { key: string; label: string; help: string; when: Scope | 
 export const KEY_HINTS: readonly KeyHint[] = [
  { key: 'f10', label: 'F10 议会', help: 'F10：打开 / 关闭 48 席议会', when: 'always', footer: true },
  { key: 'f1', label: 'F1 帮助', help: 'F1：打开 / 关闭本帮助', when: 'always', footer: true },
- { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式（状态栏 ⛨ 严格 / ◐ 代理 / ○ 只读 芯片可点击直接切换）', when: 'always', footer: true },
+ { key: 'f2', label: 'F2 操作', help: 'F2：新项目 / 新对话 / 配置代表 / 推选代理总代 / 手动分派 / 审批模式（状态栏 ⛨ 严格 / ⚖ 代理 / ⊙ 只读 芯片可点击直接切换）', when: 'always', footer: true },
  { key: 'f3', label: 'F3 任务', help: 'F3：当前会话的任务与书案详情', when: 'always', footer: true },
  { key: 'f8', label: 'F8 全局', help: 'F8：跨项目任务监控；议会内切换筛选', when: 'always', footer: true },
  { key: 'f11', label: 'F11 专注', help: 'F11：专注阅读（中栏最大化）', when: 'always', footer: true },
@@ -721,10 +721,10 @@ export class Desk {
  const modeChip=this.theme.style?this.theme.style(modeText,{fg:'accent',bold:true}):this.theme.fg('accent',modeText);
  // 审批模式常驻显示：此前只在 F2 菜单里能看到，操作时根本不知道自己处在哪种授权下。
  // 三态用不同的符号与颜色，缩小终端里也能一眼分辨：
- //   ⛨ 严格（默认，需要你逐次确认）  ◐ 代理（模型自主但留痕）  ○ 只读（模型不能改动）
+ //   ⛨ 严格（默认，每笔写入都要你放行）  ⚖ 代理（判断权托付，全部留痕）  ⊙ 只读（模型没有笔，只能看和汇报）
  // 芯片可点击切换（下划线即提示），与 F2 → 审批模式 走同一条路径——状态既是显示也是入口。
  const policy=this.approvalPolicy?.()||'human';
- const policyText=policy==='readonly'?'○ 只读':policy==='proxy'?'◐ 代理':'⛨ 严格';
+ const policyText=policy==='readonly'?'⊙ 只读':policy==='proxy'?'⚖ 代理':'⛨ 严格';
  const policyColor=policy==='readonly'?'warning':policy==='proxy'?'accent':'success';
  const policyChip=this.theme.style?this.theme.style(policyText,{fg:policyColor,underline:true}):this.theme.fg(policyColor,policyText);
  // 记录芯片列区间供 handleMouse 命中；renderFrame 开头已清空，未走到此行的视图不会误触发。

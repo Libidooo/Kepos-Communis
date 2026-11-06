@@ -347,9 +347,9 @@ test('the approval mode is always visible in the status bar', () => {
   desk.approvalPolicy = () => 'human';
   assert.ok(statusOf().includes('⛨ 严格'), 'strict mode is labelled');
   desk.approvalPolicy = () => 'proxy';
-  assert.ok(statusOf().includes('◐ 代理'), 'proxy mode is labelled');
+  assert.ok(statusOf().includes('⚖ 代理'), 'proxy mode is labelled');
   desk.approvalPolicy = () => 'readonly';
-  assert.ok(statusOf().includes('○ 只读'), 'readonly mode is labelled');
+  assert.ok(statusOf().includes('⊙ 只读'), 'readonly mode is labelled');
   // 默认（未注入回调）按严格处理，绝不默认放宽。
   desk.approvalPolicy = undefined;
   assert.ok(statusOf().includes('⛨ 严格'), 'missing callback falls back to strict');
