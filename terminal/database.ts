@@ -80,6 +80,18 @@ export class KeposDatabase {
    );
    CREATE INDEX IF NOT EXISTS idx_watch_recent ON watch_candidates(at DESC);
    CREATE INDEX IF NOT EXISTS idx_watch_cooldown ON watch_candidates(rule_id,path,at);
+   -- 语义评估的落库：置信度阈值能否校准，取决于评估有没有被记录。
+   -- dispatched=1 表示该候选真的被派出去了（闸门放行），只有这些参与成功率计算。
+   CREATE TABLE IF NOT EXISTS watch_assessments(
+    at INTEGER NOT NULL,
+    rule_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    worth INTEGER NOT NULL,
+    confidence REAL,
+    reason TEXT,
+    dispatched INTEGER NOT NULL
+   );
+   CREATE INDEX IF NOT EXISTS idx_assess_path ON watch_assessments(path,at);
    -- 静默预检记录：同一条报告只预检一次。
    -- 没有这张表，重复的报告会反复开三席——最贵的重复劳动。
    CREATE TABLE IF NOT EXISTS precheck_runs(

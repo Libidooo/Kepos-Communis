@@ -1619,6 +1619,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
     const crew=config.agents.find(a=>a.name===rep.agent)||{id:rep.agentId,name:rep.agent,model:rep.model,provider:rep.provider,role:rep.role||'代表'};
     const seconds=Math.max(1,Math.min(request.seconds??Math.floor(rep.limit/2),Math.floor((rep.limit-(Date.now()-rep.started)/1000)/2)));
     pool.launch(crew,request.task,rep.cwd,rep.session,seconds,undefined,rep.parentSessionId,Array.from(READ_ONLY_TOOLS),request.skills||[],false,1,rep.id,request.budgetTokens,{});
+    // 批准在成功派生之后才消费：launch 失败（预算、槽位）不该吞掉人类的批准，
+    // 否则人批了一次、任务却没跑，还得再批第二次。
+    if(decision.approvalId)new SubordinateApprovals(db()).consume(decision.approvalId);
     return{ok:true};
    }catch(error){return{ok:false,reason:clean(error)};}
   }});
@@ -1656,6 +1659,12 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
       catch{/* 评估失败按"保留候选"处理，闸门会记录而非派发 */}
       const crew=config.agents.find(agent=>agent.name===candidate.agent||agent.id===candidate.agent);
       const decision=gate({candidate,policy:currentPolicy(),assessment:verdict,assignable:Boolean(crew)});
+      // 评估落库：置信度阈值能否校准，取决于这些判断有没有被记录。
+      // dispatched 在真正派出后才置 1——记录判断与记录结果同样重要。
+      try{
+       db().prepare('INSERT INTO watch_assessments(at,rule_id,path,worth,confidence,reason,dispatched) VALUES(?,?,?,?,?,?,?)')
+        .run(Date.now(),hit.rule.id,path,verdict?.worth?1:0,verdict?.confidence??null,verdict?.reason??null,0);
+      }catch{}
       if(decision.action!=='auto'){if(desk){desk.notice=`值守：${describeCandidate(candidate)} · ${decision.reason}`;scheduleRepaint();}return;}
       if(!canAutoDispatch(rateWindow)){
        // 超出频率上限本身就是值得人知道的事实：规则可能太宽。
@@ -1663,7 +1672,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
        return;
       }
       try{
-       pool.launch({...crew!},dispatchInstruction(candidate,text),ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),['read'],[],false,0,undefined,config.budget?.perTaskTokens,{purpose:'watch'});
+       pool.launch({...crew!},dispatchInstruction(candidate,text),ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),['read'],[],false,0,undefined,config.budget?.perTaskTokens,{purpose:'watch',watchPath:path});
+       // 派出后把该评估标记为已派发：成功率只统计真的跑起来的那些。
+       try{db().prepare('UPDATE watch_assessments SET dispatched=1 WHERE path=?').run(path);}catch{}
        if(desk){desk.notice=`值守自动派发 · ${candidate.agent} 核对 ${basename(path)}`;scheduleRepaint();}
       }catch(error){if(desk){desk.urgent('值守自动派发失败：'+clean(error));scheduleRepaint();}}
      })();
