@@ -65,20 +65,25 @@ test('crew list is two lines per member and Enter opens the member task first',(
 });
 
 // 单击代表席即在中栏打开该书案——右栏会话单击有中栏预览，左栏不该要求双击。
-// 没有任务的代表单击只选中，配置编辑仍走双击。
+// 没有本会话任务的代表回退到全局历史；从未分派过的代表单击只选中，配置编辑仍走双击。
 test('a single click on a crew member opens their desk in the middle column',()=>{
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
  const agents=[{id:'a',name:'Alice',model:'gpt-x'},{id:'b',name:'Bob',model:'claude-x'}];
- const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',state:'RUNNING',cwd:home,parentSessionId:'local'}],children:new Map()},()=>{},()=>{});
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',state:'RUNNING',cwd:home,parentSessionId:'local',limit:300,started:Date.now(),usage:{totalTokens:120,input:100,output:20,cacheRead:60,cost:{total:0.01}}}],children:new Map()},()=>{},()=>{});
  desk.render(120); // 布局计算 leftWidth，否则点击落不进左栏判定
  desk.handleMouse({type:'press',x:2,y:6,button:'left',clickCount:1});
  assert.equal(desk.taskView,false,'press only selects');
  desk.handleMouse({type:'click',x:2,y:6,button:'left',clickCount:1});
  assert.equal(desk.taskView,true);assert.equal(desk.taskIndex,0);
+ // 带 usage 的书案必须能渲染：cacheHitPercent 是导入函数而非 usage 的方法，写错就是渲染崩溃。
+ const frame=desk.render(120).join('\n');
+ assert.ok(frame.includes('缓存命中'),'cache share renders for a task with usage');
  desk.taskView=false;
- // Bob 没有任务：单击只选中，不弹配置框。
+ // Bob 本会话没有任务，但全局历史里有：单击回退到全局任务视图。
+ desk.monitor={tasks:()=>[{id:'old',agent:'Bob',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,title:'历史任务'}],evidence:()=>({agent:'Bob',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,output:'HISTORY'}),plans:()=>[]};
  desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
- assert.equal(desk.taskView,false);assert.equal(desk.crewIndex,1);
+ assert.equal(desk.taskView,true,'global history opens for a member without session tasks');
+ assert.equal(desk.taskScope,'all');
  desk.dispose();
 });
 
