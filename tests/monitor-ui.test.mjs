@@ -57,11 +57,11 @@ test('crew list is two lines per member and Enter opens the member task first',(
  desk.handleInput('\r');
  assert.equal(desk.taskView,true);assert.equal(desk.taskIndex,0);
  desk.taskView=false;
- desk.crewIndex=1; // Bob has no task -> Enter falls back to the config editor action
- let action;const desk2=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},a=>{action=a;});
- desk2.setFocus('crew');desk2.crewIndex=1;desk2.handleInput('\r');
- assert.deepEqual(action,{kind:'crew',id:'b'});
- desk.dispose();desk2.dispose();
+ desk.crewIndex=1; // Bob has no task -> Enter opens the seat profile desk; config stays on double click
+ desk.handleInput('\r');
+ assert.equal(desk.taskView,true);assert.ok(desk.memberProfile);
+ assert.equal(desk.memberProfile.name,'Bob');
+ desk.dispose();
 });
 
 // 单击代表席即在中栏打开该书案——右栏会话单击有中栏预览，左栏不该要求双击。
@@ -90,11 +90,17 @@ test('a single click on a crew member opens their desk in the middle column',()=
  desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
  assert.equal(desk.taskView,true,'history follows the seat id across renames');
  desk.taskView=false;
- // 从未分派过的代表：单击不再沉默，提示写清下一步。
+ // 从未分派过的代表：单击同样跳到书案——显示席位基础信息，而不是沉默或只弹提示。
  desk.monitor={tasks:()=>[],evidence:()=>({}),plans:()=>[]};
  desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
+ assert.equal(desk.taskView,true,'a never-dispatched seat still opens its desk');
+ assert.ok(desk.memberProfile,'profile mode is active');
+ const profileFrame=desk.render(120).join('\n');
+ assert.match(profileFrame,/Bob · 代表席位/,'seat identity is shown');
+ assert.match(profileFrame,/职责（配置原文）/,'the configured role text is shown');
+ assert.match(profileFrame,/全局历史 0/,'task counts are shown');
+ desk.handleInput('\x1b'); // Esc 返回议案
  assert.equal(desk.taskView,false);
- assert.match(desk.notice,/尚无任务书案/);
  desk.dispose();
 });
 
