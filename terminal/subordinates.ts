@@ -134,7 +134,7 @@ export class SubordinateApprovals {
  *   refuse  —— 连审批都不必提，硬上限或层级限制
  */
 export type SpawnDecision =
-  | { action: 'spawn' }
+  | { action: 'spawn'; approvalId?: string }
   | { action: 'approve'; reason: string }
   | { action: 'refuse'; reason: string };
 
@@ -144,9 +144,9 @@ export function decideSpawn(database: KeposDatabase, parentTaskId: string, reque
   if (!gate.allowed) return { action: 'refuse', reason: gate.reason };
   if (!gate.approvalRequired) return { action: 'spawn' };
   const approvals = new SubordinateApprovals(database);
-  // 已经有批准就直接用掉——否则人批了之后还要再等一次轮询。
+  // 已批准未消费的批准直接可用——否则人批了之后还要再等一次轮询。
   const granted = approvals.approved(parentTaskId);
-  if (granted) { approvals.consume(granted.id); return { action: 'spawn' }; }
+  if (granted) return { action: 'spawn', approvalId: granted.id };
   const created = approvals.request({ parentTaskId, agent: request.agent, task: request.task, live: gate.live });
   return { action: 'approve', reason: created ? gate.reason : `${gate.reason}（已有待批请求，请先处理）` };
 }

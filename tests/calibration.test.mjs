@@ -25,22 +25,20 @@ test('every calibration refuses to advise below the sample floor',()=>{
     for(const result of calibrateAll(db)){
       assert.equal(result.samples<MIN_CALIBRATION_SAMPLES,true);
       assert.equal(result.suggested,undefined,`${result.parameter} must not suggest on no data`);
-      assert.match(result.rationale,/至少需要|不足以/);
+      assert.match(result.rationale,/至少需要|不足以|才能校准/);
     }
   }finally{db.close();}
 });
 
-test('the confidence calibration reports the busiest rule instead of inventing a number',()=>{
+test('raw hits without assessments are not confidence samples',()=>{
   const db=fresh();
   try{
-    // 同一个规则一天内命中很多次：这说明规则太宽，比阈值更值得先改。
+    // 只有候选命中、没有评估落库：置信度阈值无从校准，必须如实说。
     for(let i=0;i<MIN_CALIBRATION_SAMPLES+10;i++)candidate(db,i,1000+i*60000,'readme-sync');
     const result=calibrateConfidence(db);
-    assert.equal(result.samples,MIN_CALIBRATION_SAMPLES+10);
-    assert.match(result.rationale,/readme-sync/);
-    assert.match(result.rationale,/每天命中/);
-    // 阈值本身不给建议：命中频率才是问题。
-    assert.match(result.rationale,/收窄规则路径或调高冷却/);
+    assert.equal(result.samples,0,'watch hits are not assessments');
+    assert.match(result.rationale,/关联|watchPath/);
+    assert.equal(result.suggested,undefined);
   }finally{db.close();}
 });
 
@@ -136,5 +134,53 @@ test('only watch-purpose dispatches count toward the rate',()=>{
     // 真正的值守派发只有几个。
     for(let i=0;i<3;i++)queued(db,100+i,900000+i*600000,'p1','watch');
     assert.equal(calibrateDispatchRate(db).samples,3);
+  }finally{db.close();}
+});
+
+// 回归：置信度校准必须有可关联的评估记录。
+// 起初它读 watch_candidates（只有命中、没有判断），算出来的不是校准是噪声。
+test('confidence calibration requires linked assessments, not raw hits',()=>{
+  const db=fresh();
+  try{
+    // 只有候选命中，没有评估落库。
+    for(let i=0;i<MIN_CALIBRATION_SAMPLES+5;i++)candidate(db,i,1000+i*60000,'readme-sync');
+    const result=calibrateConfidence(db);
+    assert.equal(result.samples,0,'raw hits are not assessments');
+    assert.match(result.rationale,/watchPath|关联/);
+    assert.equal(result.suggested,undefined);
+  }finally{db.close();}
+});
+
+// 关联建立后的判据：派出去的值守任务成功率低 → 阈值放得太松。
+test('low success rate of dispatched watch tasks raises the threshold',()=>{
+  const db=fresh();
+  try{
+    const now=Date.now();
+    // 20 个评估判值得且已派发；其中 15 个任务失败。
+    for(let i=0;i<MIN_CALIBRATION_SAMPLES;i++){
+      const ok=i<5?1:0;
+      db.prepare('INSERT OR IGNORE INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(
+        `wt${i}`,'p',`c-${i}`,'h','e',ok?'SUCCEEDED':'FAILED',
+        JSON.stringify({id:`wt${i}`,agent:'A',state:ok?'SUCCEEDED':'FAILED',status:ok?'完成':'失败',title:'t',cwd:'.',session:'s',parentSessionId:'p',correlationId:'c',started:1,output:'',limit:60,model:'m',provider:'p',ownerPid:1,ownerEpoch:'e',tools:['read'],skills:[],mcp:false,watchPath:`/p/f${i%4}.md`}));
+      db.prepare('INSERT INTO watch_assessments(at,rule_id,path,worth,confidence,reason,dispatched) VALUES(?,?,?,?,?,?,1)')
+        .run(1000+i,'r1',`/p/f${i%4}.md`,1,0.9,'r');
+    }
+    const result=calibrateConfidence(db);
+    assert.match(result.rationale,/放得太松|提高到 0.7/);
+  }finally{db.close();}
+});
+
+test('a high success rate suggests the threshold could be loosened',()=>{
+  const db=fresh();
+  try{
+    for(let i=0;i<MIN_CALIBRATION_SAMPLES;i++){
+      db.prepare('INSERT OR IGNORE INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(
+        `wt${i}`,'p',`c-${i}`,'h','e','SUCCEEDED',
+        JSON.stringify({id:`wt${i}`,agent:'A',state:'SUCCEEDED',status:'完成',title:'t',cwd:'.',session:'s',parentSessionId:'p',correlationId:'c',started:1,output:'',limit:60,model:'m',provider:'p',ownerPid:1,ownerEpoch:'e',tools:['read'],skills:[],mcp:false,watchPath:`/p/f${i}.md`}));
+      db.prepare('INSERT INTO watch_assessments(at,rule_id,path,worth,confidence,reason,dispatched) VALUES(?,?,?,?,?,?,1)')
+        .run(1000+i,'r1',`/p/f${i}.md`,1,0.9,'r');
+    }
+    const result=calibrateConfidence(db);
+    assert.match(result.rationale,/偏紧|降到 0.3/);
   }finally{db.close();}
 });

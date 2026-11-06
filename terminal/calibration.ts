@@ -34,46 +34,36 @@ export const MIN_CALIBRATION_SAMPLES = 20;
 /**
  * 评估置信度阈值。
  *
- * 观测对象：被语义评估判定为值得派发的那些事件，最终**是否真的值得**。
- * "真的值得"的代理指标是"派出去的任务产出了非空结论"——
- * 一个更好的判据是任务最终成功，但成功受模型、任务难度影响，与判断质量无关。
- *
- * 建议规则：把阈值设为观测到"值得"的比例附近的低分位。
- * 简单说，如果 80% 的评估都判值得，那 0.5 可能太松；如果只有 10% 判值得，
- * 0.5 可能太紧，导致真问题被挡在外面。
+ * **必须先说实话：评估结果此前没有落库。** watch_candidates 只记录命中，
+ * 语义评估的 worth / confidence 在闸门里用完就丢——从这张表算不出阈值该多少。
+ * `watch_assessments` 表（M2 起记录）补上了这一环；样本够了之后，
+ * 校准的判据是"派出去的值守任务有多少真的成功"：成功率低说明阈值放得太松。
  */
 export function calibrateConfidence(database: KeposDatabase): Calibration {
-  // 只统计真正执行过派发的评估：记录下来的 worth 与最后是否派出，两者可对照。
-  const rows = database.prepare(
-    `SELECT at, rule_id, path FROM watch_candidates ORDER BY at`,
+  const linked = database.prepare(
+    `SELECT a.rule_id AS rule, a.worth AS worth,
+            CASE WHEN json_extract(w.task,'$.state')='SUCCEEDED' THEN 1 ELSE 0 END AS ok
+     FROM watch_assessments a
+     JOIN workers w ON json_extract(w.task,'$.watchPath')=a.path
+     WHERE a.dispatched=1`,
   ).all() as any[];
-  const samples = rows.length;
+  const samples = linked.length;
   if (samples < MIN_CALIBRATION_SAMPLES) {
     return {
       parameter: '语义评估置信度阈值', current: '0.5', samples,
-      rationale: `只有 ${samples} 条值守候选，至少需要 ${MIN_CALIBRATION_SAMPLES} 条才能看出分布。继续观察，不要按几条记录调参。`,
+      rationale: `只有 ${samples} 条已派发的评估记录（需 ${MIN_CALIBRATION_SAMPLES} 条）。评估必须通过 watchPath 关联到任务结果才能校准——在此之前，靠命中频率调阈值只会让通道变松或变严，都没有依据。`,
     };
   }
-  // 观测"命中频率"：同一规则在多长时间内命中多少次。
-  // 频率过高的规则要么该收窄路径，要么该调高冷却——这比阈值本身更影响体验。
-  const byRule = new Map<string, number[]>();
-  for (const row of rows) {
-    const list = byRule.get(String(row.rule_id)) ?? [];
-    list.push(Number(row.at));
-    byRule.set(String(row.rule_id), list);
-  }
-  let hottest = { rule: '', perDay: 0 };
-  for (const [rule, stamps] of byRule) {
-    if (stamps.length < 2) continue;
-    const spanMs = Math.max(1, stamps[stamps.length - 1] - stamps[0]);
-    const perDay = (stamps.length / spanMs) * 86400000;
-    if (perDay > hottest.perDay) hottest = { rule, perDay };
-  }
+  const ok = linked.filter(row => Number(row.ok) === 1).length;
+  const rate = ok / samples;
+  let verdict: string;
+  if (rate < 0.5) verdict = `成功率仅 ${Math.round(rate * 100)}%，阈值 0.5 放得太松：建议提高到 0.7，或先收窄最活跃规则的路径`;
+  else if (rate >= 0.9) verdict = `成功率 ${Math.round(rate * 100)}%，阈值 0.5 可能偏紧：可以试着降到 0.3 多放行一些，观察一轮`;
+  else verdict = `成功率 ${Math.round(rate * 100)}%，阈值 0.5 与结果相符，保持不动`;
   return {
     parameter: '语义评估置信度阈值', current: '0.5', samples,
-    rationale: hottest.perDay > 0
-      ? `最活跃的规则「${hottest.rule}」约每天命中 ${hottest.perDay.toFixed(1)} 次。命中过密时先收窄规则路径或调高冷却，比调阈值有效——阈值只决定"派不派"，不决定"要不要看"。`
-      : `已记录 ${samples} 条候选，但还看不出单条规则的命中频率。`,
+    observed: { p50: Math.round(rate * 100), p90: Math.round(rate * 100), max: Math.round(rate * 100) },
+    rationale: `${ok}/${samples} 个已派发的评估最终任务成功。${verdict}。`,
   };
 }
 
@@ -130,33 +120,66 @@ export function calibrateDispatchRate(database: KeposDatabase): Calibration {
  * 如果绝大多数代表从不超过 2 个，审批线 3 就是合理的；
  * 如果经常顶到 3 并被挡下，说明真实工作需要更多并发。
  */
+/**
+ * 评估僚属审批线。
+ *
+ * 观测对象：每个代表的**峰值并发**僚属数——不是累计派生数。
+ * 串行带 10 个僚属的代表一次只带 1 个，审批线 3 对它毫无影响；
+ * 只有真正同时带过 4 个以上才说明这条线挡住了真实工作。
+ * 历史并发从子任务的 started/ended 区间重建：`started` 必有，`ended` 未结束的用当前时间。
+ */
 export function calibrateSubordinateThreshold(database: KeposDatabase): Calibration {
   // 父子关系记在 workers.task 的 JSON 里（parentWorkerId），事件表没有这一列。
   const rows = database.prepare(
-    `SELECT json_extract(task,'$.parentWorkerId') AS parent, COUNT(*) AS children
+    `SELECT json_extract(task,'$.parentWorkerId') AS parent,
+            json_extract(task,'$.started') AS started,
+            CASE WHEN json_extract(task,'$.ended') IS NOT NULL
+                 THEN json_extract(task,'$.ended') ELSE CAST(strftime('%s','now') AS INTEGER)*1000 END AS ended
      FROM workers
-     WHERE json_extract(task,'$.parentWorkerId') IS NOT NULL
-     GROUP BY json_extract(task,'$.parentWorkerId')`,
+     WHERE json_extract(task,'$.parentWorkerId') IS NOT NULL`,
   ).all() as any[];
-  const counts = rows.map(row => Number(row.children)).filter(value => value > 0);
-  if (counts.length < MIN_CALIBRATION_SAMPLES) {
+  // 按父任务聚合区间，扫描出每个父任务的峰值并发。
+  const byParent = new Map<string, Array<{ start: number; end: number }>>();
+  for (const row of rows) {
+    const parent = String(row.parent ?? '');
+    if (!parent) continue;
+    const list = byParent.get(parent) ?? [];
+    list.push({ start: Number(row.started ?? 0), end: Number(row.ended ?? Date.now()) });
+    byParent.set(parent, list);
+  }
+  // 峰值并发：任一时刻最多有多少个区间重叠。
+  const peaks: number[] = [];
+  for (const [, intervals] of byParent) {
+    const events: Array<{ at: number; delta: number }> = [];
+    for (const item of intervals) {
+      events.push({ at: item.start, delta: 1 }, { at: item.end + 1, delta: -1 });
+    }
+    events.sort((a, b) => a.at - b.at || a.delta - b.delta);
+    let live = 0, peak = 0;
+    for (const event of events) {
+      live += event.delta;
+      if (live > peak) peak = live;
+    }
+    if (peak > 0) peaks.push(peak);
+  }
+  if (peaks.length < MIN_CALIBRATION_SAMPLES) {
     return {
-      parameter: '僚属审批线', current: '3 个同时', samples: counts.length,
-      rationale: `只有 ${counts.length} 个代表带过僚属，样本不足以判断审批线该松还是该紧。`,
+      parameter: '僚属审批线', current: '3 个同时', samples: peaks.length,
+      rationale: `只有 ${peaks.length} 个代表带过僚属，样本不足以判断审批线该松还是该紧。`,
     };
   }
-  const sorted = [...counts].sort((a, b) => a - b);
+  const sorted = [...peaks].sort((a, b) => a - b);
   const at = (p: number) => sorted[Math.min(sorted.length - 1, Math.floor((sorted.length - 1) * p))];
   const p50 = at(0.5), p90 = at(0.9), max = sorted[sorted.length - 1];
-  // 建议 = 覆盖 90% 情况的并发数，但不超过硬上限。
+  // 建议 = 覆盖 90% 情况的峰值并发，但不超过硬上限 6。
   const suggested = Math.max(2, Math.min(6, p90));
   return {
-    parameter: '僚属审批线', current: '3 个同时', samples: counts.length,
+    parameter: '僚属审批线', current: '3 个同时', samples: peaks.length,
     observed: { p50, p90, max },
     ...(p90 > 3 ? { suggested } : {}),
     rationale: p90 > 3
-      ? `90% 的代表带过 ${p90} 个以内僚属，最大 ${max} 个。当前审批线 3 会把常见的 ${p90} 挡在门外，建议提到 ${suggested}。`
-      : `90% 的代表带过 ${p90} 个以内僚属，审批线 3 与真实用法相符。保持不动。`,
+      ? `90% 的代表峰值并发在 ${p90} 以内，最大 ${max}。当前审批线 3 会把常见的 ${p90} 挡在门外，建议提到 ${suggested}。`
+      : `90% 的代表峰值并发在 ${p90} 以内，审批线 3 与真实用法相符。保持不动。`,
   };
 }
 

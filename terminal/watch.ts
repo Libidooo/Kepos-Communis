@@ -137,6 +137,9 @@ export class WatchCandidates implements CandidateStore {
     if (this.cooling(input.ruleId, path, input.cooldownMs ?? 0, now)) return false;
     this.database.prepare('INSERT INTO watch_candidates(id,at,rule_id,kind,path,task,agent,observe_only) VALUES(?,?,?,?,?,?,?,1)')
       .run(`${input.ruleId}:${path}:${now}`, now, input.ruleId, input.kind, path, input.task, input.agent);
+    // 只保留最新的 2000 条：这张表是校准与候选展示的数据源，不是历史档案。
+    // 不裁剪的话，跑几个月后的全表扫描会拖慢校准，而旧候选早就没有展示价值。
+    this.database.prepare('DELETE FROM watch_candidates WHERE id NOT IN (SELECT id FROM watch_candidates ORDER BY at DESC, rowid DESC LIMIT 2000)').run();
     return true;
   }
 

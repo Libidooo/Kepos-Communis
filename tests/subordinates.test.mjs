@@ -92,8 +92,11 @@ test('an approval is consumed by exactly one spawn', () => {
     assert.equal(pending[0].live, 3);
 
     approvals.decide(pending[0].id, true);
-    assert.equal(decideSpawn(db, 'rep1', { agent: '审查官', task: 'a' }).action, 'spawn', 'the grant is used');
-    assert.equal(decideSpawn(db, 'rep1', { agent: '审查官', task: 'a' }).action, 'approve', 'and it is gone');
+    assert.equal(decideSpawn(db, 'rep1', { agent: '审查官', task: 'a' }).action, 'spawn', 'the grant is usable');
+    // 批准在被消费前一直有效：派生失败（预算、槽位）也不吞掉人类的批准。
+    assert.ok(approvals.approved('rep1'), 'grant survives until explicitly consumed');
+    approvals.consume(approvals.approved('rep1').id);
+    assert.equal(decideSpawn(db, 'rep1', { agent: '审查官', task: 'a' }).action, 'approve', 'and it is gone after consumption');
   } finally { db.close(); }
 });
 

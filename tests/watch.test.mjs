@@ -188,3 +188,17 @@ test('the candidate table keeps only the most recent entries',()=>{
     assert.ok(left.every(c=>/f1[5-9]\.md/.test(c.path)),'kept the newest');
   }finally{db.close();}
 });
+
+// 候选表是数据源不是历史档案：不裁剪的话跑几个月会拖慢校准。
+test('the candidate table is pruned to a bounded size',()=>{
+  const{db}=fresh();
+  try{
+    const store=new WatchCandidates(db);
+    const base={ruleId:'r',kind:'file-changed',path:'/p/a.md',task:'t',agent:'A',cooldownMs:0};
+    for(let n=0;n<2050;n++)store.record({...base,at:1000+n});
+    const count=db.prepare('SELECT COUNT(*) AS n FROM watch_candidates').get().n;
+    assert.ok(Number(count)<=2000,`bounded, got ${count}`);
+    // 最新的仍在。
+    assert.ok(store.recent(1)[0].at>=3000);
+  }finally{db.close();}
+});
