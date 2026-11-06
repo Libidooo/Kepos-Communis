@@ -213,13 +213,15 @@ export class Desk {
   if(!id)return -1;return this.taskBucketsFor(tasks).order.findIndex((task:any)=>task.id===id);
  }
  /** 打开该代表最近一次任务的书案：先本会话，没有再退到全局历史。
-  *  代表的过往任务大多在别的会话里——只查本会话，"点代表看历史"就会落空。 */
- openAgentDesk(agentName:string):boolean{
-  const sessionMine=this.sessionTasks().filter(t=>t.agent===agentName);
+  *  代表的过往任务大多在别的会话里——只查本会话，"点代表看历史"就会落空。
+  *  按 agentId 也匹配一份：席位改名后，旧名字的历史仍能寻回。 */
+ openAgentDesk(agent:{id?:string;name:string}):boolean{
+  const own=(t:any)=>t.agent===agent.name||!!agent.id&&t.agentId===agent.id;
+  const sessionMine=this.sessionTasks().filter(own);
   const at=this.orderIndex(sessionMine[sessionMine.length-1]?.id,this.sessionTasks());
   if(at>=0){this.taskScope='session';this.taskView=true;this.taskIndex=at;this.readStart=null;return true;}
   this.monitorAt=0; // 先失效监控缓存再读：缓存的旧列表里没有刚结束的任务，回退会白查一次。
-  const global=this.monitorData().tasks.filter(t=>t.agent===agentName);
+  const global=this.monitorData().tasks.filter(own);
   const latest=global[0]; // 监控列表按开始时间倒序，第一条就是最近的。
   const atAll=this.orderIndex(latest?.id,this.monitorData().tasks);
   if(atAll>=0){this.taskScope='all';this.taskView=true;this.taskIndex=atAll;this.readStart=null;return true;}
@@ -840,7 +842,7 @@ export class Desk {
  if(this.graphView?(this.councilDesk||this.graphFocus==='input'):this.focus==='input'){this.editor.focused=this.focused;this.editor.handleInput(data);return;}
  if(matchesKey(data,Key.up)){if(this.focus==='projects')this.selected=Math.max(0,this.selected-1);else this.crewIndex=Math.max(0,this.crewIndex-1);this.readStart=null;}
  if(matchesKey(data,Key.down)){if(this.focus==='projects')this.selected=Math.min(this.rows().length-1,this.selected+1);else this.crewIndex=Math.min(this.config.agents.length-1,this.crewIndex+1);this.readStart=null;}
- if(matchesKey(data,Key.enter)){if(this.focus==='crew'){const agent=this.config.agents[this.crewIndex];if(agent&&this.openAgentDesk(agent.name)){this.refresh();return;}this.finish({kind:'crew',id:agent?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch(error){this.notice='配置保存失败：'+clean(error);}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
+ if(matchesKey(data,Key.enter)){if(this.focus==='crew'){const agent=this.config.agents[this.crewIndex];if(agent&&this.openAgentDesk(agent)){this.refresh();return;}this.finish({kind:'crew',id:agent?.id});return;}const row=this.selectedRow();if(row?.kind==='project'){this.folded.has(row.path)?this.folded.delete(row.path):this.folded.add(row.path);this.config.folded=[...this.folded];this.rowCache=undefined;try{saveConfig(this.config)}catch(error){this.notice='配置保存失败：'+clean(error);}}else if(row?.kind==='session'){if(this.sending||!this.ctx.isIdle()){this.notice='先等待任务结束或 Ctrl+X 中止，再切换会话。';}else if(row.path===this.ctx.sessionManager.getSessionFile())this.setFocus('input');else{this.finish({kind:'switch',path:row.path});return;}}}
  this.refresh();
  }
  handleMouse(e:any){if(e.shift)return;
@@ -867,7 +869,7 @@ export class Desk {
  if(e.y>=3&&((this.rightWidth&&e.x>=this.width-this.rightWidth)||(!this.rightWidth&&this.focus==='projects'))){this.setFocus('projects');const index=e.y-5+this.rightOffset;if(index>=0&&index<this.rows().length){this.selected=index;if(e.type==='click'&&e.clickCount>=2)this.handleInput('\r');}this.refresh();return{handled:true,focus:true};}
  if(e.y>=3&&((this.leftWidth&&e.x<this.leftWidth)||(!this.leftWidth&&this.focus==='crew'))){this.setFocus('crew');const member=this.crewOffset+Math.floor((e.y-6)/3);if(member>=0&&member<this.config.agents.length){this.crewIndex=member;
   // 单击即在中栏打开该代表的书案（含历史会话的任务）：右栏会话单击有中栏预览，左栏代表不该干等双击。
-  // 从未分派过的代表保持只选中——单击就弹配置框太易误触，配置仍走双击（与 Enter 的回退一致）。
-  if(e.type==='click'){const agent=this.config.agents[member];if(this.openAgentDesk(agent.name)){this.refresh();return{handled:true,focus:true};}if(e.clickCount>=2)this.finish({kind:'crew',id:agent.id});}}return{handled:true,focus:true};}this.setFocus('input');return{handled:true,focus:true};
+  // 无任务的代表单击不弹配置框（防误触），但也绝不沉默——一句提示说清现在是什么、该走哪条路。
+  if(e.type==='click'){const agent=this.config.agents[member];if(this.openAgentDesk(agent)){this.refresh();return{handled:true,focus:true};}if(e.clickCount>=2)this.finish({kind:'crew',id:agent.id});else this.notice=`${agent.name} 尚无任务书案 · 双击打开配置`;}}return{handled:true,focus:true};}this.setFocus('input');return{handled:true,focus:true};
  }
 }

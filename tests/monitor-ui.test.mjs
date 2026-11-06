@@ -80,10 +80,21 @@ test('a single click on a crew member opens their desk in the middle column',()=
  assert.ok(frame.includes('缓存命中'),'cache share renders for a task with usage');
  desk.taskView=false;
  // Bob 本会话没有任务，但全局历史里有：单击回退到全局任务视图。
- desk.monitor={tasks:()=>[{id:'old',agent:'Bob',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,title:'历史任务'}],evidence:()=>({agent:'Bob',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,output:'HISTORY'}),plans:()=>[]};
+ desk.monitor={tasks:()=>[{id:'old',agentId:'b',agent:'Bob',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,title:'历史任务'}],evidence:()=>({agent:'Bob',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,output:'HISTORY'}),plans:()=>[]};
  desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
  assert.equal(desk.taskView,true,'global history opens for a member without session tasks');
  assert.equal(desk.taskScope,'all');
+ desk.taskView=false;
+ // 席位改名后旧名字的历史仍能按 agentId 寻回：monitor 里这条只带 agentId。
+ desk.monitor={tasks:()=>[{id:'renamed',agentId:'b',agent:'旧名字',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2}],evidence:()=>({agent:'旧名字',status:'完成',state:'SUCCEEDED',cwd:home,parentSessionId:'other',limit:300,started:1,ended:2,output:'RENAMED'}),plans:()=>[]};
+ desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
+ assert.equal(desk.taskView,true,'history follows the seat id across renames');
+ desk.taskView=false;
+ // 从未分派过的代表：单击不再沉默，提示写清下一步。
+ desk.monitor={tasks:()=>[],evidence:()=>({}),plans:()=>[]};
+ desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
+ assert.equal(desk.taskView,false);
+ assert.match(desk.notice,/尚无任务书案/);
  desk.dispose();
 });
 
