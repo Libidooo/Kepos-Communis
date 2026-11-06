@@ -343,6 +343,10 @@ export class Desk {
  refresh(){if(!this.alive||this.renderPending)return;this.renderPending=true;clearTimeout(this.renderTimer);this.renderTimer=setTimeout(()=>{this.renderPending=false;if(this.alive)this.tui.requestRender();},50);}
  invalidate(){this.editor.invalidate();this.historyCacheKey='';this.liveBaseCacheKey='';this.metricsDirty=true;this.entriesDirty=true;this.rowCache=undefined;}
  setFocus(f:'input'|'projects'|'crew'){this.focus=f;this.editor.focused=this.focused&&f==='input';this.refresh();}
+ /** 程序性改输入框必须连草稿一起改：setText 不触发 onChange，
+  *  落盘草稿若留着已发送的原文，Desk 重建时会把发出去的话当草稿灌回输入框——
+  *  看起来就是"发出去了却没清空"。发送与失败回填都走这里。 */
+ syncInput(text:string){this.editor.setText(text);this.config.drafts[this.sessionKey()]=text;clearTimeout(this.draftTimer);try{saveConfig(this.config);}catch{}}
  rows(){if(this.rowCache)return this.rowCache;const dirs=[...new Set([this.ctx.cwd,...this.config.projects,...this.sessions.map(s=>s.cwd).filter(Boolean)])];return this.rowCache=dirs.flatMap(path=>[{kind:'project',path,label:(basename(path)||path)+(this.pool.tasks.some(t=>t.cwd===path&&!terminalStates.has(t.status))?' · 有任务':'')},...(this.folded.has(path)?[]:this.sessions.filter(s=>s.cwd===path).map(s=>({kind:'session',path:s.path,label:s.name||s.firstMessage||'未命名会话',session:s})))]);}
  selectedRow(){return this.rows()[this.selected];}
  preview(){const row:any=this.focus==='projects'?this.selectedRow():null;return row?.kind==='session'&&row.path!==this.ctx.sessionManager.getSessionFile()?row:null;}
@@ -353,7 +357,7 @@ export class Desk {
   // steer = 当前回合的工具批次结束后、下一次 LLM 调用之前插入——这就是"趁总理空闲的间隙
   // 迅速送达让它改安排"。不带 deliverAs 时 Pi 直接抛 "Agent is already processing"，
   // 而扩展层会吞掉这个错误，界面却显示"已排队"——消息就此消失。
-  this.editor.addToHistory(text);this.editor.setText('');this.savedDraftBeforeCommand='';
+  this.editor.addToHistory(text);this.syncInput('');this.savedDraftBeforeCommand='';
   // 加急指令带抬头与重排纪律：模型读到的若是一段普通文本，
   // 它会当成"补充信息"继续按原计划跑，而不是停下来重排。
   const payload=this.briefingForPremier?.(text)??text;
@@ -363,25 +367,25 @@ export class Desk {
   this.notice='正在加急送达…';
   if(result&&typeof result.then==='function'){
    result.then(()=>{if(!this.alive)return;this.briefingDelivered?.('queued',text);this.notice='已加急：总理做完当前这一步就读取并重排；Ctrl+X 中止。';this.refresh();},
-    error=>{if(!this.alive)return;this.editor.setText(text);this.briefingDelivered?.('failed',text);this.notice='加急送达失败（原稿已恢复）：'+clean(error);this.refresh();});
+    error=>{if(!this.alive)return;this.syncInput(text);this.briefingDelivered?.('failed',text);this.notice='加急送达失败（原稿已恢复）：'+clean(error);this.refresh();});
    this.refresh();return;
   }
   // 同步返回（老签名）：拿不到确认，只能如实说未确认。
   this.briefingDelivered?.('queued',text);
   this.notice='已加急：总理做完当前这一步就读取并重排；Ctrl+X 中止。';this.refresh();return;}
  const route=routeCommand(text,this.commands);if(route.kind==='unknown'){this.editor.setText(text);this.notice='未知命令 /'+route.name+'，未发送给模型。输入 / 选择；发送字面斜线请用 //。';this.refresh();return;}
- if(route.kind==='native'||route.kind==='registered'&&route.source==='extension'){this.editor.setText(this.savedDraftBeforeCommand);this.finish({kind:route.kind==='native'?'native-command':'dispatch-command',text});return;}
- if(route.kind==='local'){this.editor.setText(route.name==='reload'||route.name==='pi'?this.savedDraftBeforeCommand:'');switch(route.name){case 'help':this.help=true;break;case 'copy':void this.copyAnswer();break;case 'tasks':this.taskView=true;this.memberProfile=null;this.readStart=null;break;case 'attach':{const argument=text.trim().slice('/attach'.length).trim();this.finish({kind:'attach',text:argument});return;}case 'pi':this.finish({kind:'pi'});return;default:this.finish({kind:route.name});return;}this.refresh();return;}
+ if(route.kind==='native'||route.kind==='registered'&&route.source==='extension'){this.syncInput(this.savedDraftBeforeCommand);this.finish({kind:route.kind==='native'?'native-command':'dispatch-command',text});return;}
+ if(route.kind==='local'){this.syncInput(route.name==='reload'||route.name==='pi'?this.savedDraftBeforeCommand:'');switch(route.name){case 'help':this.help=true;break;case 'copy':void this.copyAnswer();break;case 'tasks':this.taskView=true;this.memberProfile=null;this.readStart=null;break;case 'attach':{const argument=text.trim().slice('/attach'.length).trim();this.finish({kind:'attach',text:argument});return;}case 'pi':this.finish({kind:'pi'});return;default:this.finish({kind:route.name});return;}this.refresh();return;}
  const payload=route.text;
  // 附件只在真正的 chat 分支附加：命令路由永不携带附件。
  const composed=this.composeSubmit(payload);
  const sentAttachments=this.attachments.length;
- this.lastSubmitted=composed.payload;this.requestStartedAt=Date.now();this.savedDraftBeforeCommand='';this.sawStart=false;this.sending=true;this.live={role:'user',content:payload,timestamp:Date.now()};this.readStart=null;this.editor.addToHistory(text);this.editor.setText('');this._noticeUrgent=false;
+ this.lastSubmitted=composed.payload;this.requestStartedAt=Date.now();this.savedDraftBeforeCommand='';this.sawStart=false;this.sending=true;this.live={role:'user',content:payload,timestamp:Date.now()};this.readStart=null;this.editor.addToHistory(text);this.syncInput('');this._noticeUrgent=false;
  if(sentAttachments)this.clearAttachments();
  this.notice=sentAttachments?`正在提交给主 Agent…（含 ${sentAttachments} 项附件）`:'正在提交给主 Agent…';
- try{const result=this.submit(composed.payload,composed.images);if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.sending=false;this.live=undefined;if(!this.editor.getExpandedText())this.editor.setText(text);this.notice='提交失败（原稿已保留）：'+clean(error);this.refresh();});}catch(error){this.sending=false;this.live=undefined;this.editor.setText(text);this.notice='提交失败：'+clean(error);}
+ try{const result=this.submit(composed.payload,composed.images);if(result&&typeof result.catch==='function')result.catch(error=>{if(!this.alive)return;this.sending=false;this.live=undefined;if(!this.editor.getExpandedText())this.syncInput(text);this.notice='提交失败（原稿已保留）：'+clean(error);this.refresh();});}catch(error){this.sending=false;this.live=undefined;this.syncInput(text);this.notice='提交失败：'+clean(error);}
  // A synchronous extension-command response might emit no agent lifecycle event.
- clearTimeout(this.completionTimer);this.completionTimer=setTimeout(()=>{if(this.alive&&this.ctx.isIdle()){this.sending=false;if(!this.sawStart){if(!this.editor.getExpandedText())this.editor.setText(text);this.live=undefined;this.notice='请求未启动，原稿已保留。输入 /pi 查看 Pi 命令行，或重试。';}this.refresh();}},1500);this.refresh();
+ clearTimeout(this.completionTimer);this.completionTimer=setTimeout(()=>{if(this.alive&&this.ctx.isIdle()){this.sending=false;if(!this.sawStart){if(!this.editor.getExpandedText())this.syncInput(text);this.live=undefined;this.notice='请求未启动，原稿已保留。输入 /pi 查看 Pi 命令行，或重试。';}this.refresh();}},1500);this.refresh();
  }
  event(e:any){if(!this.alive)return;if(['message_end','agent_settled'].includes(e.type))this.entriesDirty=true;
  // 内核日志风秒戳：活动流每行带相对本回合起点的 +s 时间。
@@ -391,7 +395,7 @@ export class Desk {
  if(e.type==='tool_execution_update'){this.activity.push(`┊ … ${clean(e.toolName)} 返回中`);this.activity=this.activity.slice(-8);}
  if(e.type==='tool_execution_end'){this.activity.push(`${e.isError?'✕':'✓'} ${stamp()} ${clean(e.toolName)}${e.durationMs?' · '+Math.round(e.durationMs/100)/10+'s':''}`);this.activity=this.activity.slice(-8);}
  if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta'&&!this.firstTokenAt){this.firstTokenAt=Date.now();this.activity.push(`· ${stamp()} 首文本`);}
- if(e.type==='message_start'||e.type==='message_update'||e.type==='message_end'){ if(e.type==='message_update'&&e.assistantMessageEvent?.type?.startsWith('thinking')){this.thinking=true;this.notice='Kepos 正在整理思路…';}if(e.type==='message_end'&&e.message?.role==='assistant')this.thinking=false;if(e.message)this.live=e.message;if(e.type==='message_end'&&e.message?.role==='assistant'&&(e.message.stopReason==='error'||e.message.errorMessage)){if(!this.editor.getExpandedText())this.editor.setText(this.lastSubmitted);this.notice='模型请求失败，原稿已保留：'+clean(e.message.errorMessage||'未知错误');}}
+ if(e.type==='message_start'||e.type==='message_update'||e.type==='message_end'){ if(e.type==='message_update'&&e.assistantMessageEvent?.type?.startsWith('thinking')){this.thinking=true;this.notice='Kepos 正在整理思路…';}if(e.type==='message_end'&&e.message?.role==='assistant')this.thinking=false;if(e.message)this.live=e.message;if(e.type==='message_end'&&e.message?.role==='assistant'&&(e.message.stopReason==='error'||e.message.errorMessage)){if(!this.editor.getExpandedText())this.syncInput(this.lastSubmitted);this.notice='模型请求失败，原稿已保留：'+clean(e.message.errorMessage||'未知错误');}}
  if(e.type==='message_end')this.metricsDirty=true;
  if(e.type==='agent_settled'){clearInterval(this.spinnerTimer);this.metricsDirty=true;if(this.requestStartedAt){this.lastTurnMetrics={ttftMs:this.firstTokenAt?this.firstTokenAt-this.requestStartedAt:0,totalMs:Date.now()-this.requestStartedAt};this.activity.push(`· 回合完成 · ${this.lastTurnMetrics.totalMs}ms`);}this.sending=false;this.live=undefined;this.notice=e.aborted?'任务已中止。':this.editor.getExpandedText()===this.lastSubmitted?'本次请求未成功，原稿已保留；可重试或调整后发送。':'Kepos 已完成。可继续对话。';}
  if(e.type==='tool_execution_start')this.notice='正在调用 '+clean(e.toolName);
@@ -575,7 +579,7 @@ export class Desk {
    while(lines.length<height-editorLines.length-1)lines.push(row(''));
   }else{this.deskOutputTotal=0;this.deskOutputVisible=0;}
   for(const l of editorLines)lines.push(F('borderAccent','│ ')+fit(l,inner)+F('borderAccent',' │'));
-  const hint=this.deskOffset>0?` ↑ 已上滚 ${this.deskOffset}/${Math.max(0,this.deskOutputTotal-this.deskOutputVisible)} 行 · 滚轮下滚回底 `:' Enter 直达该代表 · Esc 关书案 ';
+  const hint=this.deskOffset>0?` ↑ 已上滚 ${this.deskOffset}/${Math.max(0,this.deskOutputTotal-this.deskOutputVisible)} 行 · 滚轮下滚回底 `:' Esc 关书案 ';
   const hintPrefix='╰─ ';
   lines.push(F('borderAccent',hintPrefix)+F('dim',hint)+F('borderAccent','─'.repeat(Math.max(1,w-visibleWidth(hintPrefix)-visibleWidth(hint)-1))+'╯'));
   return lines.slice(0,height);
@@ -610,7 +614,7 @@ export class Desk {
   if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
   this.pendingSeen=attention;
   const councilMode=this.councilDesk?'书案':this.graphFocus==='ring'?'席位':this.graphFocus==='list'?'列表':'输入';
-  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案 · 输入后 Enter 直达':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
   if(this.councilDesk&&width<100){
    // 窄屏放不下右侧面板：退回整屏书案（历史回退路径）。
    const task=snapshot.tasks.find((t:any)=>t.id===this.councilDeskTaskId);
@@ -805,7 +809,7 @@ export class Desk {
  if(matchesKey(data,Key.f9)){this.missionView=!this.missionView;this.taskView=false;this.help=false;this.monitorAt=0;this.readStart=0;this.refresh();return;}
  if(matchesKey(data,Key.f5)){this.expandedTools=!this.expandedTools;this.config.expandedTools=this.expandedTools;this.historyCacheKey='';try{saveConfig(this.config);}catch{}this.notice=this.expandedTools?'工具完整输出已展开（F5 收起）':'工具输出已折叠为一行摘要（F5 展开）';this.refresh();return;}
  if(matchesKey(data,Key.f4)){this.finish({kind:'model'});return;}
- if(matchesKey(data,Key.f6)){if(this.graphView&&this.councilDesk){this.graphFocus=this.graphFocus==='input'?'ring':'input';this.editor.focused=this.focused&&this.graphFocus!=='ring';this.notice=this.graphFocus==='input'?'书案输入 · Enter 直达该代表':'议会席位 · ↑↓ 选择 · Esc 关书案';this.refresh();return;}if(this.graphView){if(this.graphFocus==='ring'){this.graphFocus='list';this.councilList=true;this.editor.focused=false;this.councilIndex=Math.max(0,Math.min(this.councilIndex,Math.max(0,councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1)));this.notice='议会任务列表 · ↑↓ 选择 · Enter 详情 · / 过滤';}
+ if(matchesKey(data,Key.f6)){if(this.graphView&&this.councilDesk){this.graphFocus=this.graphFocus==='input'?'ring':'input';this.editor.focused=this.focused&&this.graphFocus!=='ring';this.notice=this.graphFocus==='input'?'书案输入 · F6 回席位':'议会席位 · ↑↓ 选择 · Esc 关书案';this.refresh();return;}if(this.graphView){if(this.graphFocus==='ring'){this.graphFocus='list';this.councilList=true;this.editor.focused=false;this.councilIndex=Math.max(0,Math.min(this.councilIndex,Math.max(0,councilTasks(this.graphSnapshot(),this.councilFilter,this.councilQuery).length-1)));this.notice='议会任务列表 · ↑↓ 选择 · Enter 详情 · / 过滤';}
    else if(this.graphFocus==='list'){this.graphFocus='input';this.editor.focused=this.focused;this.notice='议会输入 · Enter 发送给主 Agent · Esc 回席位';}
    else{this.graphFocus='ring';this.editor.focused=false;this.notice='议会席位 · ↑↓ 选择 · Enter 书案 · Ctrl+X 取消任务';}
    this.refresh();return;}this.setFocus(this.focus==='input'?'projects':this.focus==='projects'?'crew':'input');this.readStart=null;return;}
@@ -837,7 +841,7 @@ export class Desk {
    const handle=this.pool.liveHandle?.(hit.taskId,parent);
    if(!handle){this.notice='无法转发：拿不到该任务的活句柄（可能已结束）';this.refresh();return;}
    void this.pool.sendMessage(handle,parent,text).then((outcome:any)=>{
-    if(outcome.delivered){this.editor.setText('');this.notice=`已转发给 ${outcome.agent||hit.taskId}${outcome.urgent?(outcome.queued?'（排队中，轮到即加急）':'（已加急启动）'):outcome.queued?'（排队中）':''}`;}
+    if(outcome.delivered){this.syncInput('');this.notice=`已转发给 ${outcome.agent||hit.taskId}${outcome.urgent?(outcome.queued?'（排队中，轮到即加急）':'（已加急启动）'):outcome.queued?'（排队中）':''}`;}
     else{this.notice='转发失败：'+(outcome.error||'未知原因')+'（原稿保留）';}
     this.refresh();
    });

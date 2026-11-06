@@ -64,8 +64,26 @@ test('crew list is two lines per member and Enter opens the member task first',(
  desk.dispose();
 });
 
-// 单击代表席即在中栏打开该书案——右栏会话单击有中栏预览，左栏不该要求双击。
-// 没有本会话任务的代表回退到全局历史；从未分派过的代表单击只选中，配置编辑仍走双击。
+// 发送后输入框与落盘草稿必须一起清空：setText 不触发 onChange，
+// 草稿若留着已发送的原文，Desk 重建时会把发出去的话灌回输入框——"发出去了却没清空"。
+test('sending clears the input and the persisted draft together',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const config={projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}};
+ let submitted='';
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,config,[],{tasks:[],children:new Map()},text=>{submitted=text;},()=>{});
+ desk.render(120);
+ desk.editor.setText('你好，分派一个任务');
+ desk.editor.onChange?.();
+ const key=desk.sessionKey();
+ assert.equal(config.drafts[key],'你好，分派一个任务','typing persists a draft');
+ desk.send();
+ assert.equal(submitted,'你好，分派一个任务','the text actually went out');
+ assert.equal(desk.editor.getExpandedText(),'','the input is cleared');
+ assert.equal(config.drafts[key],'','the persisted draft is cleared too — a rebuilt desk must not resurrect the sent text');
+ desk.dispose();
+});
+
+// 单击代表席即在中栏打开该书案——右栏会话单击有中栏预览，左栏不该要求双击。// 没有本会话任务的代表回退到全局历史；从未分派过的代表单击只选中，配置编辑仍走双击。
 test('a single click on a crew member opens their desk in the middle column',()=>{
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
  const agents=[{id:'a',name:'Alice',model:'gpt-x'},{id:'b',name:'Bob',model:'claude-x'}];
