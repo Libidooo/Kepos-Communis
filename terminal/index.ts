@@ -13,7 +13,7 @@ import { loadConfig, saveConfig, createSessionFile, projectPath, clean, root, pr
 import { keposSessionStore } from './session-store.ts';
 import { db } from './database.ts';
 import { ownedUI } from './dialogs.ts';
-import { boundedJson, boundedText } from './presentation.ts';
+import { boundedJson, boundedText, formatTokens } from './presentation.ts';
 import { outputPage, receiptView } from './result-view.ts';
 import { agentRevision } from './profiles.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
@@ -23,7 +23,7 @@ import { readRelays } from './relay.ts';
 import { configuredMcpServers, resolveMcpGrant } from './mcp.ts';
 import { matchLocalSkills, skillsShSearch, resolveSkillOnline, installSkill } from './skill-source.ts';
 import { readWorkerEvents } from './events.ts';
-import { WorkerPool, configureWorkerDeputy, terminalStates, mergeUsage, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
+import { WorkerPool, configureWorkerDeputy, terminalStates, mergeUsage, spentTokens, DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, MAX_TASK_SECONDS, READ_ONLY_TOOLS, SUPERVISION_INTERVAL_SECONDS, STALL_REVIEW_CYCLES, configureWorkerBudget, type WorkerHandle } from './workers.ts';
 import { SpawnRequestPoller } from './spawn-poller.ts';
 import { credentialsReady } from './cli-runtime.ts';
 import { cliGrantUsable } from './cli-grant.ts';
@@ -46,6 +46,7 @@ import { DEFAULT_WATCH_RULES, DirectoryWatcher, WatchCandidates, describeCandida
 import { AUTO_DISPATCH_PER_MINUTE, assessmentPrompt, canAutoDispatch, dispatchInstruction, gate, parseAssessment } from './watch-assess.ts';
 import { AUTOMATION_LABEL, automationAllowed, automationPrompt, automationSnapshot, confirmText, isActingCapability, toggleAutomation } from './automation.ts';
 import { SubordinateApprovals, decideSpawn } from './subordinates.ts';
+import { BudgetEscalations, MAX_ESCALATION_DIGEST_CHARS, budgetStopReport, ownerSteerText, redispatchInstruction, shouldEscalate } from './budget-escalation.ts';
 import { MAX_STEP_CHARS, describeWorkflow, instantiateWorkflow, newWorkflowId, renderWorkflow, seatsFromAgents, validateWorkflow } from './workflow.ts';
 import { DEFAULT_PRECHECK_AGENTS, PRECHECK_ANGLES, PRECHECK_BUDGET_TOKENS, PRECHECK_SECONDS, PrecheckStore, aggregateReproductions, parseReproduction, precheckReport, precheckable, reproduceInstruction, shouldInterrupt } from './precheck.ts';
 import { BriefingStore, briefingIssued, premierBriefing, upwardReport } from './briefing.ts';
@@ -280,6 +281,30 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   pendingUpward.delete(String(task.id));
   deliverUpward(upwardReport({agent:pending.agent,taskId:String(task.id),briefing:pending.briefing,conclusion:String(task.output||task.checkpoint||'')}),pending.superior,`${pending.agent} 改道结论 · 已报`);
  };
+ // 预算截停的立案与回传（人类的裁定：截停回传上级，最终总理呈报、人类审批；僚属同链）。
+ // 截停曾经只留一行警告：总理不知道委派已死，"待处理"恒为零，等待区的"F2 调预算重派"
+ // 没有实现。现在系统先立案（不依赖模型行为），再沿链上报——批准权始终在人类手里。
+ const escalateBudgetStop=(task:any)=>{
+  try{
+   if(!shouldEscalate(task))return;
+   const spent=spentTokens(task.usage);
+   const cap=Number(task.budgetTokens)||2_000_000;
+   const digest=String(task.checkpoint||'').slice(0,MAX_ESCALATION_DIGEST_CHARS);
+   const escalationId=new BudgetEscalations(db()).raise({taskId:String(task.id),parentSessionId:String(task.parentSessionId||''),agent:String(task.agent),agentId:task.agentId?String(task.agentId):undefined,task:String(task.title||''),spent,cap,digest});
+   // 僚属：直属代表对僚属全权负责，先让它知道并给评估；是否重派由人类审批决定。
+   let ownerName:string|undefined;
+   if(task.parentWorkerId){
+    const owner=pool.tasks.find(t=>t.id===task.parentWorkerId);
+    const handle=owner&&!terminalStates.has(owner.status||'')?pool.liveHandle(String(task.parentWorkerId),String(task.parentSessionId||'')):undefined;
+    if(handle){void pool.sendMessage(handle,String(task.parentSessionId||''),ownerSteerText({agent:String(task.agent),taskId:String(task.id),spent,cap}));ownerName=String(owner.agent);}
+   }
+   // 呈报总理：它掌握全局目标，可用 kepos_budget 附额度评估；批准权在人类。
+   void pi.sendUserMessage(budgetStopReport({escalationId,agent:String(task.agent),taskId:String(task.id),spent,cap,title:String(task.title||''),digest:digest.slice(0,300),owner:ownerName}),{deliverAs:'steer'});
+   // 铃声在后台段响：人关着书案也该被叫醒（同门禁铃声的考量）。
+   if(process.stdout.isTTY)process.stdout.write('\x07');
+   if(desk){desk.notice=`预算截停已立案 · ${task.agent} · F2 → 预算追加审批`;scheduleRepaint();}
+  }catch{/* 立案失败不影响截停本身：任务已停，证据在归档里 */}
+ };
  const watchdogJudge:WatchdogJudge=minimalCompletion;
  /** 对一次"到复核点"的任务做一次模型判定。失败静默——watchdog 不能影响任务本身。 */
  const judgeReview=async(task:any)=>{
@@ -359,13 +384,17 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    const candidate=candidateFromTask(event.task as any);
    if(candidate&&memoryPipeline.enqueue(candidate)){void memoryPipeline.drain().then(()=>{if(event.task.agentId)proposeSkills(event.task.agentId);}).catch(()=>{});}
   }
+  // 预算截停的立案与回传必须在后台段：人关着书案时，总理照样该收到呈报。
+  if(event.type==='task_budget_stop')escalateBudgetStop(event.task);
   if(!desk)return;
   if(event.type!=='task_progress')desk.invalidate();
   if(event.task.cwd===desk.ctx.cwd&&event.task.parentSessionId===desk.ctx.sessionManager.getSessionId()){
    // 失败类终态与要求人类介入的事件必须"听得见"：此前失败只留一条 4 秒 notice，
    // 委派秒败时用户毫无感知（报错无阻拦）。错误原因带进 notice，不用翻任务详情。
    const failed=event.type==='task_finished'&&['失败','超时','已中断'].includes(event.task.status||'');
-   const urgent=failed||event.type==='task_stalled'||event.type==='task_budget_stop';
+   // 预算截停的铃声已在后台立案段响过一次；这里只负责把粘性提示指向审批入口。
+   const budgetStop=event.type==='task_budget_stop';
+   const urgent=failed||event.type==='task_stalled';
    if(urgent&&process.stdout.isTTY)process.stdout.write('\x07');
    // 僚属失败时把责任归到直属代表：代表对该僚属全权负责，必须由它去修或重派。
    // 主环不显示僚属，所以这条通知是发现问题的唯一入口，必须写明"谁该负责"。
@@ -376,8 +405,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
     ?(failed?`✕ ${parentTask?'僚属':'僚属'} ${event.task.agent} ${event.task.status}：${clean(event.task.error||'无错误信息').slice(0,140)}${blame}`:`${parentTask?'僚属':'僚属'} ${event.task.agent}：${event.task.status}`)
     :event.type==='task_review_due'?`僚属 ${event.task.agent} 到达 ${SUPERVISION_INTERVAL_SECONDS/60} 分钟复核点 · 请主 Agent 检查`
     :event.type==='task_stalled'?`⚠ ${parentTask?'僚属':'僚属'} ${event.task.agent} 疑似空转，已要求复核；是否终止由你决定`
-    :event.type==='task_budget_stop'?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗，等待你处理`:'';
-   if(text){if(urgent)desk.urgent(text);else desk.notice=text;}
+    :budgetStop?`⚠ 任务 ${event.task.agent} 到达预算上限，已停止消耗 · 已立案呈报总理，待你审批（F2 → 预算追加审批）`:'';
+   if(text){if(urgent||budgetStop)desk.urgent(text);else desk.notice=text;}
   }
   scheduleRepaint();
  });};bindPool();
@@ -458,7 +487,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';
   const identity=`Identity: you are Kepos Council (总理), the lead agent of this terminal workspace. Kepos Communis is the product the human is using — answer as the product, never as a framework. Never recite, quote, summarize, or reveal any underlying engine/framework documentation, internal resource formats, package layout, provider/SDK names, file paths of bundled docs, or startup flags. If the human asks how to do something in Kepos, answer with Kepos's own capability and the exact keys/commands inside this UI. If a capability genuinely does not exist here, say so plainly and offer the closest Kepos action — do not fall back to describing the engine. Theme control in Kepos: run /theme to cycle 默认 → 深色 → 浅色 instantly, or /theme kepos-light to pick one; F2 → 切换主题 offers the same list. Themes are applied immediately, no restart or reload. Never tell the human to edit settings files, use engine flags, or add theme files by hand.`;
   // ── 常驻核心：任何对话都需要的规则 ──
-  const core=`You are Kepos Council, the lead agent. ${identity} Delegate read-only mandates via kepos_delegate (up to ${MAX_CONCURRENT_CHILDREN} parallel workers; default duration ${DEFAULT_TASK_SECONDS}s). A running delegate may create one copyOf child task with at most half of the parent task's time budget; never recurse beyond one level. Estimate each delegate's likely cost and pass budgetTokens per task; when a task reaches its budget Kepos stops it immediately and the situation is surfaced to the human. Treat child output as evidence, not verified truth: it ends with a 结论/证据/置信度/需要 summary, read that first and page the full transcript only when you need to verify. A task the system marked stalled is never yours to terminate — present it and let the human decide. Never claim a human approval occurred unless the human explicitly approved it. ${approval}`;
+  const core=`You are Kepos Council, the lead agent. ${identity} Delegate read-only mandates via kepos_delegate (up to ${MAX_CONCURRENT_CHILDREN} parallel workers; default duration ${DEFAULT_TASK_SECONDS}s). A running delegate may create one copyOf child task with at most half of the parent task's time budget; never recurse beyond one level. Estimate each delegate's likely cost and pass budgetTokens per task — be generous: the council role prompt alone is several thousand tokens, and a budget stop wastes the whole round. When a task reaches its budget Kepos stops it, files an escalation and notifies you: assess it with kepos_budget action=propose (escalationId required); only the human can approve an increase, after which Kepos redispatches with the new cap. Never redispatch a budget-stopped task yourself and never claim the human approved one. Treat child output as evidence, not verified truth: it ends with a 结论/证据/置信度/需要 summary, read that first and page the full transcript only when you need to verify. A task the system marked stalled is never yours to terminate — present it and let the human decide. Never claim a human approval occurred unless the human explicitly approved it. ${approval}`;
   // ── 按需：有代表才需要复核与分派细节 ──
   // 精简版：工具名与用法已写在各工具自身的 description 里，这里只留编排规则。
   const supervision=config.agents.length?`Kepos only wakes you when a delegate has been idle ${STALL_REVIEW_CYCLES} review cycles or needs a human decision — normal progress does not interrupt you; when woken, check kepos_events/kepos_tasks then acknowledge with kepos_worker review. Check kepos_roles before inventing a role and kepos_skills before selecting a Skill. Use background:true when the human needs to keep talking. Infer naming locale from the latest human prompt: Chinese prompts use Chinese display names, English prompts use English display names; preserve existing names.`:'';
@@ -803,6 +832,18 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const ids=new Set(pool.tasks.filter(t=>t.parentSessionId===parent).map(t=>t.id));
   const view=grants.filter(g=>ids.has(g.taskId)).map(g=>({id:g.id,taskId:g.taskId,cli:g.cli,active:!terminalStates.has(pool.tasks.find(t=>t.id===g.taskId)?.status||'')}));
   return{content:[{type:'text',text:JSON.stringify({grants:view,allowlist:Object.keys(allowlist)})}],details:{grants:view}};
+ }});
+ pi.registerTool({name:'kepos_budget',label:'预算追加评估',description:'预算截停的呈报通道。任务到达 token 预算被截停时，系统会立案并通知你；用 action=propose 附上你的额度评估（suggestedTokens 为不少于 1000 的整数）。是否追加由人类在 F2 → 预算追加审批 决定，批准后系统按新额度重派。在人类批准之前不得自行重派该任务，也不得声称已获批准。action=status 查看待批立案。',parameters:Type.Object({action:Type.Union(['propose','status'].map(value=>Type.Literal(value))),escalationId:Type.Optional(Type.String({description:'propose 必填：立案 id（来自截停呈报）'})),suggestedTokens:Type.Optional(Type.Integer({minimum:1000,description:'propose 必填：建议的新额度'})),note:Type.Optional(Type.String({maxLength:300,description:'一句话依据，会显示给人类'}))}),async execute(_id,params,_signal,_update,_ctx){
+  const store=new BudgetEscalations(db());
+  if(params.action==='status'){
+   const rows=store.pending(10);
+   if(!rows.length)return{content:[{type:'text',text:'当前没有待审批的预算追加立案。'}],details:{pending:[]}};
+   return{content:[{type:'text',text:rows.map(row=>`${row.id} · ${row.agent} · 已耗 ${row.spent}/${row.cap}${row.proposal?` · 你已建议 ${row.proposal}`:''} · ${row.task.slice(0,80)}`).join('\n')}],details:{pending:rows}};
+  }
+  if(!params.escalationId||params.suggestedTokens===undefined)throw Error('propose 需要 escalationId 与 suggestedTokens');
+  if(!store.propose(params.escalationId,params.suggestedTokens,params.note))throw Error('立案不存在或已不在待批状态');
+  if(desk){desk.notice=`总理建议 ${formatTokens(params.suggestedTokens)} tokens · F2 → 预算追加审批`;scheduleRepaint();}
+  return{content:[{type:'text',text:`评估已登记。人类将在 F2 → 预算追加审批 中决定；批准后系统按新额度重派。在此之前请勿重派或声称已获批。`}],details:{escalationId:params.escalationId,proposal:params.suggestedTokens}};
  }});
  pi.registerTool({name:'kepos_grant',label:'权限申请与转授',description:'代表申请写权限，或把自身持有的权限转授给僚属。审批链：代表申请 → 代理总代转呈 → 总理批准 → 人类确认。授权绑定在这一次任务的进程上，任务结束即失效。转授不能超过自身持有范围。',parameters:Type.Object({action:Type.Union(['request','grant','status'].map(value=>Type.Literal(value))),tools:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'request: 申请的写权限（bash/powershell/edit/write）；grant: 要转授给僚属的子集'})),reason:Type.Optional(Type.String({maxLength:500,description:'request 必填：要改什么、为什么必须写'})),taskId:Type.Optional(Type.String({description:'申请者任务 id；缺省取当前会话最近的任务'})),member:Type.Optional(Type.String({description:'grant 时指定僚属名称或任务 id'})),grantId:Type.Optional(Type.String({description:'status/approve 时指定授权 id'})),approve:Type.Optional(Type.Boolean({description:'true 表示人类确认批准（严格模式下必须显式传）'})),note:Type.Optional(Type.String({maxLength:300,description:'批准或驳回的理由，写入审计'})),text:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
   // 授权表：按任务 id 记，任务终态时由 sweepGrants 清掉，绝不跨任务保留。
@@ -1184,7 +1225,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','跨组借调','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','工作流','自动化能力','待批僚属派生',reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','跨组借调':'secondments','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','工作流':'workflows','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const pendingEscalations=new BudgetEscalations(db()).pending().length;const escalationLabel=pendingEscalations?`预算追加审批（${pendingEscalations}）`:'预算追加审批';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','跨组借调','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','工作流','自动化能力','待批僚属派生',escalationLabel,reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','跨组借调':'secondments','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','工作流':'workflows','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[escalationLabel]:'budget-escalations',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');
@@ -1320,6 +1361,43 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    approvals.decide(item.id,false);
    ui.notify(`已拒绝 ${item.agent} 的派生请求。`,'info');
   }
+  return;
+ }
+ // 预算截停的审批队列（人类的裁定：截停立案、总理呈报、人类批准后按新额度重派）。
+ // 直派任务与僚属同一逻辑；重派是"续接"不是重开——原任务全文与检查点都带上。
+ if(action.kind==='budget-escalations'){
+  const escalations=new BudgetEscalations(db());
+  const pending=escalations.pending();
+  if(!pending.length){ui.notify('没有待审批的预算追加。','info');return;}
+  const label=(item:any)=>`${item.agent} 已耗 ${formatTokens(item.spent)} / 上限 ${formatTokens(item.cap)} · ${clean(item.task).slice(0,46)}`;
+  const pick=await ui.select(`预算追加待批（${pending.length}）`,[...pending.map(label),'返回']);
+  const item=pending.find(entry=>label(entry)===pick);
+  if(!item)return;
+  const proposalLine=item.proposal?`\n总理建议额度：${formatTokens(item.proposal)} tokens${item.note?`（${clean(item.note).slice(0,120)}）`:''}`:'';
+  const decision=await ui.select(`${item.agent} · 已耗 ${formatTokens(item.spent)} / 上限 ${formatTokens(item.cap)} tokens\n原任务：${clean(item.task).slice(0,120)}${proposalLine}\n\n批准后立即按新额度续接重派；拒绝则本案了结。`,['批准并重派','拒绝','返回']);
+  if(decision==='拒绝'){escalations.decide(item.id,false);ui.notify(`已拒绝 ${item.agent} 的预算追加；任务保持截停状态。`,'info');return;}
+  if(decision!=='批准并重派')return;
+  const suggestion=item.proposal??Math.max(2000,Math.ceil(item.spent*2/1000)*1000);
+  const input=await ui.input('新额度（tokens，不少于 1000）',String(suggestion));
+  if(input===undefined||!input.trim())return;
+  const newCap=Number(input.trim());
+  if(!Number.isInteger(newCap)||newCap<1000){ui.notify('额度必须是不少于 1000 的整数','warning');return;}
+  // 原任务全文与父链从 workers 表读回：立案里只存了截断版。
+  let parsed:any;try{const row=db().prepare('SELECT task FROM workers WHERE id=?').get(item.taskId) as any;parsed=row?.task?JSON.parse(row.task):undefined;}catch{/* 记录缺失就退回立案里的截断版 */}
+  const originalTitle=String(parsed?.title||item.task||'');
+  const crew=config.agents.find(agent=>agent.id===item.agentId)||config.agents.find(agent=>agent.name===item.agent);
+  if(!crew){escalations.decide(item.id,false);ui.notify(`代表「${item.agent}」已不存在，无法重派；本案已驳回。`,'warning');return;}
+  // 原直属代表还在跑就挂回它名下（delegationDepth=1），责任链不断；否则作直派任务。
+  const owner=parsed?.parentWorkerId?pool.tasks.find(t=>t.id===String(parsed.parentWorkerId)&&!terminalStates.has(t.status||'')):undefined;
+  const instruction=redispatchInstruction({taskId:item.taskId,agent:item.agent,spent:item.spent,cap:item.cap,newCap,title:originalTitle,digest:item.digest??(parsed?.checkpoint?String(parsed.checkpoint).slice(0,MAX_ESCALATION_DIGEST_CHARS):undefined)});
+  try{
+   pool.launch({...crew},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),Array.from(READ_ONLY_TOOLS),crew.skills??[],false,owner?1:0,owner?.id,newCap,{purpose:'delegation'});
+  }catch(error){ui.notify('重派失败：'+clean(error)+'；本案仍在队列，可重试或拒绝','warning');return;}
+  // 先 launch 后记账：launch 失败时案件还在队列里，人类的批准不会蒸发
+  //（同僚属批准"成功后才消费"的时序教训）。
+  escalations.decide(item.id,true);
+  escalations.markDispatched(item.id);
+  ui.notify(`已按 ${formatTokens(newCap)} tokens 重派 ${item.agent}${owner?`（挂回「${owner.agent}」名下）`:''}`,'info');
   return;
  }
  // 自动化能力：三项独立开关，全部默认关闭。
@@ -1713,7 +1791,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
     pendingUpward.set(taskId,{agent:task.agent,briefing:text,superior});
    }catch(error){desk&&(desk.notice='改道汇报失败：'+clean(error));}
   };
-  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,groupId:(task as any).groupId,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;watcher?.stop();watcher=undefined;desk?.dispose();desk=undefined;}
+  desk.graph={snapshot:()=>{const approvals=scheduler.list().flatMap(plan=>plan.jobs.filter(job=>job.state==='NEEDS_HUMAN').map(job=>({id:job.key,agent:job.agent.name,state:'NEEDS_HUMAN',status:'等待人类审批',title:job.task,groupKey:plan.id})));
+  // 预算截停的立案以伪任务进图：state NEEDS_HUMAN 让它点亮 ⚠、计入"待处理"、进 F8 筛选。
+  // 终态任务被计数排除是刻意的（历史失败不能永久顶红徽章），但立案是活的待办，必须被看见。
+  const budgetCases=new BudgetEscalations(db()).pending().map(escalation=>({id:escalation.id,agent:escalation.agent,state:'NEEDS_HUMAN',status:'预算停止 · 待你审批',title:escalation.task,error:`已耗 ${formatTokens(escalation.spent)} / 上限 ${formatTokens(escalation.cap)}${escalation.proposal?` · 总理建议 ${formatTokens(escalation.proposal)}`:''} · F2 → 预算追加审批`,groupKey:escalation.parentSessionId||escalation.taskId}));
+  return{agents:config.agents.map(agent=>({id:agent.id,name:agent.name,model:agent.model,roleKey:agent.roleKey,deputy:agent.id===config.deputyAgentId})),tasks:[...pool.tasks.map(task=>({id:task.id,agent:task.agent,status:task.status,state:task.state,title:task.title,tool:task.tool,checkpoint:task.checkpoint,output:task.output?.slice(-160),parentWorkerId:task.parentWorkerId,delegationDepth:task.delegationDepth,groupId:(task as any).groupId,reviewDue:task.reviewDue,error:task.error,groupKey:task.parentSessionId,started:task.started,ended:task.ended})),...approvals,...budgetCases]};}};pulseTimer=setInterval(()=>{if(desk&&(desk.taskView||desk.missionView||desk.graphView))desk.refresh();},400);return desk;},{overlay:true,overlayOptions:{anchor:'top-left',width:'100%',maxHeight:'100%',margin:0}});}finally{clearInterval(pulseTimer);pulseTimer=undefined;clearTimeout(repaintTimer);repaintTimer=undefined;watcher?.stop();watcher=undefined;desk?.dispose();desk=undefined;}
  if(!action)return;
  try{
  if(action.kind==='reload'){if(blocked(ctx)){ctx.ui.notify('任务进行中，未重载；请等待或中止后重试','warning');continue;}const active=pool.tasks.filter(t=>!terminalStates.has(t.status)).length;if(active&&!await ctx.ui.confirm('重载 Kepos 扩展？',`重载会取消 ${active} 个运行中的子任务（包括其他会话的）；会话记录和输入草稿保留。`))continue;db().set('ui_reload',{pid:process.pid,sessionId:ctx.sessionManager.getSessionId(),at:Date.now()});await ctx.reload();return;}

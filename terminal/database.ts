@@ -114,6 +114,27 @@ export class KeposDatabase {
     live INTEGER NOT NULL
    );
    CREATE INDEX IF NOT EXISTS idx_subap_parent ON subordinate_approvals(parent_task_id,state);
+   -- 预算截停的立案：截停回传上级、总理呈报、人类批准后按新额度重派。
+   -- 同一任务只立一案（raise 去重）；launch 成功才置 dispatched，批准不蒸发。
+   CREATE TABLE IF NOT EXISTS budget_escalations(
+    id TEXT PRIMARY KEY,
+    at INTEGER NOT NULL,
+    task_id TEXT NOT NULL,
+    parent_session TEXT,
+    agent TEXT NOT NULL,
+    agent_id TEXT,
+    task TEXT NOT NULL,
+    spent INTEGER NOT NULL,
+    cap INTEGER NOT NULL,
+    digest TEXT,
+    proposal INTEGER,
+    proposed_by TEXT NOT NULL DEFAULT 'system',
+    note TEXT,
+    state TEXT NOT NULL,
+    decided_at INTEGER
+   );
+   CREATE INDEX IF NOT EXISTS idx_budesc_state ON budget_escalations(state,at);
+   CREATE INDEX IF NOT EXISTS idx_budesc_task ON budget_escalations(task_id,state);
    -- 组内推举呈报：组内推举只是提名，批准由人类做。
    -- 报告必须留档——批的是谁、依据是什么，事后要能回看。
    CREATE TABLE IF NOT EXISTS election_reports(

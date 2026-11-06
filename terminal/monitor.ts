@@ -87,12 +87,14 @@ export type WaitingReason = PendingReason | 'failed' | 'budget';
 export type WaitingItem<T extends AwaitingTask> = { task: T; reason: WaitingReason; action: string };
 
 // 每个等待原因的直达动作与标签：界面只展示，不另存一份文案。
+// budget 的入口是真实存在的 F2 → 预算追加审批（立案后由人类批准重派）；
+// 此前写的"F2 调预算重派"从未有对应实现，是张空头支票。
 const WAITING_ACTION: Record<WaitingReason, string> = {
  approval: 'F2 审批',
  review: 'F2 复核 · Ctrl+X 终止',
  stalled: 'F2 复核 · Ctrl+X 终止',
  failed: 'Enter 已处理 · F2 重派',
- budget: 'Enter 已处理 · F2 调预算重派',
+ budget: 'F2 → 预算追加审批 · Enter 已处理',
 };
 export const WAITING_LABEL: Record<WaitingReason, string> = {
  approval: '待审批', review: '待复核', stalled: '疑似空转', failed: '失败待决策', budget: '预算停止',
