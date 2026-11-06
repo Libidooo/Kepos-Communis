@@ -64,6 +64,24 @@ test('crew list is two lines per member and Enter opens the member task first',(
  desk.dispose();desk2.dispose();
 });
 
+// 单击代表席即在中栏打开该书案——右栏会话单击有中栏预览，左栏不该要求双击。
+// 没有任务的代表单击只选中，配置编辑仍走双击。
+test('a single click on a crew member opens their desk in the middle column',()=>{
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+ const agents=[{id:'a',name:'Alice',model:'gpt-x'},{id:'b',name:'Bob',model:'claude-x'}];
+ const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents,drafts:{},folded:[],sessionLinks:{}},[],{tasks:[{id:'t1',agent:'Alice',status:'运行中',state:'RUNNING',cwd:home,parentSessionId:'local'}],children:new Map()},()=>{},()=>{});
+ desk.render(120); // 布局计算 leftWidth，否则点击落不进左栏判定
+ desk.handleMouse({type:'press',x:2,y:6,button:'left',clickCount:1});
+ assert.equal(desk.taskView,false,'press only selects');
+ desk.handleMouse({type:'click',x:2,y:6,button:'left',clickCount:1});
+ assert.equal(desk.taskView,true);assert.equal(desk.taskIndex,0);
+ desk.taskView=false;
+ // Bob 没有任务：单击只选中，不弹配置框。
+ desk.handleMouse({type:'click',x:2,y:9,button:'left',clickCount:1});
+ assert.equal(desk.taskView,false);assert.equal(desk.crewIndex,1);
+ desk.dispose();
+});
+
 test('bottom bar is two rows: status with short usage, notice plus hints',()=>{
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
  const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
