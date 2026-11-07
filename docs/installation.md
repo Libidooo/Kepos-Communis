@@ -100,6 +100,16 @@ sha256sum ./kepos-communis-0.3.0-beta.5.tgz
 2. 用 `F4` 选择可用模型，然后输入目标。总理 Agent 组织工作，代表配置界定领域职责，僚属执行进程承载具体委派。
 3. 用 `F3` 查看任务，`F9` 看长程计划，`F10` 打开议会。默认预置十个常用代表，可以在 `F2` 中调整。
 
+### 界面出现方框符号、乱码或排线错位？
+
+Kepos 的界面按 **Windows Terminal（ConPTY）+ UTF-8** 设计。在传统控制台（conhost）、GBK 代码页或不覆盖制表符的字体下运行，会出现：
+
+- `★ ◉ ╭ ┤ ─` 显示为方框（□）——**字体问题**：终端字体换 **Cascadia Mono/Code**（Windows Terminal 自带）或 Sarasa Term SC
+- 中文乱码——**代码页问题**：在 Windows Terminal 设置中启用 UTF-8，或启动前执行 `chcp 65001`
+- 边框错位、排线断裂——**终端问题**：请在 **Windows Terminal** 中运行 `kepos`（传统 cmd/conhost 不支持 ConPTY 渲染）
+
+运行 `kepos doctor` 可自动检测这三项并给出针对性提示。npm 安装时的 `deprecated` / `install-scripts` 字样是警告不是错误，看到 `changed N packages` 即安装成功——不要把 npm 提示句整段复制进命令行，只复制命令本身。
+
 ### 首次启动下载 fd / ripgrep 超时？
 
 首次启动时，运行时会尝试下载两个文件搜索工具（`fd` 与 `rg`），下载源是 GitHub Releases——部分网络直连会超时：
