@@ -11,7 +11,7 @@ test('the lead prompt scopes the agent to Kepos and forbids reciting framework i
   const block = source.match(/const identity=`([\s\S]*?)`;/);
   assert.ok(block, 'lead prompt carries an identity section');
   const identity = block[1];
-  assert.match(identity, /you are Kepos Council/i, 'names itself as the Kepos lead agent');
+  assert.match(identity, /you are the premier \(总理\) of Kepos Communis/i, 'names itself as the Kepos premier');
   assert.match(identity, /never recite|never quote|never reveal/i, 'forbids reciting framework documentation');
   assert.match(identity, /framework/i, 'explicitly scopes the "framework" out of answers');
   // 必须把本产品内的做法讲清楚，否则模型只能靠猜或退回框架文档。
@@ -20,7 +20,7 @@ test('the lead prompt scopes the agent to Kepos and forbids reciting framework i
 });
 
 test('the identity section is actually interpolated into the supervision prompt', () => {
-  assert.match(source, /You are Kepos Council, the lead agent\. \$\{identity\}/, 'identity is part of the live prompt');
+  assert.match(source, /You are the premier \(总理\) of the Kepos council — the lead agent\. \$\{identity\}/, 'identity is part of the live prompt');
 });
 
 // 分层提示词：核心规则必须在所有场景保留，可选的按场景注入。
