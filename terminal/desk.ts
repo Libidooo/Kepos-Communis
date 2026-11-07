@@ -14,6 +14,7 @@ import { taskBuckets, WAITING_LABEL } from './monitor.ts';
 import { deliveryNote, representativeBriefing } from './briefing.ts';
 import { describeCandidate } from './watch.ts';
 import { branchedSpec } from './branched-list.ts';
+import { renderActivityBlock, stepDetail, type TraceStep, type ActivitySignal } from './activity-block.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
@@ -127,7 +128,7 @@ type Action={kind:string;path?:string;text?:string;id?:string;draft?:string};
 export class Desk {
  // 工具展示模式：默认 summary（一行摘要），F5 切到 full。
  get toolMode():'summary'|'full'{return this.expandedTools?'full':'summary';}
- editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; thinkingHidden=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; policyRegion:{start:number;end:number}|null=null; memberProfile:{id:string;name:string}|null=null; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
+ editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; thinkingHidden=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; thinking=false; traceSteps:TraceStep[]=[]; activitySignal:ActivitySignal|undefined=undefined; traceOpen=false; activityDone:{state:'done'|'aborted'|'error';ms:number}|null=null; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; policyRegion:{start:number;end:number}|null=null; memberProfile:{id:string;name:string}|null=null; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
  // notice 统一走 setter 盖时间戳。urgent 消息（失败 / 需人工 / 预算停止）粘住，
  // 只有 Esc 或用户下一个动作才清掉；普通消息 4 秒后让位给按键提示。
  // urgent 在场时普通通知一律丢弃：失败/门禁/预算必须被人看见，不能被"正在调用 X"顶掉。
@@ -395,21 +396,35 @@ export class Desk {
  clearTimeout(this.completionTimer);this.completionTimer=setTimeout(()=>{if(this.alive&&this.ctx.isIdle()){this.sending=false;if(!this.sawStart){if(!this.editor.getExpandedText())this.syncInput(text);this.live=undefined;this.notice='请求未启动，原稿已保留。输入 /pi 查看 Pi 命令行，或重试。';}this.refresh();}},1500);this.refresh();
  }
  event(e:any){if(!this.alive)return;if(['message_end','agent_settled'].includes(e.type))this.entriesDirty=true;
- // 内核日志风秒戳：活动流每行带相对本回合起点的 +s 时间。
- const stamp=()=>`+${((Date.now()-(this.requestStartedAt||Date.now()))/1000).toFixed(1)}s`;
- if(e.type==='agent_start'){clearInterval(this.spinnerTimer);this.spinnerTimer=setInterval(()=>this.refresh(),150);if(!this.requestStartedAt)this.requestStartedAt=Date.now();this.firstTokenAt=0;this.sawStart=true;this.sending=true;this.activity=[];this.notice='Kepos 正在执行 · 输入并 Enter 即排队 · Ctrl+X 中止';}
- if(e.type==='tool_execution_start'){this.activity.push(`▸ ${stamp()} ${clean(e.toolName)}${e.args?' '+clean(JSON.stringify(e.args)).slice(0,120):''}`);this.activity=this.activity.slice(-8);this.thinking=false;this.notice='正在调用 '+clean(e.toolName);}
- if(e.type==='tool_execution_update'){this.activity.push(`┊ … ${clean(e.toolName)} 返回中`);this.activity=this.activity.slice(-8);}
- if(e.type==='tool_execution_end'){this.activity.push(`${e.isError?'✕':'✓'} ${stamp()} ${clean(e.toolName)}${e.durationMs?' · '+Math.round(e.durationMs/100)/10+'s':''}`);this.activity=this.activity.slice(-8);}
- if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta'&&!this.firstTokenAt){this.firstTokenAt=Date.now();this.activity.push(`· ${stamp()} 首文本`);}
- if(e.type==='message_start'||e.type==='message_update'||e.type==='message_end'){ if(e.type==='message_update'&&e.assistantMessageEvent?.type?.startsWith('thinking')){this.thinking=true;this.notice='Kepos 正在整理思路…';}if(e.type==='message_end'&&e.message?.role==='assistant')this.thinking=false;if(e.message)this.live=e.message;if(e.type==='message_end'&&e.message?.role==='assistant'&&(e.message.stopReason==='error'||e.message.errorMessage)){if(!this.editor.getExpandedText())this.syncInput(this.lastSubmitted);this.notice='模型请求失败，原稿已保留：'+clean(e.message.errorMessage||'未知错误');}}
+ // 回合活动以结构化步骤采集（terminal/activity-block.ts 渲染）：工具起止成步、
+ // 思考起止成步；动词取最新信号——状态行说的必须是总理此刻真正在做的事。
+ if(e.type==='agent_start'){clearInterval(this.spinnerTimer);this.spinnerTimer=setInterval(()=>this.refresh(),150);if(!this.requestStartedAt)this.requestStartedAt=Date.now();this.firstTokenAt=0;this.sawStart=true;this.sending=true;this.traceSteps=[];this.activitySignal=undefined;this.traceOpen=false;this.activityDone=null;this.historyCacheKey='';this.notice='Kepos 正在执行 · 输入并 Enter 即排队 · Ctrl+X 中止';}
+ if(e.type==='tool_execution_start'){const tool=clean(e.toolName);this.traceSteps.push({kind:'tool',tool,started:Date.now(),detail:stepDetail(tool,e.args)});this.traceSteps=this.traceSteps.slice(-40);this.activitySignal={kind:'tool',tool};this.thinking=false;this.notice='正在调用 '+tool;}
+ if(e.type==='tool_execution_end'){const open=[...this.traceSteps].reverse().find(s=>s.kind==='tool'&&!s.ended);if(open){open.ended=Date.now();open.isError=!!e.isError;}}
+ if(e.type==='message_update'&&e.assistantMessageEvent?.type==='text_delta'){if(!this.firstTokenAt)this.firstTokenAt=Date.now();const think=this.traceSteps.find(s=>s.kind==='think'&&!s.ended);if(think)think.ended=Date.now();this.activitySignal={kind:'text'};}
+ if(e.type==='message_start'||e.type==='message_update'||e.type==='message_end'){const sub=e.type==='message_update'?e.assistantMessageEvent?.type:undefined;
+  if(sub==='thinking_start'){this.thinking=true;this.activitySignal={kind:'think'};if(!this.traceSteps.some(s=>s.kind==='think'&&!s.ended))this.traceSteps.push({kind:'think',started:Date.now()});this.notice='Kepos 正在整理思路…';}
+  if(sub==='thinking_end'){const think=this.traceSteps.find(s=>s.kind==='think'&&!s.ended);if(think)think.ended=Date.now();this.thinking=false;}
+  if(e.type==='message_end'&&e.message?.role==='assistant'){this.thinking=false;const think=this.traceSteps.find(s=>s.kind==='think'&&!s.ended);if(think)think.ended=Date.now();}
+  if(e.message)this.live=e.message;if(e.type==='message_end'&&e.message?.role==='assistant'&&(e.message.stopReason==='error'||e.message.errorMessage)){if(!this.editor.getExpandedText())this.syncInput(this.lastSubmitted);this.notice='模型请求失败，原稿已保留：'+clean(e.message.errorMessage||'未知错误');}}
  if(e.type==='message_end')this.metricsDirty=true;
- if(e.type==='agent_settled'){clearInterval(this.spinnerTimer);this.metricsDirty=true;if(this.requestStartedAt){this.lastTurnMetrics={ttftMs:this.firstTokenAt?this.firstTokenAt-this.requestStartedAt:0,totalMs:Date.now()-this.requestStartedAt};this.activity.push(`· 回合完成 · ${this.lastTurnMetrics.totalMs}ms`);}this.sending=false;this.live=undefined;this.notice=e.aborted?'任务已中止。':this.editor.getExpandedText()===this.lastSubmitted?'本次请求未成功，原稿已保留；可重试或调整后发送。':'Kepos 已完成。可继续对话。';}
+ if(e.type==='agent_settled'){clearInterval(this.spinnerTimer);this.metricsDirty=true;for(const step of this.traceSteps)if(!step.ended)step.ended=Date.now();if(this.requestStartedAt){this.lastTurnMetrics={ttftMs:this.firstTokenAt?this.firstTokenAt-this.requestStartedAt:0,totalMs:Date.now()-this.requestStartedAt};this.activityDone={state:e.aborted?'aborted':'done',ms:this.lastTurnMetrics.totalMs};this.historyCacheKey='';}this.sending=false;this.live=undefined;this.notice=e.aborted?'任务已中止。':this.editor.getExpandedText()===this.lastSubmitted?'本次请求未成功，原稿已保留；可重试或调整后发送。':'Kepos 已完成。可继续对话。';}
  if(e.type==='tool_execution_start')this.notice='正在调用 '+clean(e.toolName);
  if(e.type==='tool_execution_end'&&e.isError)this.notice='工具失败：'+clean(e.toolName);
  this.refresh();}
  finish(action?:Action){if(!this.alive||this.actionBusy)return;if(action&&this.onAction&&!['switch','reload','abort','native-exit','pi'].includes(action.kind)){this.actionBusy=true;this.config.drafts[this.sessionKey()]=this.editor.getExpandedText();try{saveConfig(this.config);}catch{}void this.onAction(action).catch(error=>{this.notice='操作失败：'+clean(error);this.refresh();}).finally(()=>{this.actionBusy=false;this.refresh();});return;}this.alive=false;clearTimeout(this.draftTimer);clearTimeout(this.completionTimer);clearTimeout(this.renderTimer);clearInterval(this.spinnerTimer);this.config.drafts[this.sessionKey()]=this.editor.getExpandedText();try{saveConfig(this.config)}catch{}this.done(action);}
  dispose(){if(this.alive){this.alive=false;clearTimeout(this.draftTimer);clearTimeout(this.completionTimer);clearTimeout(this.renderTimer);clearInterval(this.spinnerTimer);try{saveConfig(this.config)}catch{}}}
+ // 状态行跟着回复流走：注入到最后一个 ◆ Kepos 总理 名牌之下、正文之前。
+ // 没有任何活动数据（回合之间的空档）就不注入——空状态行挂在旧名牌下只会误导。
+ private withActivityBlock(lines:string[]):string[]{
+  if(!this.activityDone&&!this.traceSteps.length&&!this.activitySignal)return lines;
+  const state=this.activityDone?this.activityDone.state:'working';
+  const block=renderActivityBlock({state,ms:this.activityDone?.ms,signal:this.activitySignal,steps:this.traceSteps,open:this.traceOpen,width:Math.max(12,this.centerWidth-6),now:Date.now(),startedAt:this.requestStartedAt,motion:this.config.motion!==false});
+  const styled=block.map((line,i)=>{const kind=i===0?(state==='working'?'accent':state==='done'?'success':state==='aborted'?'warning':'error'):line.trimStart().startsWith('✓')?'success':line.trimStart().startsWith('✕')?'error':line.trimStart().startsWith('┊')?'accent':'dim';return this.theme.fg(kind,line);});
+  let at=-1;for(let i=lines.length-1;i>=0;i--){if(lines[i].includes('◆ Kepos 总理')){at=i;break;}}
+  if(at<0)return lines;
+  return [...lines.slice(0,at+1),...styled,...lines.slice(at+1)];
+ }
  history(width:number){const preview=this.preview();let entries:any[];
  try{if(preview){if(!this.previewCache.has(preview.path))this.previewCache.set(preview.path,SessionManager.open(preview.path).getBranch());entries=this.previewCache.get(preview.path)!;}else{const key=this.sessionKey();if(this.entriesDirty||!this.entriesCache||key!==this.entriesKey){this.entriesCache=this.ctx.sessionManager.getBranch();this.entriesKey=key;this.entriesDirty=false;}entries=this.entriesCache!;}}catch(e){return ['读取历史失败：'+clean(e)];}
  const key=[preview?.path||this.sessionKey(),width,entries.length,this.toolMode,this.thinkingHidden?1:0,entries[entries.length-1]?.id||entries[entries.length-1]?.message?.timestamp||''].join('|');
@@ -424,11 +439,11 @@ export class Desk {
    const baseKey='live|'+key;
    if(baseKey!==this.liveBaseCacheKey){this.liveBaseCache=historyLines(entries.filter(e=>e!==liveEntry&&e.message!==this.live),width,this.toolMode,this.theme,{thinkingHidden:this.thinkingHidden});this.liveBaseCacheKey=baseKey;}
    const base=this.liveBaseCache[0]?.startsWith('尚无消息。')?[]:this.liveBaseCache;
-   return [...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme,{thinkingHidden:this.thinkingHidden})];
+   return this.withActivityBlock([...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme,{thinkingHidden:this.thinkingHidden})]);
   }
  }
- if(!preview&&this.live&&!(this.live.role==='custom'&&this.live.display===false)&&!entries.some(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp))){const base=this.historyCache[0]?.startsWith('尚无消息。')?[]:this.historyCache;return [...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme)];}
- return this.historyCache;
+ if(!preview&&this.live&&!(this.live.role==='custom'&&this.live.display===false)&&!entries.some(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp))){const base=this.historyCache[0]?.startsWith('尚无消息。')?[]:this.historyCache;return this.withActivityBlock([...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme)]);}
+ return this.withActivityBlock(this.historyCache);
  }
  render(width:number):string[]{const begin=performance.now();try{return this.paintPage(this.renderFrame(width),width);}catch(error){
   // Pi does not guard overlay rendering; a thrown frame would end the whole process.
@@ -607,7 +622,7 @@ export class Desk {
  }
  // 底栏：只取标记了 footer 的键位，按上下文裁剪；点击区域与标签同一份来源。
  footerHints(){return KEY_HINTS.filter(hint=>hint.footer&&this.hintVisible(hint));}
- helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','/theme 切换主题（默认 / 深色 / 浅色，即时生效）','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 打开右侧书案（不跳页） · Esc 关书案 · Ctrl+X 取消选中任务','书案：选中即可直接输入，Enter 送达该代表（任务已结束则按原配置开新一轮）；滚轮滚动产出','议会输入（未开书案）：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 推选代理总代 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','代理总代是推选兼任职务（F2 → 推选代理总代），不占代表席位','切换项目将切换真实工作目录','','/attach 附加文件：docx / pdf / pptx / xlsx / epub / zip / 图片 / 文本','/attach <路径> 直接附加；粘贴文件路径也会自动识别。发送后附件自动清空。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
+ helpLines(){return ['操作指南','','/ 输入：命令/Skill补全，未知命令不发送','/reload 真重载 · 原生命令必要时转交Pi','/pi 进入 Pi 命令行；输入 /kepos 重新打开议案','/theme 切换主题（默认 / 深色 / 浅色，即时生效）','F7 或 /copy：复制完整最新回答','正文拖选：松开自动复制；Shift拖选用终端','输入区：直接打字，Enter 发送','Shift+Enter：换行（依赖终端协议）','F6：输入 → 项目 → 代表席；议会内 席位 → 列表 → 输入','F10：打开 48 席议会','议会内：↑↓ 选席 · Enter 打开右侧书案（不跳页） · Esc 关书案 · Ctrl+X 取消选中任务','书案：选中即可直接输入，Enter 送达该代表（任务已结束则按原配置开新一轮）；滚轮滚动产出','议会输入（未开书案）：F6 切到输入后，选中席位时消息直达该代表 · 未选中发主 Agent','议会列表：Tab 或 F8 打开 · F8 换筛选（活跃/待处理/全部）','议会列表：/ 过滤关键词 · Enter 定位详情 · v 查看完整产出','F11：专注阅读（中栏最大化）','鼠标：点项目选择，双击会话进入','双击代表：查看其任务或配置','项目区：↑↓ 选择，Enter 展开/进入','PgUp/PgDn/滚轮：滚动历史（上滚即暂停跟随），Ctrl+End 回最新并恢复','F2：新项目 / 新对话 / 配置 / 推选代理总代 / 手动分派','Ctrl+K：命令面板（可搜索）','F3 当前会话 · F8 跨项目 · F9 长程计划','Ctrl+←/→：切换任务','F5：展开 / 折叠完整工具输出','Kepos 名牌下的状态行：点阵与动词随总理动作变化 · 点击展开/折叠本回合执行轨迹','F4：切换当前主 Agent 模型','Ctrl+X：议案中止整轮；议会取消选中任务','Esc：逐层返回：详情 → 列表 → 席位 → 议案','','代表：只读，默认每项 5 分钟、每 5 分钟复核，最多并行 48 个','超过 20 分钟必须由人类批准长程计划','配置不是任务，分派后才启动进程；48 个 Worker 槽位按队列调度','代理总代是推选兼任职务（F2 → 推选代理总代），不占代表席位','切换项目将切换真实工作目录','','/attach 附加文件：docx / pdf / pptx / xlsx / epub / zip / 图片 / 文本','/attach <路径> 直接附加；粘贴文件路径也会自动识别。发送后附件自动清空。','再次按 F1 关闭帮助。','','用量详情 '+usageText(this.metrics,this.ctx.getContextUsage?.(),this.ctx.model)];}
  private graphSnapshot():GraphViewSnapshot{return this.graph?.snapshot()||{agents:this.config.agents,tasks:this.pool.tasks as any};}
  private renderGraphFrame(width:number,rows:number):string[]{
   this.graphWidth=width;
@@ -683,7 +698,7 @@ export class Desk {
  let history=this.history(Math.max(8,this.centerWidth-6));
  if(history.length===1&&history[0].startsWith('尚无消息。')&&!this.live){const inner=['',PRODUCT_NAME+' · 议案','把目标交给主 Agent，把执行过程掌握在手里。','', '项目  '+clean(this.ctx.cwd),this.ctx.model?.id&&this.ctx.model.id!=='unknown'?'模型  '+clean(this.ctx.model.id):'尚未连接模型 · 输入 /login 开始','', '直接输入目标，Enter 开始','F2 配置专家与任务 · F3 当前会话','F8 跨项目监控 · F9 长程计划','F10 打开议会：48 席协作一目了然','', '子任务默认 5 分钟；超过 20 分钟需进入计划并经你批准。'];const bw=Math.max(8,this.centerWidth-6);const fill=Math.max(1,bw-visibleWidth('─ Kepos 议案 ')-2);history=[this.theme.fg('borderMuted','╭─ '+strong('Kepos 议案')+' '+'─'.repeat(fill)+'╮'),...inner.map(l=>this.theme.fg('borderMuted','│ ')+fit(l,bw-4)+this.theme.fg('borderMuted',' │')),this.theme.fg('borderMuted','╰'+'─'.repeat(Math.max(1,bw-2))+'╯')];}
 
- if((this.sending||this.activity.length||this.thinking)&&!this.help&&!this.taskView&&!this.missionView)history=[...history,'',...(this.thinking?['┊ 正在整理思路…']:[]),...this.activity];
+ // 回合活动不再追加到历史末尾：状态行与轨迹已内联到 Kepos 总理名牌之下（withActivityBlock）。
  if(this.help)history=this.helpLines();
  // 无任务席位的书案：只显示席位基础信息，不进任务分桶（那里没有它的条目）。
  if(this.taskView&&!this.help&&this.memberProfile){history=this.memberLines(this.config.agents.find(a=>a.id===this.memberProfile!.id||a.name===this.memberProfile!.name));}
@@ -904,6 +919,8 @@ export class Desk {
  const centerX=(this.leftWidth?this.leftWidth+3:0)+2;const inTranscript=e.y>=3&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+Math.max(1,this.centerWidth-4)&&this.focus!=='crew';
  // 点击工具行/思考行：整类展开或折叠（思考默认展开、工具默认折叠；点一处、全部生效）。
  if(e.type==='click'&&inTranscript){const row=stripVTControlCharacters(this.visibleCenter[e.y-3]||'');
+  // Kepos 名牌下的状态行：点阵开头或 settle 定格符——点击展开/折叠本回合执行轨迹。
+  if(/^[·●]{3} /.test(row)||row.startsWith('✓ ')||row.startsWith('✕ ')||row.startsWith('◼ ')){this.traceOpen=!this.traceOpen;this.historyCacheKey='';this.notice=this.traceOpen?'已展开本回合执行轨迹':'已折叠执行轨迹';this.refresh();return{handled:true};}
   if(row.startsWith('┊ ▸')||row.startsWith('▏')){this.expandedTools=!this.expandedTools;this.config.expandedTools=this.expandedTools;try{saveConfig(this.config);}catch{}this.notice=this.expandedTools?'工具输出已全部展开 · 点击或 F5 折叠':'工具输出已全部折叠 · 点击展开';this.refresh();return{handled:true};}
   if(row.startsWith('▎')){this.thinkingHidden=!this.thinkingHidden;this.notice=this.thinkingHidden?'思考过程已折叠 · 点击展开':'思考过程已展开 · 点击折叠';this.refresh();return{handled:true};}}
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-3,col:e.x-centerX},end:{row:e.y-3,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}

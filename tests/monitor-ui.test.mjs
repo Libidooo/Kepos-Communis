@@ -195,15 +195,25 @@ test('side panels carry the card background while the transcript keeps the page 
  desk.dispose();
 });
 
-test('mode chip, panel subtitles and stamped activity stream render',()=>{
- const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>[],getEntries:()=>[]}};
+test('mode chip, panel subtitles and the activity line under the premier card',()=>{
+ const entries=[{id:'a1',type:'message',message:{role:'assistant',content:[{type:'text',text:'上一轮结论'}],timestamp:1}}];
+ const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=>'local',getSessionName:()=>'fixture',getBranch:()=>entries,getEntries:()=>[]}};
  const desk=new Desk({terminal:{rows:35},requestRender(){}},{fg:(_c,s)=>s},ctx,{projects:[],agents:[{id:'a',name:'Alice',model:'m'}],drafts:{},folded:[],sessionLinks:{}},[],{tasks:[],children:new Map()},()=>{},()=>{});
  const rows=desk.render(120);
  assert.ok(rows.at(-2)?.includes('-- 输入 --'),'vim-style mode chip');
  assert.ok(rows.some(l=>l.includes('代表席 // 1')),'crew panel subtitle');
  desk.event({type:'agent_start'});
+ desk.event({type:'message_start',message:{role:'assistant',content:[{type:'text',text:''}],timestamp:Date.now()}});
  desk.event({type:'tool_execution_start',toolName:'read'});
- assert.ok(desk.render(120).join('\n').includes('▸ +0.0s read'),'stamped activity line');
+ const working=desk.render(120).join('\n').replace(/\x1b\[[0-9;]*m/g,'');
+ assert.ok(/[●·]{3} /.test(working),'lattice dots run beside the verb');
+ assert.ok(working.includes('正在翻阅案卷'),'brand verb follows the running tool');
+ assert.ok(working.includes('▸ 1 步'),'the trace chevron counts the step');
+ desk.event({type:'tool_execution_end',toolName:'read'});
+ desk.event({type:'agent_settled'});
+ const settled=desk.render(120).join('\n').replace(/\x1b\[[0-9;]*m/g,'');
+ assert.ok(settled.includes('✓ 已完成 ·'),'settled line freezes the duration');
+ assert.ok(settled.includes('▸ 1 步'),'settled trace stays reachable');
  desk.dispose();
 });
 
