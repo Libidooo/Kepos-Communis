@@ -393,6 +393,44 @@ test('tool output folds to one summary line but failures always stay expanded', 
 
   const failedSummary = historyLines(failed, 80, 'summary', plainTheme);
   assert.ok(failedSummary.length > summary.length, 'failed tool output is not collapsed');
+
+// 思考默认展开，折叠后留一行占位作点击入口；占位与正文都以 ▎ 开头，是同一类点击目标。
+test('thinking expands by default and collapses to a clickable placeholder', async () => {
+  const { historyLines } = await import('../dist/terminal/desk.js');
+  const plainTheme = { fg: (_c, v) => v };
+  const entries = [{ type: 'message', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '长思考第一行\n长思考第二行' }, { type: 'text', text: '答案' }] } }];
+  const shown = historyLines(entries, 80, 'summary', plainTheme);
+  assert.ok(shown.some(line => line.includes('长思考第二行')), 'thinking is expanded by default');
+  const hidden = historyLines(entries, 80, 'summary', plainTheme, { thinkingHidden: true });
+  assert.ok(hidden.some(line => line.includes('思考已折叠')), 'placeholder row remains as the entry point');
+  assert.ok(!hidden.some(line => line.includes('长思考第二行')), 'thinking body is hidden');
+});
+
+// 点击一条工具行/思考行 = 整类切换：点一处、全部生效（与 F5 同源）。
+test('clicking a tool row or thinking row toggles the whole class', async () => {
+  const { Desk } = await import('../dist/terminal/desk.js');
+  const entries = [
+    { type: 'message', message: { role: 'user', content: '查一下' } },
+    { type: 'message', message: { role: 'toolResult', toolName: 'bash', content: [{ type: 'text', text: 'line-1\nline-2\nline-3' }] } },
+    { type: 'message', message: { role: 'assistant', content: [{ type: 'thinking', thinking: '想想\n再想想' }, { type: 'text', text: '结论' }] } },
+  ];
+  const ctx = { cwd: home, isIdle: () => true, model: { id: 'fixture' }, sessionManager: { getSessionFile: () => '/fixture', getSessionId: () => 'local', getSessionName: () => 'fixture', getBranch: () => entries, getEntries: () => [] } };
+  const desk = new Desk({ terminal: { rows: 35 }, requestRender() {} }, { fg: (_c, s) => s, bg: (_c, s) => s }, ctx, { projects: [], agents: [], drafts: {}, folded: [], sessionLinks: {} }, [], { tasks: [], children: new Map() }, () => {}, () => {});
+  desk.render(120);
+  const strip = line => line.replace(/\x1b\[[0-9;]*m/g, '');
+  const toolRow = desk.visibleCenter.findIndex(line => strip(line).startsWith('▏'));
+  const thinkRow = desk.visibleCenter.findIndex(line => strip(line).startsWith('▎'));
+  assert.ok(toolRow >= 0, 'a collapsed tool row is on screen');
+  assert.ok(thinkRow >= 0, 'a thinking row is on screen');
+  const centerX = 22 + 3 + 2; // 左栏 22 + 分隔 3 + 边距 2
+  desk.handleMouse({ type: 'click', x: centerX + 2, y: toolRow + 3, button: 'left', clickCount: 1 });
+  assert.equal(desk.expandedTools, true, 'one click expands all tool output');
+  desk.handleMouse({ type: 'click', x: centerX + 2, y: thinkRow + 3, button: 'left', clickCount: 1 });
+  assert.equal(desk.thinkingHidden, true, 'one click collapses all thinking');
+  const frame = desk.render(120).join('\n');
+  assert.ok(frame.includes('思考已折叠'), 'placeholder replaces the thinking body');
+  desk.dispose();
+});
   assert.ok(failedSummary.some(line => line.includes('line-39')), 'failed output stays readable to the end');
 });
 

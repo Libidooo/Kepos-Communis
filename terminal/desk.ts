@@ -20,7 +20,7 @@ import { describeCandidate } from './watch.ts';
 // stateColor 会返回 approval/queue/teal 等 Pi theme.fg 不认的色（graph-view 直出 SGR）；desk 侧映射到安全语义色。
 const STATE_COLOR_MAP: Record<string,string>={approval:'warning',queue:'accent',teal:'muted',blue:'muted',mauve:'muted',idle:'muted'};
 const safeStateColor=(color:string)=>STATE_COLOR_MAP[color]??color;
-export function historyLines(entries:any[],width:number,expanded:boolean|'summary'|'full'=false,theme?:any):string[]{
+export function historyLines(entries:any[],width:number,expanded:boolean|'summary'|'full'=false,theme?:any,opts:{thinkingHidden?:boolean}={}):string[]{
  const F=(color:string,value:string)=>theme?.fg?theme.fg(color,value):value;
  // 斜体辅助：工具调用与模型正文/用户输入在字形上也分层。
  const I=(value:string)=>`\x1b[3m${value}\x1b[23m`;
@@ -57,13 +57,15 @@ export function historyLines(entries:any[],width:number,expanded:boolean|'summar
    const collapse=m.role==='toolResult'&&toolMode==='summary'&&!failedTool;
    const legacyFold=m.role==='toolResult'&&toolMode==='legacy'&&raw.length>12;
    const selected=collapse
-    ?[`${raw[0]?.trim().slice(0,Math.max(20,width-24))||'(无输出)'}${raw.length>1?` … ${raw.length-1} 行`:''} · F5 展开`]
-    :legacyFold?[...raw.slice(0,5),`… 已折叠 ${raw.length-10} 行 · F5 展开工具输出`,...raw.slice(-5)]:raw;
+    ?[`${raw[0]?.trim().slice(0,Math.max(20,width-24))||'(无输出)'}${raw.length>1?` … ${raw.length-1} 行`:''} · 点击或 F5 展开`]
+    :legacyFold?[...raw.slice(0,5),`… 已折叠 ${raw.length-10} 行 · 点击或 F5 展开工具输出`,...raw.slice(-5)]:raw;
   // 工具产出：muted + 左侧 ▏ 竖线，与模型回答明确分层。失败用 error 色标出，避免被折叠掩盖。
   const outColor=failedTool?'error':'muted';
   for(const l of selected)lines.push(...wrapTextWithAnsi(l.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,''),Math.max(4,width-2)).map(w=>F(outColor,'▏ '+w)));}else if(b.type==='toolCall')lines.push(I(F('muted','┊ ▸ '+clean(b.name))));
-  // 思考过程：dim + ▎ 竖线，与回答正文区分。
-  else if(b.type==='thinking'){const raw=String((b as any).thinking??b.text??'');for(const l of raw.split('\n'))lines.push(...wrapTextWithAnsi(l.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,''),Math.max(4,width-2)).map(w=>F('dim','▎ ')+F('syntaxOperator',w)));}else if(b.type==='image')lines.push('[图片附件]');}
+  // 思考过程：dim + ▎ 竖线，与回答正文区分。默认展开；点击折叠后留一行占位作展开入口。
+  else if(b.type==='thinking'){const raw=String((b as any).thinking??b.text??'');
+   if(opts.thinkingHidden){lines.push(F('dim','▎ 思考已折叠 · 点击展开'));}
+   else for(const l of raw.split('\n'))lines.push(...wrapTextWithAnsi(l.replace(/[\x00-\x08\x0b-\x1f\x7f-\x9f]/g,''),Math.max(4,width-2)).map(w=>F('dim','▎ ')+F('syntaxOperator',w)));}else if(b.type==='image')lines.push('[图片附件]');}
  if(m.errorMessage)lines.push('错误：'+clean(m.errorMessage));lines.push('');}
  return lines.length?lines:['尚无消息。直接在下方输入，Enter 发送给主 Agent。'];
 }
@@ -120,7 +122,7 @@ type Action={kind:string;path?:string;text?:string;id?:string;draft?:string};
 export class Desk {
  // 工具展示模式：默认 summary（一行摘要），F5 切到 full。
  get toolMode():'summary'|'full'{return this.expandedTools?'full':'summary';}
- editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; policyRegion:{start:number;end:number}|null=null; memberProfile:{id:string;name:string}|null=null; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
+ editor:Editor; attachments:any[]=[]; attachBusy=false; focus:'input'|'projects'|'crew'='input'; focused=true; alive=true; selected=0; crewIndex=0; crewOffset=0; rightOffset=0; readStart:number|null=null; lastSubmitted='';savedDraftBeforeCommand=''; sawStart=false; requestStartedAt=0; firstTokenAt=0; lastTurnMetrics:{ttftMs:number;totalMs:number}|null=null; expandedTools=false; thinkingHidden=false; _notice='直接输入即可对话 · F10 议会 · F2 操作菜单 · F1 帮助';noticeAt=0;maximize=false; help=false; taskView=false; taskIndex=0; live:any; sending=false; lastPreview=''; previewCache=new Map<string,any[]>(); latestEntries:any[]=[]; width=120; bodyHeight=20; headerHeight=3; inputY=0; leftWidth=24; centerWidth=60; rightWidth=30; inputWidth=60; editorHeight=4; narrow=false; pulse=0; activity:string[]=[]; thinking=false; displayLines:string[]=[]; historyCacheKey=''; historyCache:string[]=[]; footerRegions:{start:number;end:number;key:string}[]=[]; policyRegion:{start:number;end:number}|null=null; memberProfile:{id:string;name:string}|null=null; folded:Set<string>; draftTimer:any; completionTimer:any; renderTimer:any; renderPending=false; actionBusy=false;selection:{anchor:{row:number;col:number};end:{row:number;col:number};lines:string[];active:boolean}|null=null;visibleCenter:string[]=[];metricsDirty=true;metrics=sessionUsage([]);spinnerTimer:any;_noticeUrgent=false;
  // notice 统一走 setter 盖时间戳。urgent 消息（失败 / 需人工 / 预算停止）粘住，
  // 只有 Esc 或用户下一个动作才清掉；普通消息 4 秒后让位给按键提示。
  // urgent 在场时普通通知一律丢弃：失败/门禁/预算必须被人看见，不能被"正在调用 X"顶掉。
@@ -405,8 +407,8 @@ export class Desk {
  dispose(){if(this.alive){this.alive=false;clearTimeout(this.draftTimer);clearTimeout(this.completionTimer);clearTimeout(this.renderTimer);clearInterval(this.spinnerTimer);try{saveConfig(this.config)}catch{}}}
  history(width:number){const preview=this.preview();let entries:any[];
  try{if(preview){if(!this.previewCache.has(preview.path))this.previewCache.set(preview.path,SessionManager.open(preview.path).getBranch());entries=this.previewCache.get(preview.path)!;}else{const key=this.sessionKey();if(this.entriesDirty||!this.entriesCache||key!==this.entriesKey){this.entriesCache=this.ctx.sessionManager.getBranch();this.entriesKey=key;this.entriesDirty=false;}entries=this.entriesCache!;}}catch(e){return ['读取历史失败：'+clean(e)];}
- const key=[preview?.path||this.sessionKey(),width,entries.length,this.toolMode,entries[entries.length-1]?.id||entries[entries.length-1]?.message?.timestamp||''].join('|');
- if(key!==this.historyCacheKey){this.historyCache=historyLines(entries,width,this.toolMode,this.theme);this.historyCacheKey=key;}
+ const key=[preview?.path||this.sessionKey(),width,entries.length,this.toolMode,this.thinkingHidden?1:0,entries[entries.length-1]?.id||entries[entries.length-1]?.message?.timestamp||''].join('|');
+ if(key!==this.historyCacheKey){this.historyCache=historyLines(entries,width,this.toolMode,this.theme,{thinkingHidden:this.thinkingHidden});this.historyCacheKey=key;}
  // While the assistant reply streams, its message mutates in place inside the branch.
  // The cached lines would keep the stale (often empty) snapshot, and the fallback
  // below skips messages already present in the branch — together that hid all
@@ -415,9 +417,9 @@ export class Desk {
   const liveEntry=entries.find(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp));
   if(liveEntry){
    const baseKey='live|'+key;
-   if(baseKey!==this.liveBaseCacheKey){this.liveBaseCache=historyLines(entries.filter(e=>e!==liveEntry&&e.message!==this.live),width,this.toolMode,this.theme);this.liveBaseCacheKey=baseKey;}
+   if(baseKey!==this.liveBaseCacheKey){this.liveBaseCache=historyLines(entries.filter(e=>e!==liveEntry&&e.message!==this.live),width,this.toolMode,this.theme,{thinkingHidden:this.thinkingHidden});this.liveBaseCacheKey=baseKey;}
    const base=this.liveBaseCache[0]?.startsWith('尚无消息。')?[]:this.liveBaseCache;
-   return [...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme)];
+   return [...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme,{thinkingHidden:this.thinkingHidden})];
   }
  }
  if(!preview&&this.live&&!(this.live.role==='custom'&&this.live.display===false)&&!entries.some(e=>e.message===this.live||(e.message?.role===this.live.role&&e.message?.timestamp===this.live.timestamp))){const base=this.historyCache[0]?.startsWith('尚无消息。')?[]:this.historyCache;return [...base,...historyLines([{type:'message',message:this.live}],width,this.toolMode,this.theme)];}
@@ -886,6 +888,10 @@ export class Desk {
  // 点书案面板即聚焦输入：输入后 Enter 直达该代表。
  if(this.graphView&&this.councilDesk&&this.deskWidth&&e.x>=this.deskX&&e.type==='press'){this.graphFocus='input';this.setFocus('input');this.refresh();return{handled:true,focus:true};}
  const centerX=(this.leftWidth?this.leftWidth+3:0)+2;const inTranscript=e.y>=3&&e.y<this.inputY&&e.x>=centerX&&e.x<centerX+Math.max(1,this.centerWidth-4)&&this.focus!=='crew';
+ // 点击工具行/思考行：整类展开或折叠（思考默认展开、工具默认折叠；点一处、全部生效）。
+ if(e.type==='click'&&inTranscript){const row=stripVTControlCharacters(this.visibleCenter[e.y-3]||'');
+  if(row.startsWith('┊ ▸')||row.startsWith('▏')){this.expandedTools=!this.expandedTools;this.notice=this.expandedTools?'工具输出已全部展开 · 点击或 F5 折叠':'工具输出已全部折叠 · 点击展开';this.refresh();return{handled:true};}
+  if(row.startsWith('▎')){this.thinkingHidden=!this.thinkingHidden;this.notice=this.thinkingHidden?'思考过程已折叠 · 点击展开':'思考过程已展开 · 点击折叠';this.refresh();return{handled:true};}}
  if(e.type==='press'&&inTranscript&&e.button==='left'){this.selection={anchor:{row:e.y-3,col:e.x-centerX},end:{row:e.y-3,col:e.x-centerX},lines:[...this.visibleCenter],active:true};return{handled:true,capture:true};}
  if(this.selection?.active&&(e.type==='drag'||e.type==='release')){this.selection.end={row:Math.max(0,Math.min(this.bodyHeight-3,e.y-3)),col:Math.max(0,Math.min(Math.max(1,this.centerWidth-4),e.x-centerX))};if(e.type==='release'){this.selection.active=false;const text=this.selectedText();if(text)void this.copyText(text);}this.refresh();return{handled:true};}
  if((e.type==='click'||e.type==='press')&&e.y===(this.tui.terminal.rows||30)-1){const region=this.footerRegions.find(r=>e.x>=r.start&&e.x<r.end);if(region){if(e.type==='press')return{handled:true};const bytes=keyBytes[region.key];if(bytes)this.handleInput(bytes);return{handled:true};}}
