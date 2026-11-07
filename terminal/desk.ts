@@ -13,6 +13,7 @@ import { renderGraph, renderCouncilList, councilTasks, countActive, countPending
 import { taskBuckets, WAITING_LABEL } from './monitor.ts';
 import { deliveryNote, representativeBriefing } from './briefing.ts';
 import { describeCandidate } from './watch.ts';
+import { branchedSpec } from './branched-list.ts';
  // pi-tui 的省略号被 \x1b[0m 包裹，会打断铺底背景（红框 bug 根因）：自行截断并追加无装饰省略号。
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
@@ -711,9 +712,16 @@ export class Desk {
  if(this.readStart===null)this.latestEntries=history.slice(-historyHeight);else{this.readStart=Math.max(0,Math.min(this.readStart,Math.max(0,history.length-historyHeight)));this.latestEntries=history.slice(this.readStart,this.readStart+historyHeight);}
  const crewVisibleCount=Math.max(1,Math.floor(Math.max(1,contentRows-5)/3));this.crewOffset=Math.max(0,Math.min(this.crewOffset,Math.max(0,this.config.agents.length-crewVisibleCount)));if(this.crewIndex<this.crewOffset)this.crewOffset=this.crewIndex;if(this.crewIndex>=this.crewOffset+crewVisibleCount)this.crewOffset=this.crewIndex-crewVisibleCount+1;const visibleCrew=this.config.agents.slice(this.crewOffset,this.crewOffset+crewVisibleCount);const dividerLeft=this.theme.fg('dim','┄'.repeat(Math.max(1,this.leftWidth-4)));const dividerRight=this.theme.fg('dim','┄'.repeat(Math.max(1,this.rightWidth-4)));const left=[this.theme.fg('accent',`● 议会 · ${this.sending?'工作中':'就绪'}`),this.theme.fg('dim',this.ctx.model?.id&&this.ctx.model.id!=='unknown'?(this.ctx.model?.provider?clean(this.ctx.model.provider)+'/':'')+clean(this.ctx.model.id):'尚未登录'),dividerLeft,...visibleCrew.flatMap((a,i)=>{const index=this.crewOffset+i;const task=[...this.sessionTasks()].reverse().find(t=>t.agent===a.name);const running=task&&!terminalStates.has(task.status||'');const color=task?safeStateColor(stateColor(task as any,0)):'muted';const mark=task?stateMark(task as any):'○';const picked=this.focus==='crew'&&this.crewIndex===index;return [this.theme.fg(picked?'accent':color,picked?'›':mark)+' '+clean(a.name)+(running&&task?.started?this.theme.fg('dim',` · ${Math.max(1,Math.round((Date.now()-task.started)/1000))}s`):''),this.theme.fg(task?color:'dim',`  ${task?.status||'未分派'}${task?.title?' · '+clean(task.title):''}`),this.theme.fg('toolTitle',`    ${clean((a.model||'').split('/').pop()||'未配置模型')}`)];}),...(this.config.agents.length>crewVisibleCount?[this.theme.fg('dim',`  代表 ${this.crewOffset+1}-${Math.min(this.config.agents.length,this.crewOffset+crewVisibleCount)} / ${this.config.agents.length}`)]:[]),this.theme.fg('dim','F2 添加/编辑/分派')];
  const list=this.rows();this.selected=Math.max(0,Math.min(this.selected,list.length-1));const available=Math.max(1,contentRows-2);if(this.selected<this.rightOffset)this.rightOffset=this.selected;if(this.selected>=this.rightOffset+available)this.rightOffset=this.selected-available+1;
- // Every row needs an explicit colour: the side panels are tinted, so a bare string inherits
- // the terminal default and can vanish on a light background.
- const right=[this.theme.fg('dim','F2 新项目 · 新对话'),dividerRight,...list.slice(this.rightOffset,this.rightOffset+available).map((r:any,i)=>{const selected=this.selected===this.rightOffset+i;const active=r.kind==='session'&&r.path===this.ctx.sessionManager.getSessionFile();const marker=r.kind==='project'?(this.folded.has(r.path)?'▸ ':'▾ '):active?'● ':'○ ';return this.theme.fg(selected?'accent':active?'success':'text',`${selected?'›':' '} ${marker}${clean(r.label)}`);})];
+ // 右栏树：BranchedMenu 的移植（视觉语法与判定规则见 terminal/branched-list.ts）。
+ // 平铺行模型与交互不动，只换字符与配色：左轨贯通，会话从轨道弯出（末项圆弯 ╰），
+ // 当前会话整条分支用 accent（reach 线），含它的开放分组轨道亮 ▎（marker）。
+ const currentFile=this.ctx.sessionManager.getSessionFile();
+ const right=[this.theme.fg('dim','F2 新项目 · 新对话'),dividerRight,...list.slice(this.rightOffset,this.rightOffset+available).map((r:any,i)=>{const flat=this.rightOffset+i;
+  const spec=branchedSpec({row:r,isLastChild:r.kind==='session'&&list[flat+1]?.kind!=='session',open:r.kind==='session'||!this.folded.has(r.path),holdsActive:r.kind==='project'&&!this.folded.has(r.path)&&this.sessions.some(s=>s.cwd===r.path&&s.path===currentFile),active:r.kind==='session'&&r.path===currentFile,selected:this.selected===flat,supportsBg:!!this.theme.bg});
+  // Every row needs an explicit colour: the side panels are tinted, so a bare string inherits
+  // the terminal default and can vanish on a light background.（配色逐段给足，沿用原约束）
+  const line=fit(this.theme.fg(spec.railToken,spec.rail)+(r.kind==='session'?this.theme.fg(spec.branchToken,spec.branch)+' ':'')+this.theme.fg(spec.labelToken,clean(r.label)),Math.max(6,this.rightWidth-4));
+  return spec.selected&&this.theme.bg?this.theme.bg('selectedBg',line):line;})];
  this.visibleCenter=[];const body:string[]=[];const frameColor=(focused:boolean)=>focused?'borderAccent':'borderMuted';
  // 侧栏铺 card 底色（kepos-dark 的 toolSuccessBg 值等于 export.cardBg），中栏保持深底突出正文。
  const sideBg=(s:string)=>this.theme.bg?this.theme.bg('toolSuccessBg',s):s;

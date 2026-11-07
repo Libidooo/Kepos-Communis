@@ -99,7 +99,8 @@ try:
  wait_for('输入区',35)
  if '--smoke' in sys.argv:
   start=len(output());write('\x1bOP');wait_for('再次按 F1 关闭帮助',25,start);write('\x1bOP');time.sleep(.4)
-  start=len(output());write('\x1bOQ');wait_for('操作菜单',10,start);write('\x1b');time.sleep(.4)
+  start=len(output());write('\x1bOQ');wait_for('对话与项目',10,start);write('\x1b');time.sleep(.4)
+  # F2 菜单自 1f58146 起是两级分组式：先选类别（对话与项目/…），令牌取首类别名。
   if '--profiles' in sys.argv:
    start=len(output());write('\x1bOQ');wait_for('操作菜单',10,start);write('\x1b[B'*3+'\r');wait_for('编辑成员',10,start);write('\r')
    time.sleep(.3);write('\x1b[B'*2+'\r');wait_for('修订历史',10,start);write('\x1b[B\r');wait_for('FIRST_ROLE_UI_FIXTURE',10,start);write('\r');wait_for('配置已恢复',10,start)
