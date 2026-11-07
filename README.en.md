@@ -55,6 +55,8 @@ kepos
 
 Build the package from source with `npm pack`. The default data directory is `~/.kepos`; isolate setups with `kepos --home <dir>`. See the [installation guide](docs/installation.md) for checksums, relay endpoints and troubleshooting.
 
+A `npm warn deprecated node-domexception@…` during install is an upstream transitive-dependency notice from Google's auth chain — **a warning, not an error**; `added N packages` means the install succeeded.
+
 </details>
 
 <a id="features"></a>

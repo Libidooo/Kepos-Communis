@@ -73,6 +73,8 @@ kepos
 
 校验值、中转端点、凭据和排错见[安装指南](docs/installation.md)。
 
+安装时的 `npm warn deprecated node-domexception@…` 是 Google 认证链传递依赖的弃用提醒——**警告不是错误**，看到 `added N packages` 即安装成功。
+
 </details>
 
 <a id="features"></a>

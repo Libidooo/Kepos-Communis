@@ -67,6 +67,15 @@ kepos
 
 安装后的包直接运行编译产物，不需要 TypeScript。请使用上述源码步骤或 `.tgz` 安装；当前未验证直接从 Git 地址全局安装的构建流程。
 
+### 安装时的警告说明
+
+安装过程可能输出以下**警告**，它们不是错误，安装会正常完成（看到 `added N packages` 即成功）：
+
+- `npm warn deprecated node-domexception@1.0.0` —— 来自 Google 认证链的传递依赖（`@google/genai → google-auth-library → gaxios → node-fetch`），上游更新后自然消失，不影响运行。请勿手动 override 它：依赖它的 `fetch-blob` 需要旧版 API，强行换新版会在运行时破坏认证。
+- 部分安全增强的 npm 配置会提示 "install scripts not yet covered by allowScripts"（涉及 `@google/genai` 与 `protobufjs` 的空操作脚本）——默认拦截即可，不影响功能。
+
+真正的安装失败以 `npm error` 开头并中断（例如 Windows 下已存在同名命令时提示 `EEXIST`，按提示处理或换 `--force`）。
+
 ### 校验
 
 安装前计算 SHA-256，并与交付者通过可信渠道提供的值核对。按系统选一条命令：
