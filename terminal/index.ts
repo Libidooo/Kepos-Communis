@@ -16,6 +16,7 @@ import { ownedUI } from './dialogs.ts';
 import { boundedJson, boundedText, formatTokens } from './presentation.ts';
 import { outputPage, receiptView } from './result-view.ts';
 import { agentRevision } from './profiles.ts';
+import { summarizeRole } from './profile-file.ts';
 import { COUNCIL_ROLES, councilLocale, councilRole, roleName, roleScope, roleOptions, rolePrompt, roleDomain, domainName, type CouncilRoleKey } from './council-roles.ts';
 import { MissionScheduler } from './scheduler.ts';
 import { taskSummaries, taskEvidence, planSummaries, planTree, agentRisk, awaitingHuman } from './monitor.ts';
@@ -557,7 +558,13 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  // 每轮都全量塞入 MCP 治理、表决、计划门禁的规则，会白烧约 600 tokens——
  // 大多数对话用不到这些。分层的判据是"这次会不会真用到"，宁可多注入不可少。
  const assembleSupervisionPrompt=()=>{
-  const crew=config.agents.length?config.agents.map(a=>`${a.id}=${a.name}${a.roleKey?`(${a.roleKey})`:''}`).join('；'):'暂无僚属';
+  // 议会花名册：总理必须随时知道自己有多少部下、各管什么——不知道就会像没头苍蝇
+  // 一样自造 "frontend-developer" 这类不存在的席。名字 + 角色键 + 职责首句，ID 不进提示词（kepos_profiles 可查）。
+  const locale=councilLocale(process.env.KEPOS_LOCALE);
+  const dutyOf=(a:any)=>summarizeRole(String(a.roleKey?roleScope(councilRole(a.roleKey)!,locale)||a.role||'':a.role||''),36);
+  const crew=config.agents.length
+   ?`编制 ${config.agents.length} 席：`+config.agents.map(a=>`${a.name}${a.roleKey?`（${a.roleKey}）`:''}·${dutyOf(a)}`).join('；')
+   :'暂无配置代表——分派前先用 F2 添加，或用 kepos_delegate 的 roleKey 即席创建';
   const deputyName=config.agents.find(agent=>agent.id===config.deputyAgentId)?.name;
   const policy=currentPolicy();
   const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';
@@ -649,10 +656,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   if(task.budgetTokens!==undefined&&(!Number.isInteger(task.budgetTokens)||task.budgetTokens<1000))throw Error('budgetTokens 必须是不少于 1000 的整数；本批任务未启动');
   const existing=config.agents.find(agent=>agent.id===task.agent||agent.name===task.agent);
   const selectedRole=task.roleKey&&councilRole(task.roleKey);
-  if(task.roleKey&&!selectedRole)throw Error('未知 Council 角色：'+task.roleKey);
+  if(task.roleKey&&!selectedRole)throw Error(`未知 Council 角色：${task.roleKey}。有效领域：${[...new Set(COUNCIL_ROLES.map(role=>roleDomain(role)))].join('、')}；kepos_roles 不带参数返回全部 ${COUNCIL_ROLES.length} 个角色键`);
   const locale=councilLocale(process.env.KEPOS_LOCALE);
   const suggestedName=task.name||(selectedRole?roleName(selectedRole,locale):undefined);
-  if(!existing&&!suggestedName)throw Error('未配置的僚属，且缺少自定义 name：'+task.agent);
+  // 报错自带花名册：模型不知道现有席位就会自造 "frontend-developer" 这种名字再失败一轮。
+  if(!existing&&!suggestedName)throw Error(`未配置的僚属「${task.agent}」。现有代表：${config.agents.map(a=>a.name).join('、')||'（空编制）'}；分派优先用这些席位，新角色请传 roleKey（kepos_roles 可查全部）或自定义 name`);
   const base:any=existing||{id:randomUUID(),name:suggestedName!,role:selectedRole?rolePrompt(selectedRole,locale):'独立只读调查',roleKey:selectedRole?.key,model:ctx.model?.id||'',provider:ctx.model?.provider||'',skills:[],tools:Array.from(READ_ONLY_TOOLS)};
   // MCP temporary grants: the human owns the configuration (mcp.json); the main agent
   // may grant configured servers per task. The grant dies with the worker process.
@@ -984,9 +992,14 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const skills=installedSkillCatalog().filter(skill=>!query||`${skill.name} ${skill.description}`.toLowerCase().includes(query)).slice(0,100);
   return{content:[{type:'text',text:JSON.stringify({skills:skills.map(({name,description})=>({name,description})),usage:'将 name 传给 kepos_delegate.tasks[].skills；只选择与当前授权事项匹配的 Skill。'})}],details:{count:skills.length}};
  }});
- pi.registerTool({name:'kepos_roles',label:'查看 Council 角色目录',description:'返回预设代表角色的短索引，支持按政策、发表、代码、学术等领域筛选。主 Agent 可先用它选择 roleKey，再用 kepos_delegate 快速创建代表。',parameters:Type.Object({domain:Type.Optional(Type.String({maxLength:40})),query:Type.Optional(Type.String({maxLength:100}))}),async execute(_id,params){
+ pi.registerTool({name:'kepos_roles',label:'查看 Council 角色目录',description:'返回预设代表角色的短索引。不带参数返回全部角色；支持按领域筛选或关键词搜索。主 Agent 可先用它选择 roleKey，再用 kepos_delegate 快速创建代表。',parameters:Type.Object({domain:Type.Optional(Type.String({maxLength:40})),query:Type.Optional(Type.String({maxLength:100}))}),async execute(_id,params){
   const roles=roleCatalog(params);
-  return{content:[{type:'text',text:boundedJson({roles,usage:'将 key 传给 kepos_delegate.tasks[].roleKey；如需 Skill，再用 kepos_skills 验证后显式传入。'})}],details:{count:roles.length}};
+  const domains=[...new Set(COUNCIL_ROLES.map(role=>roleDomain(role)))];
+  // 空结果必须自带纠错信息：猜错 domain 就返回空数组，模型只能再瞎猜一轮。
+  const hint=!roles.length&&(params.domain||params.query!==undefined)
+   ?`没有匹配。有效的 domain：${domains.join('、')}；把 domain/query 去掉即返回全部 ${COUNCIL_ROLES.length} 个角色。`
+   :undefined;
+  return{content:[{type:'text',text:boundedJson({roles,domains,hint,usage:'将 key 传给 kepos_delegate.tasks[].roleKey；如需 Skill，再用 kepos_skills 验证后显式传入。'})}],details:{count:roles.length}};
  }});
  pi.registerTool({name:'kepos_precheck',label:'静默预检',description:'【自动化能力 · 需人类开启且处于代理档】拿到 bug 报告时先并行试着复现，只有确认可复现才打断人。派几名只读代表从不同角度（测试 / 源码 / 运行行为）各试一次；结论分「已复现 / 未能复现 / 无法判断」三种，后两种不打扰人但都会留记录。同一份报告只预检一次。开销：每席 12 万 token、4 分钟上限。未开启或被档位停用时调用会报错并说明原因。',parameters:Type.Object({report:Type.String({maxLength:4000,description:'要预检的问题描述：现象、触发步骤、环境'})}),async execute(_id,params,_signal,_update,ctx){
   const outcome=await runPrecheck(params.report,ctx);
@@ -1066,7 +1079,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   const parent=ctx.sessionManager.getSessionId();let result:any;
   if(params.action==='create'){
    if(!params.goal||!params.jobs?.length)throw Error('创建计划需要 goal 和 jobs');
-   const jobs=params.jobs.map(job=>{const agent=config.agents.find(a=>a.id===job.agent||a.name===job.agent);if(!agent)throw Error('未配置专家：'+job.agent);return{...job,agent:{...agent,...(job.readScope?{readScope:job.readScope}:{}),...(job.readAllow?{readAllow:job.readAllow}:{})}};});
+   const jobs=params.jobs.map(job=>{const agent=config.agents.find(a=>a.id===job.agent||a.name===job.agent);if(!agent)throw Error(`未配置专家「${job.agent}」。现有代表：${config.agents.map(a=>a.name).join('、')||'（空编制）'}`);return{...job,agent:{...agent,...(job.readScope?{readScope:job.readScope}:{}),...(job.readAllow?{readAllow:job.readAllow}:{})}};});
    result=scheduler.enqueue({goal:params.goal,cwd:ctx.cwd,parentSessionId:parent,sessionFile:ctx.sessionManager.getSessionFile(),jobs});scheduler.start();result=planSummary(result);
   }else if(params.action==='list')result=scheduler.list(parent).map(planSummary);
   else if(params.action==='approve'){
