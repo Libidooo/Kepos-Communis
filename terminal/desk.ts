@@ -18,6 +18,9 @@ import { branchedSpec } from './branched-list.ts';
  const truncateFit=(text:string,width:number)=>{const w=Math.max(1,width);if(visibleWidth(text)<=w)return truncateToWidth(text,w);return truncateToWidth(text,w-3,'').replace(/\x1b\[0m/g,'')+'...';};
  export const fit=(text:string,width:number)=>{const s=truncateFit(text,width);return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
  export const fitRight=(text:string,width:number)=>{const s=truncateFit(text,width);return ' '.repeat(Math.max(0,width-visibleWidth(s)))+s;};
+ // 中栏专用：硬切补空格，绝不加省略号——正文已按同宽折行，这里只是兜底对齐；
+ // "..." 出现在右缘一整列，读起来像信息被吞了（人类明确要求取消）。
+ const fitHard=(text:string,width:number)=>{const s=truncateToWidth(text,Math.max(1,width));return s+' '.repeat(Math.max(0,width-visibleWidth(s)));};
 // stateColor 会返回 approval/queue/teal 等 Pi theme.fg 不认的色（graph-view 直出 SGR）；desk 侧映射到安全语义色。
 const STATE_COLOR_MAP: Record<string,string>={approval:'warning',queue:'accent',teal:'muted',blue:'muted',mauve:'muted',idle:'muted'};
 const safeStateColor=(color:string)=>STATE_COLOR_MAP[color]??color;
@@ -617,8 +620,8 @@ export class Desk {
   const active=countActive(snapshot.tasks);const attention=countPending(snapshot.tasks);
   if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
   this.pendingSeen=attention;
-  const councilMode=this.councilDesk?'书案':this.graphFocus==='ring'?'席位':this.graphFocus==='list'?'列表':'输入';
-  const header=this.theme.fg('accent',fit(`-- ${councilMode} --  Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  // 头部不再带 "-- 席位 --" 模式芯片：右侧提示已说明当前焦点，芯片只是重复（人类要求删除）。
+  const header=this.theme.fg('accent',fit(`Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
   if(this.councilDesk&&width<100){
    // 窄屏放不下右侧面板：退回整屏书案（历史回退路径）。
    const task=snapshot.tasks.find((t:any)=>t.id===this.councilDeskTaskId);
@@ -732,9 +735,6 @@ export class Desk {
  const panel=(w:number,content:string,focused:boolean)=>this.theme.fg(frameColor(focused),'│ ')+fit(content,Math.max(1,w-4))+this.theme.fg(frameColor(focused),' │');
  const tops=()=>this.leftWidth?sideBg(frameLine(this.leftWidth,`代表席 // ${this.config.agents.length}`,true,this.focus==='crew'))+'   '+frameLine(this.centerWidth,'主案',true,this.focus==='input')+'   '+sideBg(frameLine(this.rightWidth,`项目 / 对话 // ${this.rows().length}`,true,this.focus==='projects')):this.rightWidth?frameLine(this.centerWidth,this.focus==='crew'?`代表席 // ${this.config.agents.length}`:'主案',true,this.focus!=='projects')+'   '+sideBg(frameLine(this.rightWidth,`项目 / 对话 // ${this.rows().length}`,true,this.focus==='projects')):frameLine(width,this.focus==='projects'?'项目 / 对话':this.focus==='crew'?'代表席':'主案',true,true);
  const bottoms=()=>this.leftWidth?sideBg(frameLine(this.leftWidth,'',false,this.focus==='crew'))+'   '+frameLine(this.centerWidth,'',false,this.focus==='input')+'   '+sideBg(frameLine(this.rightWidth,'',false,this.focus==='projects')):this.rightWidth?frameLine(this.centerWidth,'',false,this.focus!=='projects')+'   '+sideBg(frameLine(this.rightWidth,'',false,this.focus==='projects')):frameLine(width,'',false,true);
- // 阅读位置可见：内容超高时在主案右内侧画比例滚动条（拇指 ▓ / 轨道 ·）。
- const totalLines=history.length;const hasScroll=totalLines>contentRows;const scrollPos=this.readStart===null?Math.max(0,totalLines-contentRows):this.readStart;const thumbH=Math.max(1,Math.round(contentRows*Math.min(1,contentRows/totalLines)));const thumbTop=Math.round((scrollPos/Math.max(1,totalLines-contentRows))*Math.max(0,contentRows-thumbH));
- const scrollGlyph=(j:number)=>j>=thumbTop&&j<thumbTop+thumbH?this.theme.fg('accent','▓'):this.theme.fg('dim','·');
  for(let i=0;i<this.bodyHeight;i++){
   if(i===0){body.push(tops());continue;}
   if(i===this.bodyHeight-1){body.push(bottoms());continue;}
@@ -744,13 +744,15 @@ export class Desk {
   this.visibleCenter.push(center);
   const innerWidth=Math.max(1,this.centerWidth-4);
   const activityLine=/^(NEEDS_HUMAN|FAILED|SUCCEEDED|RUNNING|QUEUED|▸|✓|✕|  .*返回中|Kepos 正在)/.test(center);
-  let centerStyled=previewNote?this.theme.fg('warning',fit(center,innerWidth)):activityLine?this.theme.fg(center.startsWith('NEEDS_HUMAN')?'warning':center.startsWith('✕')||center.startsWith('FAILED')?'error':center.startsWith('✓')||center.startsWith('SUCCEEDED')?'success':'accent',fit(center,innerWidth)):center==='Kepos'?strong(fit(center,innerWidth)):this.theme.fg('text',fit(center,innerWidth));
-  if(this.selection&&this.theme.bg){const {anchor,end}=this.selection;const [a,b]=anchor.row<end.row||anchor.row===end.row&&anchor.col<=end.col?[anchor,end]:[end,anchor];if(j>=a.row&&j<=b.row){const start=j===a.row?a.col:0,stop=j===b.row?b.col:visibleWidth(center),plain=fit(center,innerWidth);centerStyled=this.theme.fg('text',sliceByColumn(plain,0,start))+this.theme.bg('selectedBg',this.theme.fg('text',sliceByColumn(plain,start,Math.max(0,stop-start))))+this.theme.fg('text',sliceByColumn(plain,stop,Math.max(0,innerWidth-stop)));}}
+  let centerStyled=previewNote?this.theme.fg('warning',fitHard(center,innerWidth)):activityLine?this.theme.fg(center.startsWith('NEEDS_HUMAN')?'warning':center.startsWith('✕')||center.startsWith('FAILED')?'error':center.startsWith('✓')||center.startsWith('SUCCEEDED')?'success':'accent',fitHard(center,innerWidth)):center==='Kepos'?strong(fitHard(center,innerWidth)):this.theme.fg('text',fitHard(center,innerWidth));
+  if(this.selection&&this.theme.bg){const {anchor,end}=this.selection;const [a,b]=anchor.row<end.row||anchor.row===end.row&&anchor.col<=end.col?[anchor,end]:[end,anchor];if(j>=a.row&&j<=b.row){const start=j===a.row?a.col:0,stop=j===b.row?b.col:visibleWidth(center),plain=fitHard(center,innerWidth);centerStyled=this.theme.fg('text',sliceByColumn(plain,0,start))+this.theme.bg('selectedBg',this.theme.fg('text',sliceByColumn(plain,start,Math.max(0,stop-start))))+this.theme.fg('text',sliceByColumn(plain,stop,Math.max(0,innerWidth-stop)));}}
   const gap='   ';
-  const centerBody=hasScroll?fit(centerStyled,innerWidth-2)+' '+scrollGlyph(j):centerStyled;
+  // 滚动槽已删（· 轨道在右缘形成一列点，人类明确要求取消）：位置感由状态行
+  // "阅读历史 · 已暂停跟随 · Ctrl+End 回最新"承担，正文不再为指示符让位、不再被截。
+  const centerBody=centerStyled;
   if(this.leftWidth)body.push(sideBg(panel(this.leftWidth,left[j]||'',this.focus==='crew'))+gap+panel(this.centerWidth,centerBody,this.focus==='input')+gap+sideBg(panel(this.rightWidth,right[j]||'',this.focus==='projects')));
   else if(this.rightWidth)body.push(panel(this.centerWidth,this.focus==='crew'?this.theme.fg(j===0?'accent':'muted',fit(left[j]||'',innerWidth)):centerBody,this.focus!=='projects')+gap+sideBg(panel(this.rightWidth,right[j]||'',this.focus==='projects')));
-  else{const narrowContent=this.focus==='projects'?right[j]||'':this.focus==='crew'?left[j]||'':center;const narrowBody=hasScroll?fit(narrowContent,Math.max(1,width-6))+' '+scrollGlyph(j):narrowContent;body.push(panel(width,narrowBody,true));}}
+  else{const narrowContent=this.focus==='projects'?right[j]||'':this.focus==='crew'?left[j]||'':center;body.push(panel(width,narrowContent,true));}}
  // 附件条：有附件时压在输入框上方，随输入区同宽对齐，不打断主案阅读区。
  const attachBar=this.attachmentBar(Math.max(8,(this.leftWidth||this.rightWidth?this.centerWidth:width)-4))
   .map(line=>this.leftWidth?' '.repeat(this.leftWidth+3)+line+' '.repeat(this.rightWidth+3):this.rightWidth?line+' '.repeat(this.rightWidth+3):line);
