@@ -215,14 +215,13 @@ test('scrollbar thumb tracks reading position in the framed transcript',()=>{
  desk.handleInput('\x1b[5~');
  const scrolled=desk.render(120).join('\n');
  assert.ok(scrolled.includes('已暂停跟随'),'reading state is announced in the status line');
- // 0.5.1 后滚动槽整条删除（· 轨道在右缘形成一列点，人类要求取消）：
- // · 是全界面通用的间隔号，断言瞄准轨道特征——紧贴边框的点位/拇指列；
- // "..." 只禁于带边框的正文区（状态行在窄终端下允许截断，那是 chrome 不是内容）。
+ // 滚动轨道（· 轨道 + ▓ 拇指）按人类要求恢复；恢复的前提是轨道的两列
+ // 从正文折行预算里扣除——轨道在，"..."截断省略号不回来。
  const plainLines=scrolled.split('\n').map(l=>l.replace(/\x1b\[[0-9;]*m/g,''));
- // 只约束中栏：侧栏截断长目录名是合法行为（› kepos-xxx...），中栏才是"严格显示"的对象。
- const center=plainLines.map(l=>{const parts=l.split('│');return parts.length>=4?parts[2]:'';});
- assert.ok(!center.some(c=>/[·▓]\s*$/.test(c)),'no glyph track hugging the centre border');
- assert.ok(!center.some(c=>c.includes('...')),'no truncation dots inside the centre column');
+ // 三栏行的 │ 分割含栏间距：[边,左栏,距,中栏,距,右栏,边]——中栏是 parts[3]。
+ const center=plainLines.map(l=>{const parts=l.split('│');return parts.length>=7?parts[3]:parts.length>=4?parts[2]:'';});
+ assert.ok(center.some(c=>/[·▓]\s*$/.test(c)),'scroll track and thumb are back beside the transcript');
+ assert.ok(!center.some(c=>c.includes('...')),'but no truncation dots inside the centre column');
  desk.dispose();
 });
 

@@ -356,7 +356,8 @@ test('human approval uses a bright hammer and a bounded two-frame tremble', asyn
 });
 
 test('seat states distinguish idle, queued, review, success, failure and cancellation', () => {
-  const view = task => renderGraph({ agents, tasks: task ? [task] : [] }, 100, 24, -1, 1, theme).lines.join('');
+  // 固定 now：呼吸/审批抖动的相位不再影响断言（全套跑时两次 view() 可能跨相位）。
+  const view = task => renderGraph({ agents, tasks: task ? [task] : [] }, 100, 24, -1, 1, theme, {}, 0).lines.join('');
   // 符号携带状态：就绪 ◌、排队 ◔、完成 ●、失败 ⊘、取消 ○；
   // 待审批与运行都用呼吸圆，靠黄色 + 席位中央的 ! 区分。
   assert.ok(view().includes('◌'), 'idle seat uses ◌');

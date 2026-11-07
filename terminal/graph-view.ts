@@ -358,7 +358,7 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
     const sizeCapY = ringCount === 1 ? spreadY : Math.max(3, orbitY * 0.48);
     baseRx = Math.min(sizeCapX, Math.max(9, baseRx));
     baseRy = Math.min(sizeCapY, Math.max(4, baseRy));
-    // zoom 直接相乘。下限只防止压到总理座（"◉  总理" 横向约 6 格）。
+    // zoom 直接相乘。下限只防止压到总理座（"★  总理" 横向约 6 格）。
     const radiusX = Math.max(7, Math.round(baseRx * zoom));
     const radiusY = Math.max(3, Math.round(baseRy * zoom));
     tracks.push({ cx: ringCenter.x, cy: ringCenter.y, rx: radiusX, ry: radiusY });
@@ -411,7 +411,7 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   }
   const edgeMask: (number | undefined)[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => 0 as number | undefined));
   if (selectedNodeEarly) {
-    // 选中态：从总理座盒左右外侧出线，绝不与 "◉  总理" 字样重叠。
+    // 选中态：从总理座盒左右外侧出线，绝不与 "★  总理" 字样重叠。
     for (const node of layout.nodes) {
       if (!chain.has(node.id)) continue;
       const parent = node.task?.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined;
@@ -421,9 +421,9 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     renderConnections(grid, edgeMask, 'borderAccent');
   }
   // 先铺线再把总理座写上去：文字永远压在最上层，不会被连接符覆盖。
-  // 选中态统一走品牌色（borderAccent），与主案焦点框同族；
-  // 琥珀 accent 留给"强调/活跃"，否则选中席位会和议会简要一起抢成黄色。
-  put(grid, main.x - 1, main.y, '◉', selected === -1 ? 'borderAccent' : 'text', { bold: true });
+  // 总理座用红色五角星（人类指定）：默认品牌红 borderAccent，选中让位为 text；
+  // ★ 与席位符号族（◉/◎/◔）明确分层——星是席位制的主权者，圈是干活的人。
+  put(grid, main.x - 1, main.y, '★', selected === -1 ? 'borderAccent' : 'text', { bold: true });
   put(grid, main.x + 1, main.y, ' 总理', 'accent');
   const hits: GraphHit[] = [main];
   // 字符占用登记：席位符号与标签分属不同行/列，密集环里后画的符号会压掉先画的
@@ -461,7 +461,7 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
       claim(node.x - 1 + shake, node.y, 1);
     }
     // 代理总代：推选出来的兼任治理职责，不是普通席位。
-    // 参考总理 ◉ 的语义，额外套一个圆环把它圈起来——「(◉)」。
+    // 参考总理 ★ 的语义，额外套一个圆环把它圈起来——「(◉)」。
     // 只在两侧有空位时套环，绝不覆盖邻座文字；套不上就退化为加粗，仍有区别。
     if (node.deputy) {
       const ringColor = selectedNode ? 'borderAccent' : 'accent';
