@@ -107,7 +107,7 @@ test('pptx slides are ordered numerically, not lexically', async () => {
 
 test('xlsx resolves shared strings and inline values', async () => {
   const xlsx = buildZip({
-    'xl/sharedStrings.xml': '<sst><si><t>姓名</t></si><si><t>齐山冼</t></si></sst>',
+    'xl/sharedStrings.xml': '<sst><si><t>姓名</t></si><si><t>张三</t></si></sst>',
     'xl/worksheets/sheet1.xml': `<worksheet><sheetData>
       <row><c t="s"><v>0</v></c><c t="s"><v>1</v></c></row>
       <row><c><v>42</v></c></row>
@@ -115,7 +115,7 @@ test('xlsx resolves shared strings and inline values', async () => {
   });
   const result = await loadAttachment(write('数据.xlsx', xlsx));
   assert.equal(result.ok, true);
-  assert.match(result.attachment.text, /姓名 \| 齐山冼/);
+  assert.match(result.attachment.text, /姓名 \| 张三/);
   assert.match(result.attachment.text, /42/);
 });
 

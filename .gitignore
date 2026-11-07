@@ -63,3 +63,6 @@ themes/.brand-theme-hashes.json
 
 # 归档目录：运行时产物，不随源码入库
 .kepos/
+
+# 本地临时产物（字体解析探针等），不入库
+.tmp-font/
