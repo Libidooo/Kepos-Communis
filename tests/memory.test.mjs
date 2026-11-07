@@ -179,3 +179,32 @@ test('procedure counts distinguish worker sources for the skill loop', () => {
     assert.equal(mem.procedureCount('a', 'other'), 0);
   } finally { db.close(); }
 });
+
+// 回归：内部任务（记忆整理/配置生成）绝不能再触发整理。
+// 曾经的套娃链：整理任务失败 → 它自己也进整理队列 → 新提示词嵌着旧提示词 → 无限循环烧钱。
+test('internal tasks never feed the consolidation pipeline', async () => {
+  const { shouldConsolidate, candidateFromTask, ConsolidationPipeline } = await import('../dist/terminal/memory-pipeline.js');
+  const done = () => false;
+  assert.equal(shouldConsolidate({ id: 't1', agentId: 'a1', output: 'x', purpose: 'configuration' }, done), false, 'configuration purpose is refused');
+  assert.equal(candidateFromTask({ id: 't1', agentId: 'a1', title: '你是记忆整理器…', output: 'x', status: '失败', purpose: 'configuration' }), null, 'candidateFromTask refuses internal tasks');
+  assert.equal(shouldConsolidate({ id: 't2', agentId: 'a1', output: 'x' }, done), true, 'normal delegate tasks still consolidate');
+
+  // 长标题截断：标题截自任务全文，不设限会把整段提示词带进下一轮。
+  const long = candidateFromTask({ id: 't3', agentId: 'a1', title: '长'.repeat(5000), output: 'x' });
+  assert.ok(long && long.goal.length <= 200, 'goal is capped at 200 chars');
+
+  // 熔断：模型连败三次清空队列，不再无限重试。
+  const { KeposDatabase } = await import('../dist/terminal/database.js');
+  const { mkdtempSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const db = new KeposDatabase(join(mkdtempSync(join(tmpdir(), 'kepos-mem-')), 'k.sqlite'));
+  try {
+    const notices = [];
+    const pipeline = new ConsolidationPipeline(db, async () => { throw Error('relay down'); }, m => notices.push(m));
+    for (let i = 0; i < 5; i++) pipeline.enqueue({ workerId: 'w' + i, agentId: 'a1', goal: 'g', output: 'o', failed: false });
+    await pipeline.drain();
+    assert.ok(notices.some(text => text.includes('连续失败 3 次')), 'circuit breaker fires with a notice');
+    assert.equal(pipeline.pending(), 0, 'queue is dropped after three consecutive failures');
+  } finally { db.close(); }
+});

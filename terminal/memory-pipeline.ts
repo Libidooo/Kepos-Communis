@@ -27,8 +27,11 @@ export type ConsolidationCandidate = {
 const FAILED_STATES = new Set(['失败', '超时', '已中断']);
 
 /** 是否值得为这个任务跑一次整理。 */
-export function shouldConsolidate(task: { id: string; agentId?: string; output?: string; checkpoint?: string; status?: string; error?: string; failed?: boolean }, alreadyDone: (workerId: string) => boolean): boolean {
+export function shouldConsolidate(task: { id: string; agentId?: string; output?: string; checkpoint?: string; status?: string; error?: string; failed?: boolean; purpose?: string }, alreadyDone: (workerId: string) => boolean): boolean {
   if (!task.agentId) return false;            // 临时代表没有稳定 id，记忆无处归属
+  // 内部任务（配置生成/整理本身）不是代表的委派工作，绝不整理——
+  // 整理失败再触发整理，会把上一次的完整提示词嵌进下一次的标题，无限套娃。
+  if (task.purpose === 'configuration') return false;
   if (alreadyDone(task.id)) return false;
   const output = String(task.output ?? '').trim();
   const checkpoint = String(task.checkpoint ?? '').trim();
@@ -41,14 +44,17 @@ export function shouldConsolidate(task: { id: string; agentId?: string; output?:
 }
 
 /** 从任务构造整理输入。产出只取末尾 4KiB——前面多为过程刷屏。 */
-export function candidateFromTask(task: { id: string; agentId?: string; title?: string; checkpoint?: string; output?: string; status?: string; error?: string }): ConsolidationCandidate | null {
+export function candidateFromTask(task: { id: string; agentId?: string; title?: string; checkpoint?: string; output?: string; status?: string; error?: string; purpose?: string }): ConsolidationCandidate | null {
   if (!task.agentId) return null;
+  // 同 shouldConsolidate：内部任务不进整理队列（防自触发套娃的第一道闸）。
+  if (task.purpose === 'configuration') return null;
   const output = String(task.output ?? '');
   const failed = FAILED_STATES.has(String(task.status ?? ''));
   return {
     workerId: task.id,
     agentId: task.agentId,
-    goal: String(task.title ?? ''),
+    // goal 只取短标题：标题可能截自任务全文，不设限就会把整段提示词带进下一轮整理。
+    goal: String(task.title ?? '').slice(0, 200),
     checkpoint: task.checkpoint,
     output: output.length > 4096 ? output.slice(-4096) : output,
     failed,
@@ -66,6 +72,9 @@ export class ConsolidationPipeline {
   private readonly memory: RepresentativeMemory;
   private readonly queue: ConsolidationCandidate[] = [];
   private running = false;
+  /** 连续整理失败计数：熔断用。整理失败会保留候选重试，但模型持续故障时
+   *  无限重试等于无限烧钱——连败三次清空本轮队列，等下一个真实任务再试。 */
+  private consecutiveFailures = 0;
 
   constructor(database: KeposDatabase, private readonly model: ConsolidationModel, private readonly onChange?: (message: string) => void) {
     this.memory = new RepresentativeMemory(database);
@@ -92,8 +101,16 @@ export class ConsolidationPipeline {
     let ops: ConsolidationOp[] = [];
     try {
       ops = parseConsolidationOps(await this.model(prompt));
+      this.consecutiveFailures = 0;
     } catch {
-      // 模型失败不写记忆，也不标记完成——下次还能重试。
+      // 模型失败不写记忆，也不标记完成——但连败三次就熔断本轮，
+      // 否则一次中转故障能把整理队列变成失败任务的永动机。
+      this.consecutiveFailures++;
+      if (this.consecutiveFailures >= 3) {
+        const dropped = this.queue.length;
+        this.queue.length = 0;
+        this.onChange?.(`记忆整理连续失败 ${this.consecutiveFailures} 次，本轮放弃（丢弃 ${dropped} 条候选；不影响任务本身）`);
+      }
       return { added: 0, updated: 0, skipped: 0 };
     }
     const result = this.memory.apply(candidate.agentId, ops, candidate.workerId);

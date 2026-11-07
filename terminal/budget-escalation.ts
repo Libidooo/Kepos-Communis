@@ -41,9 +41,11 @@ const truncate = (value: string, max: number) => {
   return text.length > max ? text.slice(0, max) + '…' : text;
 };
 
-/** 这类截停要不要立案：watch 自动派发没有上游意图，桌面通知已经覆盖它。 */
+/** 这类截停要不要立案：watch 自动派发没有上游意图，桌面通知已经覆盖它；
+ *  内部任务（配置生成/记忆整理）不是人的委派，截停了换条路走即可——
+ *  为它们立案会把人类拖进"批准→重派→再截停"的循环。 */
 export function shouldEscalate(task: { purpose?: string }): boolean {
-  return task.purpose !== 'watch';
+  return task.purpose !== 'watch' && task.purpose !== 'configuration';
 }
 
 /**
