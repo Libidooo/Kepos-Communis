@@ -358,7 +358,7 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
     const sizeCapY = ringCount === 1 ? spreadY : Math.max(3, orbitY * 0.48);
     baseRx = Math.min(sizeCapX, Math.max(9, baseRx));
     baseRy = Math.min(sizeCapY, Math.max(4, baseRy));
-    // zoom 直接相乘。下限只防止压到总理座（"★  总理" 横向约 6 格）。
+    // zoom 直接相乘。下限只防止压到总理座（总理座星块约 3 列 × 3 行）。
     const radiusX = Math.max(7, Math.round(baseRx * zoom));
     const radiusY = Math.max(3, Math.round(baseRy * zoom));
     tracks.push({ cx: ringCenter.x, cy: ringCenter.y, rx: radiusX, ry: radiusY });
@@ -411,7 +411,7 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
   }
   const edgeMask: (number | undefined)[][] = Array.from({ length: safeHeight }, () => Array.from({ length: safeWidth }, () => 0 as number | undefined));
   if (selectedNodeEarly) {
-    // 选中态：从总理座盒左右外侧出线，绝不与 "★  总理" 字样重叠。
+    // 选中态：从总理座盒左右外侧出线，绝不与总理星块或名称重叠。
     for (const node of layout.nodes) {
       if (!chain.has(node.id)) continue;
       const parent = node.task?.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined;
@@ -421,10 +421,15 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     renderConnections(grid, edgeMask, 'borderAccent');
   }
   // 先铺线再把总理座写上去：文字永远压在最上层，不会被连接符覆盖。
-  // 总理座用红色五角星（人类指定）：默认品牌红 borderAccent，选中让位为 text；
-  // ★ 与席位符号族（◉/◎/◔）明确分层——星是席位制的主权者，圈是干活的人。
-  put(grid, main.x - 1, main.y, '★', selected === -1 ? 'borderAccent' : 'text', { bold: true });
-  put(grid, main.x + 1, main.y, ' 总理', 'accent');
+  // 总理座：放大一档的红色五角星（上尖 ★ + 展宽 ★★★ 两行拼叠），名称移到
+  // 符号正下方、以符号居中——与代表席"符号在上、名字在下"同一排版语法（人类指定）。
+  // 星用品牌红 borderAccent；与席位符号族（◉/◎/◔）分层——星是主权者，圈是干活的人。
+  const starColor = selected === -1 ? 'borderAccent' : 'text';
+  put(grid, main.x - 1, main.y - 1, '★', starColor, { bold: true });
+  put(grid, main.x - 2, main.y, '★★★', starColor, { bold: true });
+  const premierName = '总理';
+  const nameX = main.x - 1 - Math.floor(visibleWidth(premierName) / 2);
+  put(grid, nameX, main.y + 1, premierName, 'accent');
   const hits: GraphHit[] = [main];
   // 字符占用登记：席位符号与标签分属不同行/列，密集环里后画的符号会压掉先画的
   // 标签文字（截图里"性○能工程官"就是符号盖住了名字）。画之前先查这张表，
@@ -446,8 +451,10 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     }
     return true;
   };
-  // 总理座先占位，标签绝不会压上去。
-  claim(main.x - 1, main.y, 7);
+  // 总理座先占位，标签绝不会压上去：星两行 + 名称一行，整块都登记。
+  claim(main.x - 3, main.y - 1, 7);
+  claim(main.x - 3, main.y, 7);
+  claim(main.x - 3, main.y + 1, 7);
   for (const node of layout.nodes) {
     const selectedNode = selected === node.index;
     const approval = node.task?.state === 'NEEDS_HUMAN';
@@ -489,9 +496,9 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     let labelWidth = visibleWidth(label);
     let labelX = node.x - 1 - Math.floor(labelWidth / 2);
     labelX = Math.max(1, Math.min(labelX, labelMaxX - labelWidth - 1));
-    // 只有与总理座同一行才需要避让；推不出空间就让标签让位。
-    if (labelY === main.y) {
-      const boxLeft = main.x - 3, boxRight = main.x + 7;
+    // 总理座现在是三行块（星两行 + 名称一行），标签行落在其中任何一行都要避让。
+    if (labelY >= main.y - 1 && labelY <= main.y + 1) {
+      const boxLeft = main.x - 4, boxRight = main.x + 4;
       const overlaps = labelX <= boxRight && labelX + labelWidth >= boxLeft;
       if (overlaps) {
         // 位于总理右侧的席位向右让，左侧的向左让。
