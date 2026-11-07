@@ -1314,7 +1314,24 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   ui.notify(result.ok?`主题已切换为 ${target}（即时生效）`:result.reason||'主题切换失败',result.ok?'info':'warning');
   return;
  }
- if(action.kind==='menu'){const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));const reviewLabel=proposals.length?`审阅提议技能（${proposals.length}）`:'审阅提议技能';const pendingEscalations=new BudgetEscalations(db()).pending().length;const escalationLabel=pendingEscalations?`预算追加审批（${pendingEscalations}）`:'预算追加审批';const choice=await ui.select('Kepos / 操作菜单',['新建项目（选择本地目录）','在当前项目新建对话','移除已收录项目','添加僚属','编辑僚属','刷新角色提示词','从档案导入代表','代表复盘笔记','推举代理总代','直接推选代理总代','跨组借调','分派只读任务','查看/取消运行中任务','更换主 Agent 模型','切换主题','管理长程计划','工作流','自动化能力','待批僚属派生',escalationLabel,reviewLabel,'审批模式','命令面板','返回议案']);const map:any={'新建项目（选择本地目录）':'project','在当前项目新建对话':'new','移除已收录项目':'project-remove','添加僚属':'crew','编辑僚属':'editcrew','刷新角色提示词':'refresh-roles','从档案导入代表':'profiles-import','代表复盘笔记':'lessons','推举代理总代':'elections','直接推选代理总代':'deputy','跨组借调':'secondments','分派只读任务':'delegate','查看/取消运行中任务':'cancel','更换主 Agent 模型':'model','切换主题':'theme','管理长程计划':'missions','工作流':'workflows','自动化能力':'automation','待批僚属派生':'subordinate-approvals',[escalationLabel]:'budget-escalations',[reviewLabel]:'skills-review','审批模式':'approval','命令面板':'palette'};if(map[choice])return workspaceAction({kind:map[choice]},ctx);return;}
+ if(action.kind==='menu'){
+  // F2 两级分组：23 项平铺找不到东西，同类聚拢后一眼定位。
+  // 待办计数挂在类目上（有案才显示），进入类目后各项保持原有动作不变。
+  const proposals=listProposals(process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent'));
+  const pendingEscalations=new BudgetEscalations(db()).pending();
+  const groups:[string,[string,string][]][]=[
+   ['对话与项目',[['新建项目（选择本地目录）','project'],['在当前项目新建对话','new'],['移除已收录项目','project-remove'],['切换主题','theme']]],
+   ['代表与编制',[['添加僚属','crew'],['编辑僚属','editcrew'],['刷新角色提示词','refresh-roles'],['从档案导入代表','profiles-import'],['代表复盘笔记','lessons'],['工作流','workflows'],['推举代理总代','elections'],['直接推选代理总代','deputy'],['跨组借调','secondments']]],
+   [`任务与审批${pendingEscalations.length?`（待批 ${pendingEscalations.length}）`:''}`,[['分派只读任务','delegate'],['查看/取消运行中任务','cancel'],['管理长程计划','missions'],['待批僚属派生','subordinate-approvals'],['预算追加审批','budget-escalations']]],
+   [`系统与外观${proposals.length?`（技能 ${proposals.length}）`:''}`,[['更换主 Agent 模型','model'],['自动化能力','automation'],['审阅提议技能','skills-review'],['审批模式','approval'],['命令面板','palette']]],
+  ];
+  const category=await ui.select('Kepos / 操作',[...groups.map(([label])=>label),'返回议案']);
+  const found=groups.find(([label])=>label===category);
+  if(!found)return;
+  const choice=await ui.select('Kepos / '+category,found[1].map(([label])=>label).concat('返回'));
+  const picked=found[1].find(([label])=>label===choice);
+  if(picked)return workspaceAction({kind:picked[1]},ctx);
+  return;}
  // 提议技能审阅：重复到第三次的流程会出现在这里。采纳才写入 skills/，安装前不生效。
  if(action.kind==='skills-review'){
   const agentDir=process.env.KEPOS_AGENT_DIR||join(homedir(),'.kepos','agent');

@@ -51,7 +51,8 @@ export function historyLines(entries:any[],width:number,expanded:boolean|'summar
   // human's tinted block and from the delegates' rule-marked output.
   const rendered=m.role==='assistant'
    ?new Markdown(text,0,0,getMarkdownTheme(),{color:(s:string)=>theme.fg('text',s)}).render(width).map(line=>theme.bg('customMessageBg',line+' '.repeat(Math.max(0,width-visibleWidth(line)))))
-   :wrapTextWithAnsi(text,width).map(line=>theme.bg('userMessageBg',theme.fg('userMessageText',fit(line,width))));lines.push(...rendered);}else if(b.type==='text'){
+   // 人类消息必须一眼可辨：琥珀左缘条 + 独立底色，三层消息（人/总理/代表）各占一种视觉。
+   :wrapTextWithAnsi(text,Math.max(4,width-2)).map(line=>F('accent','▌ ')+theme.bg('userMessageBg',theme.fg('userMessageText',fit(line,Math.max(4,width-2)))));lines.push(...rendered);}else if(b.type==='text'){
    const raw=String(b.text).split('\n');
    // summary 档：工具输出整体压成一行（首行摘要 + 行数），失败时强制展开。
    const collapse=m.role==='toolResult'&&toolMode==='summary'&&!failedTool;
