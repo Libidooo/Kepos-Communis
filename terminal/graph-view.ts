@@ -421,12 +421,11 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     renderConnections(grid, edgeMask, 'borderAccent');
   }
   // 先铺线再把总理座写上去：文字永远压在最上层，不会被连接符覆盖。
-  // 总理座：放大一档的红色五角星（上尖 ★ + 展宽 ★★★ 两行拼叠），名称移到
-  // 符号正下方、以符号居中——与代表席"符号在上、名字在下"同一排版语法（人类指定）。
-  // 星用品牌红 borderAccent；与席位符号族（◉/◎/◔）分层——星是主权者，圈是干活的人。
+  // 总理座：单个红色五角星（人类拍板：一个就够），名称在星的正下方、以星居中——
+  // 与代表席"符号在上、名字在下"同一排版语法。星用品牌红 borderAccent；
+  // 与席位符号族（◉/◎/◔）分层——星是主权者，圈是干活的人。
   const starColor = selected === -1 ? 'borderAccent' : 'text';
-  put(grid, main.x - 1, main.y - 1, '★', starColor, { bold: true });
-  put(grid, main.x - 2, main.y, '★★★', starColor, { bold: true });
+  put(grid, main.x - 1, main.y, '★', starColor, { bold: true });
   const premierName = '总理';
   const nameX = main.x - 1 - Math.floor(visibleWidth(premierName) / 2);
   put(grid, nameX, main.y + 1, premierName, 'accent');
@@ -451,8 +450,7 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     }
     return true;
   };
-  // 总理座先占位，标签绝不会压上去：星两行 + 名称一行，整块都登记。
-  claim(main.x - 3, main.y - 1, 7);
+  // 总理座先占位，标签绝不会压上去：星一行 + 名称一行。
   claim(main.x - 3, main.y, 7);
   claim(main.x - 3, main.y + 1, 7);
   for (const node of layout.nodes) {
@@ -496,8 +494,8 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     let labelWidth = visibleWidth(label);
     let labelX = node.x - 1 - Math.floor(labelWidth / 2);
     labelX = Math.max(1, Math.min(labelX, labelMaxX - labelWidth - 1));
-    // 总理座现在是三行块（星两行 + 名称一行），标签行落在其中任何一行都要避让。
-    if (labelY >= main.y - 1 && labelY <= main.y + 1) {
+    // 总理座是两行块（星一行 + 名称一行），标签行落在其中任何一行都要避让。
+    if (labelY >= main.y && labelY <= main.y + 1) {
       const boxLeft = main.x - 4, boxRight = main.x + 4;
       const overlaps = labelX <= boxRight && labelX + labelWidth >= boxLeft;
       if (overlaps) {
