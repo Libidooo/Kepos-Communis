@@ -303,9 +303,75 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    void pi.sendUserMessage(budgetStopReport({escalationId,agent:String(task.agent),taskId:String(task.id),spent,cap,title:String(task.title||''),digest:digest.slice(0,300),owner:ownerName}),{deliverAs:'steer'});
    // 铃声在后台段响：人关着书案也该被叫醒（同门禁铃声的考量）。
    if(process.stdout.isTTY)process.stdout.write('\x07');
-   if(desk){desk.notice=`预算截停已立案 · ${task.agent} · F2 → 预算追加审批`;scheduleRepaint();}
+   if(desk){desk.notice=`预算截停已立案 · ${task.agent} · 审批即将弹出`;scheduleRepaint();queueBudgetApproval(escalationId);}
   }catch{/* 立案失败不影响截停本身：任务已停，证据在归档里 */}
  };
+ // ── 预算审批的前置通道 ──
+ // 审批不该藏在 F2 五层菜单后面：立案或总理附议一到，直接把审批对话推到最前。
+ // 一键批准（总理建议或 50k 兜底）/ 自定义额度 / 拒绝；按"稍后"就记账不再打扰，
+ // F2 队列永远完整可用。同刻多案按队列逐案弹，一案一点。
+ const budgetApprovalSeen=new Set<string>();
+ let budgetDialogBusy=false;
+ async function runBudgetApprovals(ctx:any,fromAuto:boolean):Promise<void>{
+  if(!ctx||ctx.mode!=='tui'||budgetDialogBusy)return;
+  budgetDialogBusy=true;
+  try{
+   const ui=ownedUI(ctx,text=>{if(desk){desk.notice=text;scheduleRepaint();}});
+   for(;;){
+    const pending=new BudgetEscalations(db()).pending();
+    if(!pending.length){if(!fromAuto)ui.notify('没有待审批的预算追加。','info');return;}
+    // 自动通道只弹没被搁下过的立案；F2 通道从队首开始全部列出。
+    const item=fromAuto?pending.find(entry=>!budgetApprovalSeen.has(entry.id)):pending[0];
+    if(!item)return;
+    const result=await budgetApprovalDialog(ui,ctx,item);
+    if(result==='skipped'){
+     if(fromAuto){for(const entry of pending)budgetApprovalSeen.add(entry.id);if(desk){desk.notice='预算审批已搁置 · F2 → 预算追加审批 随时可处理';scheduleRepaint();}}
+     return;
+    }
+   }
+  }finally{budgetDialogBusy=false;}
+ }
+ /** 一案一屏：批准（建议额度）/ 自定义额度 / 拒绝 / 稍后。返回是否了结了此案。 */
+ async function budgetApprovalDialog(ui:any,ctx:any,item:any):Promise<'decided'|'skipped'>{
+  // 兜底从宽：总理没附议时按已耗两倍且不低于 5 万预填——几千 token 的"建议"只够再截停一次。
+  const suggestion=item.proposal??Math.max(50_000,Math.ceil(item.spent*2/1000)*1000);
+  const proposalLine=item.proposal
+   ?`\n总理建议：${formatTokens(item.proposal)} tokens${item.note?`（${clean(item.note).slice(0,120)}）`:''}`
+   :'\n（总理尚未附评估 · 预填为已耗两倍且不低于 50k）';
+  const approve=`批准 · ${formatTokens(suggestion)} tokens 续接重派`;
+  const decision=await ui.select(`预算追加 · ${item.agent}\n已耗 ${formatTokens(item.spent)} / 上限 ${formatTokens(item.cap)} tokens\n原任务：${clean(item.task).slice(0,120)}${proposalLine}`,[approve,'批准 · 自定义额度','拒绝（保持截停）','稍后再说（F2 → 预算追加审批）']);
+  if(!decision||decision.startsWith('稍后'))return 'skipped';
+  if(decision==='拒绝（保持截停）'){new BudgetEscalations(db()).decide(item.id,false);ui.notify(`已拒绝 ${item.agent} 的预算追加；任务保持截停。`,'info');return 'decided';}
+  let newCap=suggestion;
+  if(decision==='批准 · 自定义额度'){
+   const input=await ui.input('新额度（tokens，不少于 1000）',String(suggestion));
+   if(input===undefined||!input.trim())return 'skipped';
+   newCap=Number(input.trim());
+   if(!Number.isInteger(newCap)||newCap<1000){ui.notify('额度必须是不少于 1000 的整数','warning');return 'skipped';}
+  }
+  // 原任务全文与父链从 workers 表读回：立案里只存了截断版。
+  let parsed:any;try{const row=db().prepare('SELECT task FROM workers WHERE id=?').get(item.taskId) as any;parsed=row?.task?JSON.parse(row.task):undefined;}catch{/* 记录缺失就退回立案里的截断版 */}
+  const originalTitle=String(parsed?.title||item.task||'');
+  const crew=config.agents.find(agent=>agent.id===item.agentId)||config.agents.find(agent=>agent.name===item.agent);
+  if(!crew){new BudgetEscalations(db()).decide(item.id,false);ui.notify(`代表「${item.agent}」已不存在，无法重派；本案已驳回。`,'warning');return 'decided';}
+  // 原直属代表还在跑就挂回它名下（delegationDepth=1），责任链不断；否则作直派任务。
+  const owner=parsed?.parentWorkerId?pool.tasks.find(t=>t.id===String(parsed.parentWorkerId)&&!terminalStates.has(t.status||'')):undefined;
+  const instruction=redispatchInstruction({taskId:item.taskId,agent:item.agent,spent:item.spent,cap:item.cap,newCap,title:originalTitle,digest:item.digest??(parsed?.checkpoint?String(parsed.checkpoint).slice(0,MAX_ESCALATION_DIGEST_CHARS):undefined)});
+  try{
+   pool.launch({...crew},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),Array.from(READ_ONLY_TOOLS),crew.skills??[],false,owner?1:0,owner?.id,newCap,{purpose:'delegation'});
+  }catch(error){ui.notify('重派失败：'+clean(error)+'；本案仍在队列，可重试或拒绝','warning');return 'skipped';}
+  // 先 launch 后记账：launch 失败时案件还在队列里，人类的批准不会蒸发。
+  const escalations=new BudgetEscalations(db());
+  escalations.decide(item.id,true);
+  escalations.markDispatched(item.id);
+  ui.notify(`已按 ${formatTokens(newCap)} tokens 重派 ${item.agent}${owner?`（挂回「${owner.agent}」名下）`:''}`,'info');
+  return 'decided';
+ }
+ /** 新立案（或总理附议）自动弹审批：只弹没被搁下过的；搁下过的等 F2。 */
+ function queueBudgetApproval(id:string){
+  if(budgetApprovalSeen.has(id))return;
+  setTimeout(()=>{void runBudgetApprovals(current,true);},150);
+ }
  const watchdogJudge:WatchdogJudge=minimalCompletion;
  /** 对一次"到复核点"的任务做一次模型判定。失败静默——watchdog 不能影响任务本身。 */
  const judgeReview=async(task:any)=>{
@@ -843,7 +909,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }
   if(!params.escalationId||params.suggestedTokens===undefined)throw Error('propose 需要 escalationId 与 suggestedTokens');
   if(!store.propose(params.escalationId,params.suggestedTokens,params.note))throw Error('立案不存在或已不在待批状态');
-  if(desk){desk.notice=`总理建议 ${formatTokens(params.suggestedTokens)} tokens · F2 → 预算追加审批`;scheduleRepaint();}
+  if(desk){desk.notice=`总理建议 ${formatTokens(params.suggestedTokens)} tokens · 审批即将弹出`;scheduleRepaint();queueBudgetApproval(String(params.escalationId));}
   return{content:[{type:'text',text:`评估已登记。人类将在 F2 → 预算追加审批 中决定；批准后系统按新额度重派。在此之前请勿重派或声称已获批。`}],details:{escalationId:params.escalationId,proposal:params.suggestedTokens}};
  }});
  pi.registerTool({name:'kepos_grant',label:'权限申请与转授',description:'代表申请写权限，或把自身持有的权限转授给僚属。审批链：代表申请 → 代理总代转呈 → 总理批准 → 人类确认。授权绑定在这一次任务的进程上，任务结束即失效。转授不能超过自身持有范围。',parameters:Type.Object({action:Type.Union(['request','grant','status'].map(value=>Type.Literal(value))),tools:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'request: 申请的写权限（bash/powershell/edit/write）；grant: 要转授给僚属的子集'})),reason:Type.Optional(Type.String({maxLength:500,description:'request 必填：要改什么、为什么必须写'})),taskId:Type.Optional(Type.String({description:'申请者任务 id；缺省取当前会话最近的任务'})),member:Type.Optional(Type.String({description:'grant 时指定僚属名称或任务 id'})),grantId:Type.Optional(Type.String({description:'status/approve 时指定授权 id'})),approve:Type.Optional(Type.Boolean({description:'true 表示人类确认批准（严格模式下必须显式传）'})),note:Type.Optional(Type.String({maxLength:300,description:'批准或驳回的理由，写入审计'})),text:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
@@ -1365,40 +1431,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   return;
  }
  // 预算截停的审批队列（人类的裁定：截停立案、总理呈报、人类批准后按新额度重派）。
- // 直派任务与僚属同一逻辑；重派是"续接"不是重开——原任务全文与检查点都带上。
+ // F2 入口与自动前置通道共用同一对话：批一审一，直到队列清空或按了稍后。
  if(action.kind==='budget-escalations'){
-  const escalations=new BudgetEscalations(db());
-  const pending=escalations.pending();
-  if(!pending.length){ui.notify('没有待审批的预算追加。','info');return;}
-  const label=(item:any)=>`${item.agent} 已耗 ${formatTokens(item.spent)} / 上限 ${formatTokens(item.cap)} · ${clean(item.task).slice(0,46)}`;
-  const pick=await ui.select(`预算追加待批（${pending.length}）`,[...pending.map(label),'返回']);
-  const item=pending.find(entry=>label(entry)===pick);
-  if(!item)return;
-  const proposalLine=item.proposal?`\n总理建议额度：${formatTokens(item.proposal)} tokens${item.note?`（${clean(item.note).slice(0,120)}）`:''}`:'';
-  const decision=await ui.select(`${item.agent} · 已耗 ${formatTokens(item.spent)} / 上限 ${formatTokens(item.cap)} tokens\n原任务：${clean(item.task).slice(0,120)}${proposalLine}\n\n批准后立即按新额度续接重派；拒绝则本案了结。`,['批准并重派','拒绝','返回']);
-  if(decision==='拒绝'){escalations.decide(item.id,false);ui.notify(`已拒绝 ${item.agent} 的预算追加；任务保持截停状态。`,'info');return;}
-  if(decision!=='批准并重派')return;
-  const suggestion=item.proposal??Math.max(2000,Math.ceil(item.spent*2/1000)*1000);
-  const input=await ui.input('新额度（tokens，不少于 1000）',String(suggestion));
-  if(input===undefined||!input.trim())return;
-  const newCap=Number(input.trim());
-  if(!Number.isInteger(newCap)||newCap<1000){ui.notify('额度必须是不少于 1000 的整数','warning');return;}
-  // 原任务全文与父链从 workers 表读回：立案里只存了截断版。
-  let parsed:any;try{const row=db().prepare('SELECT task FROM workers WHERE id=?').get(item.taskId) as any;parsed=row?.task?JSON.parse(row.task):undefined;}catch{/* 记录缺失就退回立案里的截断版 */}
-  const originalTitle=String(parsed?.title||item.task||'');
-  const crew=config.agents.find(agent=>agent.id===item.agentId)||config.agents.find(agent=>agent.name===item.agent);
-  if(!crew){escalations.decide(item.id,false);ui.notify(`代表「${item.agent}」已不存在，无法重派；本案已驳回。`,'warning');return;}
-  // 原直属代表还在跑就挂回它名下（delegationDepth=1），责任链不断；否则作直派任务。
-  const owner=parsed?.parentWorkerId?pool.tasks.find(t=>t.id===String(parsed.parentWorkerId)&&!terminalStates.has(t.status||'')):undefined;
-  const instruction=redispatchInstruction({taskId:item.taskId,agent:item.agent,spent:item.spent,cap:item.cap,newCap,title:originalTitle,digest:item.digest??(parsed?.checkpoint?String(parsed.checkpoint).slice(0,MAX_ESCALATION_DIGEST_CHARS):undefined)});
-  try{
-   pool.launch({...crew},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),Array.from(READ_ONLY_TOOLS),crew.skills??[],false,owner?1:0,owner?.id,newCap,{purpose:'delegation'});
-  }catch(error){ui.notify('重派失败：'+clean(error)+'；本案仍在队列，可重试或拒绝','warning');return;}
-  // 先 launch 后记账：launch 失败时案件还在队列里，人类的批准不会蒸发
-  //（同僚属批准"成功后才消费"的时序教训）。
-  escalations.decide(item.id,true);
-  escalations.markDispatched(item.id);
-  ui.notify(`已按 ${formatTokens(newCap)} tokens 重派 ${item.agent}${owner?`（挂回「${owner.agent}」名下）`:''}`,'info');
+  await runBudgetApprovals(local,false);
   return;
  }
  // 自动化能力：三项独立开关，全部默认关闭。
