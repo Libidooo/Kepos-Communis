@@ -38,34 +38,20 @@ export const MAX_BRIEFING_CHARS = 2000;
  * 抬头存在的原因不是装饰：模型读到的是一段普通文本，
  * 没有这个标记它会把"改需求"当成"补充信息"，继续按原计划往下做。
  */
-export const BRIEFING_HEADER = '## 人类变更（加急 · 重排当前安排）';
+export const BRIEFING_HEADER = '## 人类加急';
 
 /**
- * 给总理的加急指令。
+ * 给总理的加急指令：只带人类原话和加急标记。
  *
- * 明确要求三件事：先看当下进度、再看此前安排、然后重排——
- * 顺序反过来就是"按新想法推倒重来"，那会丢掉已经完成的工作。
- * 人多时交给代理总代，是治理规则，不是可选项：总理自己扛 48 个代表的重排
- * 会挤掉它做判断的注意力。
+ * 重排纪律（先读进度、再对照计划、显式取消被替代的任务）常驻在监督提示词里，
+ * 不必随每条加急重复注入——此前整段模板跟进来，对话里满屏"你需要做的"，
+ * 人类只说了一句话，界面却像发了一篇檄文。
  */
-export function premierBriefing(text: string, context: { running: number; waiting: number; hasDeputy: boolean; deputyName?: string }): string {
-  const scale = context.running || context.waiting
-    ? `当前有 ${context.running} 个任务运行中${context.waiting ? `，${context.waiting} 个在等人处理` : ''}。`
-    : '当前没有运行中的任务。';
+export function premierBriefing(text: string): string {
   return [
     BRIEFING_HEADER,
     '',
     text.trim().slice(0, MAX_BRIEFING_CHARS),
-    '',
-    '## 你需要做的',
-    scale,
-    '1. 先读当下进度：哪些任务已经产出了可用的部分，哪些还在起步。不要推倒已完成的工作。',
-    '2. 再对照此前安排：这条变更影响了计划里的哪几步，哪些步骤因此没必要再做。',
-    '3. 然后重排：用 kepos_plan 调整步骤，或重新分派；把被替代的任务显式取消，别让它们跑完再丢弃。',
-    context.hasDeputy
-      ? `4. 代表较多时把重排后的执行分给代理总代「${context.deputyName || '现任'}」，你只保留判断与对外汇报；不要自己逐个盯。`
-      : '4. 代表较多时考虑推选一位代理总代来分担派发，你只保留判断。',
-    '5. 重排完成后用一句话向人类说明：改了哪几步、哪些在继续、哪些已停。',
   ].join('\n');
 }
 

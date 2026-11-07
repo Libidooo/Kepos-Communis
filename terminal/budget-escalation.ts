@@ -62,7 +62,7 @@ export function budgetStopReport(input: {
     input.owner ? `它是「${input.owner}」的僚属，直属代表已被要求评估。` : '',
     `原任务：${truncate(input.title, 200)}`,
     input.digest ? `前次要点：${truncate(input.digest, 300)}` : '',
-    `请用 kepos_budget(action='propose', escalationId='${input.escalationId}', suggestedTokens=…) 附上你的额度评估——估计要从宽：议会角色提示词本身已有数千 token。人类会在 F2 → 预算追加审批 里决定；批准后系统按新额度重派。在此之前不要重派该任务，也不要声称人类已批准。`,
+    `请用 kepos_budget(action='propose', escalationId='${input.escalationId}', suggestedTokens=…) 附上你的额度评估——估计要从宽：议会角色提示词本身已有数千 token。严格模式下人类会在 F2 → 预算追加审批 里决定；代理模式下你的建议（不超过单任务默认 2M 时）会自动生效并按新额度重派，留痕可查，超出该上限才呈报人类。在此之前不要重派该任务，也不要声称人类已批准。`,
   ].filter(Boolean).join('\n');
 }
 
@@ -129,6 +129,12 @@ export class BudgetEscalations {
     const result = this.database.prepare("UPDATE budget_escalations SET state=?, decided_at=? WHERE id=? AND state='pending'")
       .run(state, Date.now(), id);
     return Number(result.changes ?? 0) > 0;
+  }
+
+  /** 取一案的完整记录（代理审批自动重派要用到任务字段）。 */
+  byId(id: string): BudgetEscalation | undefined {
+    const row = this.database.prepare('SELECT * FROM budget_escalations WHERE id=?').get(id) as any;
+    return row ? this.hydrate(row) : undefined;
   }
 
   /** 一案的去向：propose 打到已决案时，总理该知道它去了哪，而不是"不存在"。 */

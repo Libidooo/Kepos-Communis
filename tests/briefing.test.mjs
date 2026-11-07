@@ -16,36 +16,22 @@ function fresh(){
 
 // 加急指令必须和普通补充信息区分开，否则模型会把"改需求"当成"多做一点"。
 test('both briefings carry an urgent header the model can key on',()=>{
-  const toPremier=premierBriefing('把鉴权换成 OAuth',{running:3,waiting:1,hasDeputy:false});
+  const toPremier=premierBriefing('把鉴权换成 OAuth');
   const toAgent=representativeBriefing('把鉴权换成 OAuth',{name:'总理',role:'premier'});
   assert.ok(toPremier.startsWith(BRIEFING_HEADER));
   assert.ok(toAgent.startsWith(BRIEFING_HEADER));
   assert.match(BRIEFING_HEADER,/加急/);
-  assert.match(BRIEFING_HEADER,/重排/);
 });
 
-// 报告的次序：先看已完成、再对照计划、最后才重排。反过来就是推倒重来。
-test('the premier is told to read progress before re-planning',()=>{
-  const text=premierBriefing('目标改为支持多租户',{running:4,waiting:2,hasDeputy:false});
-  assert.match(text,/4 个任务运行中/);
-  assert.match(text,/2 个在等人处理/);
-  const readAt=text.indexOf('先读当下进度');
-  const planAt=text.indexOf('再对照此前安排');
-  const replanAt=text.indexOf('然后重排');
-  assert.ok(readAt>0&&planAt>readAt&&replanAt>planAt,'order is progress → plan → re-plan');
-  assert.match(text,/不要推倒已完成的工作/);
-  assert.match(text,/显式取消/,'replaced tasks are cancelled, not left running');
-});
-
-// 人多时必须把派发交给代理总代：总理的注意力是稀缺资源。
-test('with many delegates the re-planning is handed to the deputy',()=>{
-  const withDeputy=premierBriefing('改需求',{running:20,waiting:0,hasDeputy:true,deputyName:'总代甲'});
-  assert.match(withDeputy,/分给代理总代「总代甲」/);
-  assert.match(withDeputy,/不要自己逐个盯/);
-  const without=premierBriefing('改需求',{running:20,waiting:0,hasDeputy:false});
-  assert.match(without,/考虑推选一位代理总代/);
-  // 规模正常时不必惊动代理总代。
-  assert.match(without,/考虑推选/, 'still advisory when none elected');
+// 0.5.1 后总理的加急只带人类原话：重排纪律常驻在监督提示词里，
+// 不随每条加急整段注入——人类说一句，界面不该刷一篇檄文。
+test('the premier briefing is the human words plus the urgent mark, nothing else',()=>{
+  const text=premierBriefing('策略官呢');
+  assert.equal(text,[BRIEFING_HEADER,'','策略官呢'].join('\n'));
+  assert.ok(!text.includes('## 你需要做的'),'no injected checklist');
+  assert.ok(!text.includes('任务运行中'),'no injected scale report');
+  const long=premierBriefing('x'.repeat(MAX_BRIEFING_CHARS+50));
+  assert.ok(long.length<MAX_BRIEFING_CHARS+100,'still bounded');
 });
 
 // 代表这条路径的要点是"停下"，不是"注意"。

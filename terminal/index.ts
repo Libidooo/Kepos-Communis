@@ -151,8 +151,11 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
  * 所以调用方必须真的需要结果才调它。
  */
  const minimalCompletion=async(prompt:string,options:{budgetTokens?:number;title?:string}={})=>{
-  const crew=config.agents[0];
-  if(!crew?.model)throw Error('没有可用的代表配置，无法执行内部生成');
+  const anchor=config.agents[0];
+  if(!anchor?.model)throw Error('没有可用的代表配置，无法执行内部生成');
+  // 内部任务用独立席位，不占代表席：挤在 agents[0] 名下，策略官的历史健康度
+  // 会被记忆整理/配置生成的失败污染——"每次报错都有策略官"就是这么来的。
+  const crew={id:'internal-executor',name:'内部执行席',role:'内部系统任务：配置生成、记忆整理、复核判定。不承担代表职责。',model:anchor.model,provider:anchor.provider,tools:Array.from(READ_ONLY_TOOLS),skills:[]};
   // 内部生成自己会产生 task_finished 事件，那条事件又会触发记忆整理——
   // 而记忆整理再调本函数。没有这道闸，一条任务能繁殖出无限条内部任务。
   if(internalGeneration>0)throw Error('内部生成正在进行，跳过以避免递归');
@@ -304,7 +307,8 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    void pi.sendUserMessage(budgetStopReport({escalationId,agent:String(task.agent),taskId:String(task.id),spent,cap,title:String(task.title||''),digest:digest.slice(0,300),owner:ownerName}),{deliverAs:'steer'});
    // 铃声在后台段响：人关着书案也该被叫醒（同门禁铃声的考量）。
    if(process.stdout.isTTY)process.stdout.write('\x07');
-   if(desk){desk.notice=`预算截停已立案 · ${task.agent} · 审批即将弹出`;scheduleRepaint();queueBudgetApproval(escalationId);}
+   // 代理模式不弹人工审批：总理附议即自动重派（≤2M，留痕）。严格模式才前置弹窗。
+   if(desk){desk.notice=`预算截停已立案 · ${task.agent} · ${currentPolicy()==='proxy'?'等待总理评估（代理档自动生效）':'审批即将弹出'}`;scheduleRepaint();if(currentPolicy()!=='proxy')queueBudgetApproval(escalationId);}
   }catch{/* 立案失败不影响截停本身：任务已停，证据在归档里 */}
  };
  // ── 预算审批的前置通道 ──
@@ -333,6 +337,26 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   }finally{budgetDialogBusy=false;}
  }
  /** 一案一屏：批准（建议额度）/ 自定义额度 / 拒绝 / 稍后。返回是否了结了此案。 */
+ /** 按新额度续接重派（人工审批与代理审批共用）。返回是否成案。 */
+ async function applyBudgetApproval(ctx:any,notify:(text:string,kind?:string)=>void,item:any,newCap:number):Promise<boolean>{
+  // 原任务全文与父链从 workers 表读回：立案里只存了截断版。
+  let parsed:any;try{const row=db().prepare('SELECT task FROM workers WHERE id=?').get(item.taskId) as any;parsed=row?.task?JSON.parse(row.task):undefined;}catch{/* 记录缺失就退回立案里的截断版 */}
+  const originalTitle=String(parsed?.title||item.task||'');
+  const crew=config.agents.find(agent=>agent.id===item.agentId)||config.agents.find(agent=>agent.name===item.agent);
+  if(!crew){new BudgetEscalations(db()).decide(item.id,false);notify(`代表「${item.agent}」已不存在，无法重派；本案已驳回。`,'warning');return true;}
+  // 原直属代表还在跑就挂回它名下（delegationDepth=1），责任链不断；否则作直派任务。
+  const owner=parsed?.parentWorkerId?pool.tasks.find(t=>t.id===String(parsed.parentWorkerId)&&!terminalStates.has(t.status||'')):undefined;
+  const instruction=redispatchInstruction({taskId:item.taskId,agent:item.agent,spent:item.spent,cap:item.cap,newCap,title:originalTitle,digest:item.digest??(parsed?.checkpoint?String(parsed.checkpoint).slice(0,MAX_ESCALATION_DIGEST_CHARS):undefined)});
+  try{
+   pool.launch({...crew},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),Array.from(READ_ONLY_TOOLS),crew.skills??[],false,owner?1:0,owner?.id,newCap,{purpose:'delegation'});
+  }catch(error){notify('重派失败：'+clean(error)+'；本案仍在队列，可重试或拒绝','warning');return false;}
+  // 先 launch 后记账：launch 失败时案件还在队列里，批准不会蒸发。
+  const escalations=new BudgetEscalations(db());
+  escalations.decide(item.id,true);
+  escalations.markDispatched(item.id);
+  notify(`已按 ${formatTokens(newCap)} tokens 重派 ${item.agent}${owner?`（挂回「${owner.agent}」名下）`:''}`,'info');
+  return true;
+ }
  async function budgetApprovalDialog(ui:any,ctx:any,item:any):Promise<'decided'|'skipped'>{
   // 兜底从宽：总理没附议时按已耗两倍且不低于 5 万预填——几千 token 的"建议"只够再截停一次。
   const suggestion=item.proposal??Math.max(50_000,Math.ceil(item.spent*2/1000)*1000);
@@ -350,23 +374,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    newCap=Number(input.trim());
    if(!Number.isInteger(newCap)||newCap<1000){ui.notify('额度必须是不少于 1000 的整数','warning');return 'skipped';}
   }
-  // 原任务全文与父链从 workers 表读回：立案里只存了截断版。
-  let parsed:any;try{const row=db().prepare('SELECT task FROM workers WHERE id=?').get(item.taskId) as any;parsed=row?.task?JSON.parse(row.task):undefined;}catch{/* 记录缺失就退回立案里的截断版 */}
-  const originalTitle=String(parsed?.title||item.task||'');
-  const crew=config.agents.find(agent=>agent.id===item.agentId)||config.agents.find(agent=>agent.name===item.agent);
-  if(!crew){new BudgetEscalations(db()).decide(item.id,false);ui.notify(`代表「${item.agent}」已不存在，无法重派；本案已驳回。`,'warning');return 'decided';}
-  // 原直属代表还在跑就挂回它名下（delegationDepth=1），责任链不断；否则作直派任务。
-  const owner=parsed?.parentWorkerId?pool.tasks.find(t=>t.id===String(parsed.parentWorkerId)&&!terminalStates.has(t.status||'')):undefined;
-  const instruction=redispatchInstruction({taskId:item.taskId,agent:item.agent,spent:item.spent,cap:item.cap,newCap,title:originalTitle,digest:item.digest??(parsed?.checkpoint?String(parsed.checkpoint).slice(0,MAX_ESCALATION_DIGEST_CHARS):undefined)});
-  try{
-   pool.launch({...crew},instruction,ctx.cwd,ctx.sessionManager.getSessionFile()||'',DEFAULT_TASK_SECONDS,undefined,ctx.sessionManager.getSessionId(),Array.from(READ_ONLY_TOOLS),crew.skills??[],false,owner?1:0,owner?.id,newCap,{purpose:'delegation'});
-  }catch(error){ui.notify('重派失败：'+clean(error)+'；本案仍在队列，可重试或拒绝','warning');return 'skipped';}
-  // 先 launch 后记账：launch 失败时案件还在队列里，人类的批准不会蒸发。
-  const escalations=new BudgetEscalations(db());
-  escalations.decide(item.id,true);
-  escalations.markDispatched(item.id);
-  ui.notify(`已按 ${formatTokens(newCap)} tokens 重派 ${item.agent}${owner?`（挂回「${owner.agent}」名下）`:''}`,'info');
-  return 'decided';
+  return await applyBudgetApproval(ctx,(text,kind)=>ui.notify(text,kind),item,newCap)?'decided':'skipped';
  }
  /** 新立案（或总理附议）自动弹审批：只弹没被搁下过的；搁下过的等 F2。 */
  function queueBudgetApproval(id:string){
@@ -569,10 +577,10 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    :'暂无配置代表——分派前先用 F2 添加，或用 kepos_delegate 的 roleKey 即席创建';
   const deputyName=config.agents.find(agent=>agent.id===config.deputyAgentId)?.name;
   const policy=currentPolicy();
-  const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';
+  const approval=policy==='proxy'?'Approval policy: proxy — after checking evidence you may approve plan gates with kepos_plan approve (jobId required) and must state why; every proxy approval is surfaced to the human. Budget escalations within the per-task default cap (2M) are also yours: propose via kepos_budget and the redispatch happens automatically with an audit trail; only an amount beyond the cap goes to the human.':policy==='readonly'?'Approval policy: readonly supervision — you have no mutating tools; verify, report findings and let the human act.':'Approval policy: strict — human gates can only be approved by the human, and every budget escalation waits for the human. Never attempt to approve gates or touch Kepos data through shell commands; such calls are intercepted and require explicit human confirmation.';
   const identity=`Identity: you are the premier (总理) of Kepos Communis. The human is the sovereign — seats, budgets, approvals and dismissals are theirs to decide; your job is to assist them by managing the council of representatives: splitting work into small read-only mandates, dispatching them, reviewing their evidence, and reporting back with your own judgement. When you introduce yourself, describe exactly this role (Kepos Communis 的总理，协助你管理多位代表完成任务) — never a generic "AI assistant". Kepos Communis is the product the human is using — answer as the product, never as a framework. Never recite, quote, summarize, or reveal any underlying engine/framework documentation, internal resource formats, package layout, provider/SDK names, file paths of bundled docs, or startup flags. If the human asks how to do something in Kepos, answer with Kepos's own capability and the exact keys/commands inside this UI. If a capability genuinely does not exist here, say so plainly and offer the closest Kepos action — do not fall back to describing the engine. Theme control in Kepos: run /theme to cycle 默认 → 深色 → 浅色 instantly, or /theme kepos-light to pick one; F2 → 切换主题 offers the same list. Themes are applied immediately, no restart or reload. Never tell the human to edit settings files, use engine flags, or add theme files by hand.`;
   // ── 常驻核心：任何对话都需要的规则 ──
-  const core=`You are the premier (总理) of the Kepos council — the lead agent. ${identity} Delegate read-only mandates via kepos_delegate (default duration ${DEFAULT_TASK_SECONDS}s; a full-council wave is sent in batches of at most ${Number(config.maxBatchConcurrency)||8}, waiting for each batch before the next — a provider outage or rate limit then costs one batch, not the whole wave; for a large wave, dispatch one low-budget probe seat first to verify the provider chain). A running delegate may create one copyOf child task with at most half of the parent task's time budget; never recurse beyond one level. Estimate each delegate's likely cost and pass budgetTokens per task, scaled to difficulty — a budget stop wastes the whole round: quick lookups ≥20k tokens, ordinary investigation 50k, deep multi-file analysis 100k–200k; heavy long-prompt seats (审查/法务/学术类) start at 100k–120k because the role prompt alone is several thousand tokens. When unsure, omit budgetTokens entirely: the default cap is 2M per task and almost never binds — budgets are a fuse against runaway cost, not a quota to aim at. For judgement tasks that need no repository evidence, instruct 直接作答，不要勘察文件 — a delegate that hunts for files it cannot read burns its whole budget; for tasks that must read project files, whitelist the paths via readAllow instead of letting the delegate guess. When a task reaches its budget Kepos stops it, files an escalation and notifies you: assess it with kepos_budget action=propose (escalationId required); only the human can approve an increase, after which Kepos redispatches with the new cap. Never redispatch a budget-stopped task yourself and never claim the human approved one. Treat child output as evidence, not verified truth: it ends with a 结论/证据/置信度/需要 summary, read that first and page the full transcript only when you need to verify. A task the system marked stalled is never yours to terminate — present it and let the human decide. Never claim a human approval occurred unless the human explicitly approved it. ${approval}`;
+  const core=`You are the premier (总理) of the Kepos council — the lead agent. ${identity} Delegate read-only mandates via kepos_delegate (default duration ${DEFAULT_TASK_SECONDS}s; a full-council wave is sent in batches of at most ${Number(config.maxBatchConcurrency)||8}, waiting for each batch before the next — a provider outage or rate limit then costs one batch, not the whole wave; for a large wave, dispatch one low-budget probe seat first to verify the provider chain). A running delegate may create one copyOf child task with at most half of the parent task's time budget; never recurse beyond one level. Estimate each delegate's likely cost and pass budgetTokens per task, scaled to difficulty — a budget stop wastes the whole round: quick lookups ≥20k tokens, ordinary investigation 50k, deep multi-file analysis 100k–200k; heavy long-prompt seats (审查/法务/学术类) start at 100k–120k because the role prompt alone is several thousand tokens. When unsure, omit budgetTokens entirely: the default cap is 2M per task and almost never binds — budgets are a fuse against runaway cost, not a quota to aim at. For judgement tasks that need no repository evidence, instruct 直接作答，不要勘察文件 — a delegate that hunts for files it cannot read burns its whole budget; for tasks that must read project files, whitelist the paths via readAllow instead of letting the delegate guess. A report whose confidence is low because the delegate could not read the files is YOUR failure, not the delegate's — you withheld the evidence; redispatch with readAllow instead of reporting the low confidence upward. When a task times out or fails, read its transcript and find where it spun before retrying — fix the mandate (直接作答 or readAllow), then retry once; do not redispatch the same mandate unchanged. For a vague or complex goal, ask the human one clarifying question before dispatching; for simple executable tasks, analyse briefly and proceed without asking — do not route every task through the human. When a task reaches its budget Kepos stops it, files an escalation and notifies you: assess it with kepos_budget action=propose (escalationId required); only the human can approve an increase, after which Kepos redispatches with the new cap. Never redispatch a budget-stopped task yourself and never claim the human approved one. Treat child output as evidence, not verified truth: it ends with a 结论/证据/置信度/需要 summary, read that first and page the full transcript only when you need to verify. A task the system marked stalled is never yours to terminate — present it and let the human decide. Never claim a human approval occurred unless the human explicitly approved it. ${approval}`;
   // ── 按需：有代表才需要复核与分派细节 ──
   // 精简版：工具名与用法已写在各工具自身的 description 里，这里只留编排规则。
   const supervision=config.agents.length?`Kepos only wakes you when a delegate has been idle ${STALL_REVIEW_CYCLES} review cycles or needs a human decision — normal progress does not interrupt you; when woken, check kepos_events/kepos_tasks then acknowledge with kepos_worker review. Check kepos_roles before inventing a role and kepos_skills before selecting a Skill. Use background:true when the human needs to keep talking. Infer naming locale from the latest human prompt: Chinese prompts use Chinese display names, English prompts use English display names; preserve existing names.`:'';
@@ -934,8 +942,20 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
    const fates:Record<string,string>={denied:'已被人类拒绝（任务保持截停，重派需人类重新发起）',approved:'已被人类批准，正在按新额度重派',dispatched:'已被人类批准并重派完成'};
    throw Error(`立案 ${params.escalationId} ${where?fates[where.state]||('当前状态 '+where.state):'不存在（可能 id 抄错）'}`);
   }
-  if(desk){desk.notice=`总理建议 ${formatTokens(params.suggestedTokens)} tokens · 审批即将弹出`;scheduleRepaint();queueBudgetApproval(String(params.escalationId));}
-  return{content:[{type:'text',text:`评估已登记。人类将在 F2 → 预算追加审批 中决定；批准后系统按新额度重派。在此之前请勿重派或声称已获批。`}],details:{escalationId:params.escalationId,proposal:params.suggestedTokens}};
+  // 代理模式的分权（人类裁定）：单任务追加在默认额度内（≤2M）由总理评估即生效、
+  // 留痕重派；只有需要突破单任务总额度时才呈报人类。严格模式仍逐案人工审批。
+  if(currentPolicy()==='proxy'&&params.suggestedTokens<=DEFAULT_TASK_TOKEN_BUDGET){
+   const item=store.byId(String(params.escalationId));
+   if(item){
+    const applied=await applyBudgetApproval(current,(text,kind)=>{if(desk){desk.notice=text;scheduleRepaint();}},item,Number(params.suggestedTokens));
+    if(applied)return{content:[{type:'text',text:`代理审批已生效：按 ${formatTokens(Number(params.suggestedTokens))} tokens 续接重派（留痕可查）。额度超过单任务默认上限（${formatTokens(DEFAULT_TASK_TOKEN_BUDGET)}）时才需要人类批准。`}],details:{escalationId:params.escalationId,proposal:params.suggestedTokens,autoApproved:true}};
+    return{content:[{type:'text',text:`重派暂未成功（见通知），本案保留待批。`}],details:{escalationId:params.escalationId}};
+   }
+  }
+  if(desk&&currentPolicy()!=='proxy'){desk.notice=`总理建议 ${formatTokens(params.suggestedTokens)} tokens · 审批即将弹出`;scheduleRepaint();queueBudgetApproval(String(params.escalationId));}
+  return{content:[{type:'text',text:currentPolicy()==='proxy'
+   ?`评估已登记。该额度超过单任务默认上限，需人类批准（F2 → 预算追加审批）；批准后系统按新额度重派。在此之前请勿重派或声称已获批。`
+   :`评估已登记。人类将在 F2 → 预算追加审批 中决定；批准后系统按新额度重派。在此之前请勿重派或声称已获批。`}],details:{escalationId:params.escalationId,proposal:params.suggestedTokens}};
  }});
  pi.registerTool({name:'kepos_grant',label:'权限申请与转授',description:'代表申请写权限，或把自身持有的权限转授给僚属。审批链：代表申请 → 代理总代转呈 → 总理批准 → 人类确认。授权绑定在这一次任务的进程上，任务结束即失效。转授不能超过自身持有范围。',parameters:Type.Object({action:Type.Union(['request','grant','status'].map(value=>Type.Literal(value))),tools:Type.Optional(Type.Array(Type.String({maxLength:40}),{description:'request: 申请的写权限（bash/powershell/edit/write）；grant: 要转授给僚属的子集'})),reason:Type.Optional(Type.String({maxLength:500,description:'request 必填：要改什么、为什么必须写'})),taskId:Type.Optional(Type.String({description:'申请者任务 id；缺省取当前会话最近的任务'})),member:Type.Optional(Type.String({description:'grant 时指定僚属名称或任务 id'})),grantId:Type.Optional(Type.String({description:'status/approve 时指定授权 id'})),approve:Type.Optional(Type.Boolean({description:'true 表示人类确认批准（严格模式下必须显式传）'})),note:Type.Optional(Type.String({maxLength:300,description:'批准或驳回的理由，写入审计'})),text:Type.Optional(Type.String({maxLength:300}))}),async execute(_id,params,_signal,_update,ctx){
   // 授权表：按任务 id 记，任务终态时由 sweepGrants 清掉，绝不跨任务保留。
@@ -1858,14 +1878,7 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 给总理的加急指令：带上当前规模与"先看进度再重排"的顺序要求。
   // 人多时明确交给代理总代分担派发——那是治理规则，不是建议。
   // 这里只拼文案，不落库：拼装和在途统计都可能被反复调用，落库只在真的送达时做。
-  desk.briefingForPremier=(text:string)=>{
-   const running=pool.tasks.filter(t=>!terminalStates.has(t.status||'')).length;
-   // "待处理"读全库唯一的判定源：这里自己数 reviewDue||stalled 会漏掉门禁，
-   // 于是通知里说的规模和徽章上的数字对不上。
-   const waiting=awaitingHuman(pool.tasks).length;
-   const deputy=config.agents.find(agent=>agent.id===config.deputyAgentId);
-   return premierBriefing(text,{running,waiting,hasDeputy:Boolean(deputy),deputyName:deputy?.name});
-  };
+  desk.briefingForPremier=(text:string)=>premierBriefing(text);
   desk.superiorOf=superiorOf;
   // 送达确认：只有进队成功才记 queued；失败也记下来，别让「已加急」变成没有出处的提示。
   desk.briefingDelivered=(delivery,text)=>{
