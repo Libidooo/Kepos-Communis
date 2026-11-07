@@ -300,31 +300,34 @@ export function makeNodes(snapshot: GraphViewSnapshot): VisualNode[] {
   return nodes;
 }
 
-// 议会形态：默认一个 48 席大圆环。活跃任务变多时按分组聚成若干小环，
-// 每组的第一席（代理总代）朝向总理所在的中心，其余席位绕它排开。
+// 议会形态：默认一个 48 席大圆环（与 logo 同形）。只有真实工作小组（group: 前缀）
+// 才另起小环，每组的第一席朝向总理所在的中心，其余席位绕它排开。
+// 席位数量、会话/计划键都不构成拆环理由——"默认四个圈"就是按数量拆环的产物。
 // 这是既定的产品形态——不要改成同心环或泳道。
 function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: number, offsets: GraphOffsets, reserveSidebar = false) {
-  const activeCount = nodes.filter(node => node.task).length;
-  const ringCount = activeCount > 12 ? Math.max(2, Math.ceil(nodes.length / 12)) : 1;
-  // 单环就是全体；多环按 groupKey 聚组，每组最多 12 席。
-  const groups: VisualNode[][] = ringCount === 1 ? [nodes] : (() => {
-    const byGroup = new Map<string, VisualNode[]>();
-    for (const node of nodes) {
-      const list = byGroup.get(node.groupKey) ?? [];
+  // 拆环的唯一理由是协作：同 group: 的活跃席位聚成小环，其余全部落主环。
+  const groupRings = new Map<string, VisualNode[]>();
+  const mainRing: VisualNode[] = [];
+  for (const node of nodes) {
+    if (node.task && node.groupKey.startsWith('group:')) {
+      const list = groupRings.get(node.groupKey) ?? [];
       list.push(node);
-      byGroup.set(node.groupKey, list);
-    }
-    return [...byGroup.values()].flatMap(list =>
-      Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => list.slice(i * 12, i * 12 + 12)),
-    );
-  })();
+      groupRings.set(node.groupKey, list);
+    } else mainRing.push(node);
+  }
+  // 主环永远在（哪怕只剩总理和空席）；每组超 12 席再顺环拆分。
+  const groups: VisualNode[][] = groupRings.size
+    ? [mainRing, ...[...groupRings.values()].flatMap(list =>
+        Array.from({ length: Math.ceil(list.length / 12) }, (_, i) => list.slice(i * 12, i * 12 + 12)))]
+    : [nodes];
+  const ringCount = groups.length;
   const canvasWidth = width >= 120 && reserveSidebar ? width - 38 : width;
   const center = { x: Math.floor(canvasWidth / 2), y: Math.floor(height / 2) };
   const tracks: { cx: number; cy: number; rx: number; ry: number }[] = [];
   // 小环的环绕轨道：随 zoom 一起缩放，和环本身保持一致。
-  // 多环时要给小环本身留出直径，否则相邻两环会压到一起、把标签挤到总理座上。
-  const orbit = ringCount === 1 ? 0 : Math.min(canvasWidth * .26, 22) * zoom;
-  const orbitY = ringCount === 1 ? 0 : Math.min(height * .30, 10) * zoom;
+  // 间距从宽——有缩放兜底，宁可让用户拉近，也不要小环互相压住（"黏得太紧"的教训）。
+  const orbit = ringCount === 1 ? 0 : Math.min(canvasWidth * .30, 28) * zoom;
+  const orbitY = ringCount === 1 ? 0 : Math.min(height * .32, 12) * zoom;
   groups.forEach((group, ringIndex) => {
     const ringCenter = ringCount === 1 ? center : {
       x: Math.round(center.x + Math.cos((ringIndex / groups.length) * Math.PI * 2 - Math.PI / 2) * orbit),
@@ -351,8 +354,8 @@ function layoutNodes(nodes: VisualNode[], width: number, height: number, zoom: n
       baseRy = baseRx * ratio;
     }
     // 多环时小环半径不能超过环绕轨道的一半，否则相邻分组会互相压住。
-    const sizeCapX = ringCount === 1 ? spreadX : Math.max(6, orbit * 0.52);
-    const sizeCapY = ringCount === 1 ? spreadY : Math.max(3, orbitY * 0.52);
+    const sizeCapX = ringCount === 1 ? spreadX : Math.max(6, orbit * 0.48);
+    const sizeCapY = ringCount === 1 ? spreadY : Math.max(3, orbitY * 0.48);
     baseRx = Math.min(sizeCapX, Math.max(9, baseRx));
     baseRy = Math.min(sizeCapY, Math.max(4, baseRy));
     // zoom 直接相乘。下限只防止压到总理座（"◉  总理" 横向约 6 格）。
@@ -468,14 +471,6 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     }
     // 待审批：黄色运行态 + 席位中央的感叹号（沿用敲定语义，不改成静态符号）。
     if (approval) put(grid, node.x, node.y, '!', 'approval'); else if (node.task?.reviewDue) put(grid, node.x, node.y, '!', 'warning');
-    // 质感：只有"活的"席位带四角光环（·），让运行态在密集圆环里也能一眼扫到；
-    // 终态与空闲不带，避免背景噪点。
-    if (node.task && isTaskCurrent(node.task)) {
-      for (const [dx, dy, glyph] of [[-1, -1, '·'], [1, -1, '·'], [-1, 1, '·'], [1, 1, '·']] as const) {
-        const gx = node.x + dx, gy = node.y + dy;
-        if (gx >= 0 && gx < safeWidth && gy >= 0 && gy < safeHeight) put(grid, gx, gy, glyph, selectedNode ? 'borderAccent' : 'dim');
-      }
-    }
     // 名字比符号降一阶明度；未分配的席位退到背景。
     // 选中席位用品牌色高亮（与主案焦点框一致），未选中跟随状态色。
     const nameColor = selectedNode ? 'borderAccent' : stateNameColor(node.task, node.index);
