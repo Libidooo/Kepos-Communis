@@ -636,7 +636,7 @@ export class Desk {
   if(attention>this.pendingSeen&&this.graphView)this.notice=`有 ${attention} 项待处理 · F8 打开列表`;
   this.pendingSeen=attention;
   // 头部不再带 "-- 席位 --" 模式芯片：右侧提示已说明当前焦点，芯片只是重复（人类要求删除）。
-  const header=this.theme.fg('accent',fit(`Kepos Communis · 议会  48席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
+  const header=this.theme.fg('accent',fit(`Kepos Communis · 议会 ${this.config.agents.length} 席 · 活跃${active} · 待处理${attention} · ${Math.round(this.graphZoom*100)}% · ${this.councilDesk?'Esc 关书案':this.help?'F1 关闭帮助':this.graphFocus==='input'?'F6 回席位 · F10 返回':this.graphFocus==='list'?'F6 席位 · Tab 回图 · F10 返回':'F6 输入 · Tab 列表 · F10 返回'}`,width));
   if(this.councilDesk&&width<100){
    // 窄屏放不下右侧面板：退回整屏书案（历史回退路径）。
    const task=snapshot.tasks.find((t:any)=>t.id===this.councilDeskTaskId);

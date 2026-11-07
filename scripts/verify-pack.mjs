@@ -78,10 +78,10 @@ try{
  const info=JSON.parse(pack.stdout)[0];
  assert.ok(typeof info.filename==='string'&&/^[^/\\]+\.tgz$/.test(info.filename),'Unexpected package archive filename');
  const required=['bin/kepos.cjs','dist/src/cli.js','dist/src/runtime/app.js','dist/terminal/index.js','dist/terminal/workers.js','dist/terminal/worker-host.cjs','dist/terminal/scheduler.js','themes/kepos-default.json','themes/kepos-dark.json','themes/kepos-light.json','LICENSE','THIRD_PARTY_NOTICES.md',
-  'README.md','docs/README.md','docs/product.md','docs/installation.md','docs/architecture.md','docs/brand-voice.md','docs/unified-scheduling.md','docs/media/readme-hero.svg','docs/media/workbench-map.svg'];
+  'README.md','README.en.md','docs/README.md','docs/product.md','docs/installation.md','docs/architecture.md','docs/brand-voice.md','docs/unified-scheduling.md','docs/media/readme-hero.svg','docs/media/workbench-map.svg'];
  const names=info.files.map(file=>file.path),packed=new Set(names);
  for(const name of required)assert.ok(packed.has(name),'Missing package file: '+name);
- const allowed=/^(bin\/|dist\/|themes\/|canvas\/|docs\/|package\.json$|README\.md$|SECURITY\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/;
+ const allowed=/^(bin\/|dist\/|themes\/|canvas\/|docs\/|package\.json$|README(\.en)?\.md$|SECURITY\.md$|LICENSE$|THIRD_PARTY_NOTICES\.md$)/;
  const forbidden=/(^|\/)(?:recovery|reports|node_modules|\.git|\.env(?:\.[^/]*)?|\.npmrc|\.netrc|(?:auth|tokens?)\.json|credentials?(?:\.[^/]*)?|secrets?(?:\.json|\.ya?ml|\.toml)?|id_(?:rsa|dsa|ecdsa|ed25519)(?:\.pub)?|[^/]*\.(?:pem|key|p12|pfx|sqlite|db))(?:\/|$)/i;
  for(const name of names){
   assert.ok(name.split('/').every(part=>part&&part!=='.'&&part!=='..')&&!/[\\:\0]/.test(name),'Unsafe package path: '+name);

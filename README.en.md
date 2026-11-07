@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>One premier agent, a council of forty-eight seats, one terminal.</strong><br>
+  <strong>One premier agent, one council, one terminal.</strong><br>
   You set the goal; the premier delegates across the council. Direction and key decisions stay with you.
 </p>
 
@@ -62,7 +62,7 @@ Build the package from source with `npm pack`. The default data directory is `~/
 
 ### 🏛 The council · one ring, like the logo
 
-Forty-eight seats circle a single ring by default. A red star marks the premier at the centre; seat glyphs carry state (◉ breathing while running, ◔ queued, ◌ idle, ⊘ failed). Work groups gather into their own small rings — who collaborates with whom is visible at a glance. Click any seat and its desk opens in the middle column.
+The council seats **48 by default** (`config.councilSize` — a default, not a cap) and circles a single ring. A red star marks the premier at the centre; seat glyphs carry state (◉ breathing while running, ◔ queued, ◌ idle, ⊘ failed). Work groups gather into their own small rings — who collaborates with whom is visible at a glance. Click any seat and its desk opens in the middle column.
 
 ### 🗳 The desk · your workbench
 
@@ -110,7 +110,7 @@ pools ───────── worker processes ── task results
     └─ SQLite: tasks, plans, events, receipts, per-task usage
 ```
 
-48 concurrent tasks is the per-pool cap; TUI, CLI and daemon do not yet share one pool — see [architecture](docs/architecture.md) and [unified scheduling](docs/unified-scheduling.md). Beta boundaries are listed in [SECURITY.md](SECURITY.md).
+48 concurrent tasks is the per-pool cap (seat count is separate — default 48, configurable); TUI, CLI and daemon do not yet share one pool — see [architecture](docs/architecture.md) and [unified scheduling](docs/unified-scheduling.md). Beta boundaries are listed in [SECURITY.md](SECURITY.md).
 
 ## 📖 Docs & development
 
