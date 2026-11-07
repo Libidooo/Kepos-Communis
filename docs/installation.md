@@ -97,8 +97,31 @@ sha256sum ./kepos-communis-0.3.0-beta.5.tgz
 ## 首次使用
 
 1. 启动工作台后输入 `/login`，选择模型服务商，由你完成认证。也可使用 `kepos login`。
-2. 用 `F4` 选择可用模型，然后输入目标。总理 Agent 组织工作，代表配置界定领域职责，Worker 承载具体委派。
-3. 用 `F3` 查看当前任务，`F9` 查看长程计划，`F10` 打开 48 席议会。默认预置十个常用代表，可以在 `F2` 中调整。
+2. 用 `F4` 选择可用模型，然后输入目标。总理 Agent 组织工作，代表配置界定领域职责，僚属执行进程承载具体委派。
+3. 用 `F3` 查看任务，`F9` 看长程计划，`F10` 打开议会。默认预置十个常用代表，可以在 `F2` 中调整。
+
+### 首次启动下载 fd / ripgrep 超时？
+
+首次启动时，运行时会尝试下载两个文件搜索工具（`fd` 与 `rg`），下载源是 GitHub Releases——部分网络直连会超时：
+
+```
+fd not found. Downloading...
+ripgrep not found. Downloading...
+Warning: Failed to download ripgrep: The operation was aborted due to timeout
+```
+
+**这不是失败**：下载被跳过后工作台照常启动，只是文件搜索类工具暂时不可用。任选一种方式补齐（运行时会优先使用系统 PATH 里的工具，装好即生效，无需重新下载）：
+
+```powershell
+# 方式一：包管理器安装（推荐，进入 PATH 后自动被采用）
+winget install sharkdp.fd BurntSushi.ripgrep.MSVC
+# 或 scoop install fd ripgrep
+
+# 方式二：手动放置——把 fd.exe 与 rg.exe 放进：
+#   %USERPROFILE%\.kepos\agent\bin\
+```
+
+手动下载可走任意可达渠道（GitHub 加速镜像等）：[fd releases](https://github.com/sharkdp/fd/releases)（`fd-v*-x86_64-pc-windows-msvc.zip`）、[ripgrep releases](https://github.com/BurntSushi/ripgrep/releases)（`ripgrep-*-x86_64-pc-windows-msvc.zip`），解压取其中的 `fd.exe` / `rg.exe`。也可临时设置 `HTTPS_PROXY` 后再启动一次，下载完成即不再需要。
 
 模型服务可能产生费用。`doctor` 成功只说明本地检查通过，不说明服务商认证、额度或模型调用已经可用。产品职责与人工决策入口见[产品说明](product.md)。
 
