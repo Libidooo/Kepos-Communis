@@ -415,7 +415,10 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
     for (const node of layout.nodes) {
       if (!chain.has(node.id)) continue;
       const parent = node.task?.parentWorkerId ? byWorkerId.get(node.task.parentWorkerId) : undefined;
-      const start = parent ? { x: parent.x, y: parent.y } : { x: node.x >= main.x ? main.x + 5 : main.x - 2, y: main.y };
+      // 出线点贴着总理星块：星在 main.x-1，名称行占 main.x-3..main.x。
+      // 右侧自名称右邻（+1）出线、左侧自名称左邻（-4）出线——此前 +5/-2 是给
+      // 旧版横排"◉ 总理"七格留的，星改竖排后线够不着总理，看起来断在半空。
+      const start = parent ? { x: parent.x, y: parent.y } : { x: node.x >= main.x ? main.x + 1 : main.x - 4, y: main.y };
       stamp(grid, edgeMask, start.x, start.y, node.x, node.y, 'borderAccent');
     }
     renderConnections(grid, edgeMask, 'borderAccent');
