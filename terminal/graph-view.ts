@@ -522,7 +522,8 @@ export function renderGraph(snapshot: GraphViewSnapshot, width: number, height: 
         const x = labelX + shift;
         if (x < 1 || x + width > labelMaxX) continue;
         if (!freeNear(x, labelY, width)) continue;
-        put(grid, x, labelY, candidate, nameColor, { italic: true, faint: true });
+        // 选中席位的名字再加粗一档：颜色之外多一层形状差异，密集圆环里也扫得到。
+        put(grid, x, labelY, candidate, nameColor, { italic: true, faint: !selectedNode, bold: selectedNode });
         claim(x, labelY, width);
         placed = true;
         break;

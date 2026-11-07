@@ -561,7 +561,9 @@ export default function kepos(pi: ExtensionAPI, host:KeposHost={}) {
   // 议会花名册：总理必须随时知道自己有多少部下、各管什么——不知道就会像没头苍蝇
   // 一样自造 "frontend-developer" 这类不存在的席。名字 + 角色键 + 职责首句，ID 不进提示词（kepos_profiles 可查）。
   const locale=councilLocale(process.env.KEPOS_LOCALE);
-  const dutyOf=(a:any)=>summarizeRole(String(a.roleKey?roleScope(councilRole(a.roleKey)!,locale)||a.role||'':a.role||''),36);
+  // councilRole 可能返回 undefined（配置残留失效 roleKey），绝不能非空断言——
+  // 这里一崩，整段监督提示词组不出来，等于每个会话启动都炸。
+  const dutyOf=(a:any)=>{const def=a.roleKey?councilRole(a.roleKey):undefined;return summarizeRole(String(def?roleScope(def,locale):a.role||''),36);};
   const crew=config.agents.length
    ?`编制 ${config.agents.length} 席：`+config.agents.map(a=>`${a.name}${a.roleKey?`（${a.roleKey}）`:''}·${dutyOf(a)}`).join('；')
    :'暂无配置代表——分派前先用 F2 添加，或用 kepos_delegate 的 roleKey 即席创建';
