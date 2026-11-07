@@ -11,7 +11,7 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.4.0-B52F3B?style=flat-square&labelColor=22201F" alt="开发版本 0.4.0">
+  <img src="https://img.shields.io/badge/version-0.5.1-B52F3B?style=flat-square&labelColor=22201F" alt="开发版本 0.5.1">
   <img src="https://img.shields.io/badge/Node.js-24%2B-22201F?style=flat-square&labelColor=55514A" alt="Node.js 24 或更高版本">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22201F?style=flat-square&labelColor=55514A" alt="MIT 许可"></a>
 </p>
@@ -46,7 +46,7 @@ npm start
 已有本地 `.tgz` 时，可以直接安装：
 
 ```bash
-npm install -g ./kepos-communis-0.4.0.tgz
+npm install -g ./kepos-communis-0.5.1.tgz
 kepos doctor --json
 kepos
 ```
@@ -57,7 +57,7 @@ kepos
 
 | 入口 | 内容 |
 | --- | --- |
-| 当前开发分支 | `codex/tui-refresh`，版本 `0.4.0` |
+| 当前开发分支 | `codex/tui-refresh`，版本 `0.5.1` |
 | [公开 Release](https://github.com/Libidooo/kepos-communis/releases/latest) | 截至 2026-10-31，最新为 `v0.3.0-beta.4`，提供源码归档，尚无安装附件 |
 | 本地 `.tgz` | 从当前源码构建，不等同于公开 Release |
 

@@ -99,3 +99,19 @@ test('long task text is truncated at filing',()=>{
     assert.ok(item.task.length<=MAX_ESCALATION_TASK_CHARS+1,'filing keeps the queue readable');
   }finally{db.close();}
 });
+
+// 0.5.1：演习反馈——立案被核销后 propose 只返回"不存在"，总理无从判断去向。
+// stateOf 现在报出终态；propose 打到已决案时错误信息带上去向说明。
+test('stateOf reports where a decided escalation went', () => {
+  const db = fresh();
+  try {
+    const store = new BudgetEscalations(db);
+    const id = raise(db);
+    assert.equal(store.stateOf(id)?.state, 'pending');
+    store.decide(id, false);
+    assert.equal(store.stateOf(id)?.state, 'denied', 'denied is visible');
+    assert.ok(store.stateOf(id)?.decidedAt, 'decision time is kept');
+    assert.equal(store.propose(id, 50000), false, 'proposing to a decided case fails');
+    assert.equal(store.stateOf('nope'), undefined, 'unknown ids are undefined');
+  } finally { db.close(); }
+});

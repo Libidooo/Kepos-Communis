@@ -66,7 +66,7 @@ export function candidateFromTask(task: { id: string; agentId?: string; title?: 
  * 整理执行器：调用一个"模型"把候选产出压成操作列表。
  * model 由调用方注入（真实实现用便宜模型；测试用桩），这里不绑死具体 provider。
  */
-export type ConsolidationModel = (prompt: string) => Promise<string>;
+export type ConsolidationModel = (prompt: string, options?: { title?: string }) => Promise<string>;
 
 export class ConsolidationPipeline {
   private readonly memory: RepresentativeMemory;
@@ -100,7 +100,7 @@ export class ConsolidationPipeline {
     });
     let ops: ConsolidationOp[] = [];
     try {
-      ops = parseConsolidationOps(await this.model(prompt));
+      ops = parseConsolidationOps(await this.model(prompt, { title: `记忆整理 · ${candidate.goal.slice(0, 24)}` }));
       this.consecutiveFailures = 0;
     } catch {
       // 模型失败不写记忆，也不标记完成——但连败三次就熔断本轮，

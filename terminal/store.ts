@@ -45,6 +45,8 @@ export interface Config {
   expandedTools?: boolean;
   /** 主 Agent 模型记忆：F4 的选择跨重启恢复——Pi 的默认模型是运行时设置，不跟配置文件走。 */
   mainModel?: { provider: string; id: string };
+  /** 单批派发并发上限：48 席演习实测中转账户安全并发≈8，大批必拆小批。 */
+  maxBatchConcurrency?: number;
   /**
    * 外部 CLI 白名单：由人类决定，总理可通过工具增删。键是可执行名。
    * 不写死在源码里——人类加什么，总理就能用什么。

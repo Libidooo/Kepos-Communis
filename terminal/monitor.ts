@@ -2,7 +2,7 @@ import type {KeposDatabase} from './database.ts';
 import {representativeRisk, type RepresentativeTaskHistory} from './representative-health.ts';
 import {isTaskActive, isTaskTerminal, pendingReason, taskState, type PendingReason} from './task-state.ts';
 export function taskSummaries(database:KeposDatabase,limit=100) {
- return database.prepare(`SELECT id,parent AS parentSessionId,state,
+ return (database.prepare(`SELECT id,parent AS parentSessionId,state,
  json_extract(task,'$.agent') AS agent,json_extract(task,'$.agentId') AS agentId,json_extract(task,'$.purpose') AS purpose,json_extract(task,'$.cwd') AS cwd,
  json_extract(task,'$.title') AS title,json_extract(task,'$.status') AS status,
  json_extract(task,'$.started') AS started,json_extract(task,'$.ended') AS ended,
@@ -11,8 +11,9 @@ export function taskSummaries(database:KeposDatabase,limit=100) {
  json_extract(task,'$.profileRevision') AS profileRevision,json_extract(task,'$.queueWaitMs') AS queueWaitMs,
  json_extract(task,'$.firstTextMs') AS firstTextMs,json_extract(task,'$.checkpoint') AS checkpoint,json_extract(task,'$.checkpointAt') AS checkpointAt,
  json_extract(task,'$.reviewAt') AS reviewAt,json_extract(task,'$.reviewCount') AS reviewCount,json_extract(task,'$.reviewDue') AS reviewDue,
- json_extract(task,'$.delegationDepth') AS delegationDepth,json_extract(task,'$.parentWorkerId') AS parentWorkerId
- FROM workers ORDER BY CASE WHEN receipt IS NULL THEN 0 ELSE 1 END, json_extract(task,'$.started') DESC LIMIT ?`).all(Math.max(1,Math.min(200,limit))) as any[];
+ json_extract(task,'$.delegationDepth') AS delegationDepth,json_extract(task,'$.parentWorkerId') AS parentWorkerId,json_extract(task,'$.usage') AS usage
+ FROM workers ORDER BY CASE WHEN receipt IS NULL THEN 0 ELSE 1 END, json_extract(task,'$.started') DESC LIMIT ?`).all(Math.max(1,Math.min(200,limit))) as any[])
+ .map(row=>({ ...row, usage: typeof row.usage === 'string' ? JSON.parse(row.usage) : row.usage }));
 }
 export function taskEvidence(database:KeposDatabase,id:string) {
  const row=database.prepare('SELECT task FROM workers WHERE id=?').get(id) as any;

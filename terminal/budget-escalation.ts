@@ -131,6 +131,12 @@ export class BudgetEscalations {
     return Number(result.changes ?? 0) > 0;
   }
 
+  /** 一案的去向：propose 打到已决案时，总理该知道它去了哪，而不是"不存在"。 */
+  stateOf(id: string): { state: string; decidedAt?: number } | undefined {
+    const row = this.database.prepare('SELECT state, decided_at FROM budget_escalations WHERE id=?').get(id) as any;
+    return row ? { state: String(row.state), ...(row.decided_at ? { decidedAt: Number(row.decided_at) } : {}) } : undefined;
+  }
+
   /** 重派成功后才标记：launch 失败时人类的批准不蒸发，案件还在队列里。 */
   markDispatched(id: string): boolean {
     const result = this.database.prepare("UPDATE budget_escalations SET state='dispatched' WHERE id=? AND state='approved'")

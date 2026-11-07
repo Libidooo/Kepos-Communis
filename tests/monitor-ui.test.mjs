@@ -17,6 +17,17 @@ test('monitor list queries omit full output/profile while selected evidence rema
  db.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,?)').run('remote','other','c','hash','e','SUCCEEDED',JSON.stringify(task),'{}');
  const list=taskSummaries(db);assert.equal(list.length,1);assert.ok(!JSON.stringify(list).includes('SENTINEL'));assert.equal(taskEvidence(db,'remote').output,task.output);db.close();
 });
+
+// 0.5.1：演习报告指出"token 消耗只能靠截停呈报反推"。任务档案现在逐条带 usage，
+// 历史任务的书案直接可读，不用再猜。
+test('task summaries carry per-task token usage for historical desks',()=>{
+ const db=new KeposDatabase(join(home,'monitor-usage.sqlite'));
+ const task={id:'u1',agent:'Expert',title:'with usage',cwd:'p',parentSessionId:'s',status:'完成',started:1,limit:60,output:'done',usage:{totalTokens:1234,input:1000,output:234}};
+ db.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,?)').run('u1','s','c','hash','e','SUCCEEDED',JSON.stringify(task),'{}');
+ const row=taskSummaries(db)[0];
+ assert.equal(row.usage?.totalTokens,1234,'usage survives the list query');
+ db.close();
+});
 test('F8/F9 are human-only views and repeated renders reuse source history',()=>{
  let reads=0,sent=0;
  const ctx={cwd:home,isIdle:()=>true,model:undefined,sessionManager:{getSessionFile:()=>'/fixture',getSessionId:()=> 'local',getSessionName:()=> 'fixture',getBranch(){reads++;return[];},getEntries:()=>[]}};
