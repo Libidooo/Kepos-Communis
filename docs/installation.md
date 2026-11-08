@@ -120,7 +120,7 @@ ripgrep not found. Downloading...
 Warning: Failed to download ripgrep: The operation was aborted due to timeout
 ```
 
-**这不是失败**：下载被跳过后工作台照常启动，只是文件搜索类工具暂时不可用。任选一种方式补齐（运行时会优先使用系统 PATH 里的工具，装好即生效，无需重新下载）：
+**Windows x64 用户不会再遇到这个问题**：安装包已内置 fd 与 rg（`vendor/win32-x64/`），启动时自动加入 PATH，首次启动零下载。其余平台按下方方式补齐（运行时会优先使用系统 PATH 里的工具，装好即生效）：
 
 ```powershell
 # 方式一：包管理器安装（推荐，进入 PATH 后自动被采用）

@@ -25,7 +25,9 @@
     "benchmark:render": "npm run build && node scripts/benchmark.mjs",
     "test:package": "npm run build && node scripts/verify-pack.mjs",
     "audit:public": "node scripts/audit-public.mjs",
-    "test:terminal:profiles": "python conpty-test.py --smoke --sdk --profiles"
+    "test:terminal:profiles": "python conpty-test.py --smoke --sdk --profiles",
+    "fetch:tools": "node tools/fetch-tools.mjs",
+    "publish:tools": "npm publish --access public tools/win32-x64"
   },
   "type": "module",
   "license": "MIT",
@@ -54,7 +56,8 @@
     "README.md",
     "SECURITY.md",
     "LICENSE",
-    "THIRD_PARTY_NOTICES.md"
+    "THIRD_PARTY_NOTICES.md",
+    "vendor/"
   ],
   "dependencies": {
     "@earendil-works/pi-coding-agent": "1.4.0",

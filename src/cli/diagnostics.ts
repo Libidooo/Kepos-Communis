@@ -28,13 +28,25 @@ export function terminalEnvironment() {
   return { platform: process.platform, windowsTerminal, codePage, utf8, problems };
 }
 
+/** 工具供给体检：fd/rg 是否可用、来自哪里（随包内置 / 系统 PATH / 缺失待下载）。 */
+export function bundledToolsStatus() {
+  const source = process.env.KEPOS_BUNDLED_TOOLS
+    ? `bundled (${process.env.KEPOS_BUNDLED_TOOLS})`
+    : 'not bundled for this platform';
+  const probe = (name: string) => {
+    try { execFileSync(name, ['--version'], { stdio: ['ignore', 'pipe', 'ignore'] }); return true; } catch { return false; }
+  };
+  return { source, fd: probe('fd'), rg: probe('rg') };
+}
+
 export async function doctorCommand(paths: AppPaths, json = false): Promise<void> {
   const sdk = await import('@earendil-works/pi-coding-agent');
   const terminal = terminalEnvironment();
+  const tools = bundledToolsStatus();
   const result = {
     product: 'Kepos Communis', version: packageVersion(), node: process.versions.node,
     sdk: sdk.VERSION, architecture: 'sdk', ...paths, theme: 'kepos-dark',
-    themeBundled: existsSync(join(packageRoot, 'themes/kepos-dark.json')), project: process.cwd(), terminal,
+    themeBundled: existsSync(join(packageRoot, 'themes/kepos-dark.json')), project: process.cwd(), terminal, tools,
   };
   if (json) {
     console.log(JSON.stringify(result, null, 2));
@@ -42,6 +54,7 @@ export async function doctorCommand(paths: AppPaths, json = false): Promise<void
   }
   const theme = result.themeBundled ? 'kepos-dark ready' : 'missing';
   console.log(`Kepos ${result.version} · Node ${result.node} · Pi SDK ${result.sdk}\nProject: ${result.project}\nHome: ${paths.home}\nTheme: ${theme}`);
+  console.log(`Tools: fd ${tools.fd ? '✓' : '✗'} · rg ${tools.rg ? '✓' : '✗'} · ${tools.source}`);
   const critical = terminal.problems.slice(0, terminal.utf8 && (terminal.windowsTerminal || terminal.platform !== 'win32') ? 1 : 2);
   for (const problem of critical) console.log(`提示: ${problem}`);
 }

@@ -46,11 +46,35 @@ function hopIntoWindowsTerminal(args) {
   return false;
 }
 
+/**
+ * 文件搜索工具（fd/rg）的就地供给：Pi 首启会从 GitHub Releases 下载它们，
+ * 国内网络常超时。这里按 esbuild/swc 的 per-OS 思路解析本地二进制——
+ * 优先已发布的平台子包（node_modules/kepos-tools-<plat>-<arch>/bin），
+ * 其次主包自带的 vendor/<plat>-<arch>——把目录前置进 PATH 即可：
+ * Pi 的工具解析在自有目录之后就会查 PATH，命中即不再下载。
+ */
+function prependBundledTools() {
+  const plat = process.platform + '-' + process.arch; // win32-x64 / darwin-arm64 / linux-x64
+  const candidates = [
+    path.join(__dirname, '..', 'node_modules', 'kepos-tools-' + plat, 'bin'),
+    path.join(__dirname, '..', 'vendor', plat),
+  ];
+  const suffix = process.platform === 'win32' ? '.exe' : '';
+  const dir = candidates.find(function (dir) {
+    try { return require('node:fs').existsSync(path.join(dir, 'fd' + suffix)) && require('node:fs').existsSync(path.join(dir, 'rg' + suffix)); }
+    catch { return false; }
+  });
+  if (dir) process.env.PATH = dir + path.delimiter + process.env.PATH;
+  return dir || null;
+}
+
 async function start() {
   if (Number(process.versions.node.split('.')[0]) < 24) throw Error('Kepos requires Node.js 24 or newer.');
   const args = process.argv.slice(2);
   if (args[0] !== 'doctor' && args[0] !== '--version' && args[0] !== 'setup') hopIntoWindowsTerminal(args);
   ensureUtf8Console();
+  const bundledTools = prependBundledTools();
+  if (bundledTools) process.env.KEPOS_BUNDLED_TOOLS = bundledTools; // doctor 据此报告来源
   const root = path.resolve(__dirname, '..');
   const entry = ensureBuild(root);
   const { main } = await import(pathToFileURL(entry).href);
