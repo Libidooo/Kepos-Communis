@@ -4,9 +4,40 @@ Kepos 需要 Node.js 24+。可以从源码运行，也可以安装构建好的 `
 
 ## 版本与下载
 
-截至 2026-10-31，`codex/tui-refresh` 分支版本为 **0.3.0-beta.5**。最新公开 Release 是 [v0.3.0-beta.4](https://github.com/Libidooo/kepos-communis/releases/tag/v0.3.0-beta.4)，目前只有源码归档，没有安装附件。
+`main` 分支版本为 **0.5.1**。历史 Release 见 [Releases](https://github.com/Libidooo/kepos-communis/releases)。包尚未发布到 npm 公共仓库，安装取以下三条路径之一。
 
-下面的 `kepos-communis-0.3.0-beta.5.tgz` 由本地构建生成。它包含编译产物，但不捆绑 Node.js 和全部依赖；安装通常需要联网。
+## 一行安装
+
+`kepos` 的打包机制与 Pi 完全一致：npm 全局安装会把 `kepos` 垫片写进 npm 的全局 bin 目录（Windows 即 `%APPDATA%\npm`，已在 PATH），因此在**任意目录**打开 PowerShell / 终端输入 `kepos` 都能唤起——这一点不是配置出来的，是全局安装的自动结果。
+
+**① npm 仓库（发布后可用，最推荐）**
+
+```sh
+npm install -g kepos-communis
+kepos
+```
+
+包名已核验未被占用；执行 `npm publish`（需 npm 账号）后此路径即刻生效。
+
+**② GitHub 直装（无需发布，任何能访问 GitHub 的机器都可用）**
+
+```sh
+npm install -g github:Libidooo/kepos-communis
+kepos
+```
+
+npm 会拉取仓库并执行 `prepack` 构建（TypeScript 等构建依赖由 npm 自动安装），得到的垫片与①完全相同。
+
+**③ 本地构建包（离线 / 内网）**
+
+```sh
+git clone https://github.com/Libidooo/kepos-communis.git
+cd kepos-communis && npm pack        # prepack 自动构建，产出 kepos-communis-<版本>.tgz
+npm install -g ./kepos-communis-<版本>.tgz
+kepos
+```
+
+三条路径装完都建议跑一次 `kepos doctor --json` 自检环境（Node 版本、ConPTY、UTF-8 代码页）。升级同理：①②重跑安装命令即可，③重打包重装。
 
 ## 环境
 
