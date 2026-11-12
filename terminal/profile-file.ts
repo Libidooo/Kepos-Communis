@@ -14,7 +14,7 @@
 // 这样文件是可读可改的接口，但不会在无人察觉时改变运行时行为。
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { READ_ONLY_TOOLS } from './worker-contract.ts';
+import { currentReadOnlyTools, READ_ONLY_TOOLS } from './worker-contract.ts';
 import type { AgentProfile } from './profiles.ts';
 
 /** 档案目录名：放在项目归档区下，与工作区的 .kepos 其它内容同一处。 */
@@ -144,7 +144,7 @@ export function parseProfile(text: string): { profile?: AgentProfile; error?: st
   if (!model) return { error: '缺少 model' };
   if (!role) return { error: '正文为空：正文就是职责提示词' };
   if (!id) return { error: '缺少 id（档案必须能对应回既有代表）' };
-  const tools = list('tools').filter(tool => (READ_ONLY_TOOLS as readonly string[]).includes(tool));
+  const tools = currentReadOnlyTools(list('tools').filter(tool => (READ_ONLY_TOOLS as readonly string[]).includes(tool)));
   const profile: AgentProfile = {
     id, name, model, role,
     provider: text_('provider'),

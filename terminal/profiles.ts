@@ -1,5 +1,5 @@
 import type { KeposDatabase } from './database.ts';
-import { profileRevision, READ_ONLY_TOOLS } from './worker-contract.ts';
+import { currentReadOnlyTools, profileRevision, READ_ONLY_TOOLS } from './worker-contract.ts';
 
 export interface AgentProfile {
   id: string;
@@ -26,7 +26,7 @@ export interface ProfileRevision {
 }
 
 function canonicalProfile(profile: AgentProfile): AgentProfile {
-  const tools = [...new Set(profile.tools ?? READ_ONLY_TOOLS)].sort();
+  const tools = currentReadOnlyTools(profile.tools);
   if (tools.some(tool => !(READ_ONLY_TOOLS as readonly string[]).includes(tool))) throw Error('Profile tools must be read-only');
   const skills = [...new Set((profile.skills ?? []).filter(skill => typeof skill === 'string' && skill.trim()).map(skill => skill.trim()))].sort();
   const canonical: AgentProfile = {

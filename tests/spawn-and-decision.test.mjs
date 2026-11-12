@@ -15,10 +15,12 @@ test('a representative writes a spawn request that the parent can read', () => {
   const cwd = fresh();
   ensureArchive(cwd);
   const root = archivePaths(cwd).task('rep-1').dir;
-  writeSpawnRequest(root, { id: 'r1', task: '扫描鉴权路径', seconds: 60, requestedAt: Date.now() });
+  writeSpawnRequest(root, { id: 'r1', task: '扫描鉴权路径', seconds: 60, mcp: ['search'], mcpReason: '需要查询供应商文档', requestedAt: Date.now() });
   const read = readSpawnRequest(root);
   assert.equal(read?.task, '扫描鉴权路径');
   assert.equal(read?.seconds, 60);
+  assert.deepEqual(read?.mcp, ['search']);
+  assert.equal(read?.mcpReason, '需要查询供应商文档');
 });
 
 test('an empty task is refused rather than dispatched as a no-op', () => {

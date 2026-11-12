@@ -26,6 +26,9 @@ export type SpawnRequest = {
   skills?: string[];
   readScope?: 'project' | 'machine';
   budgetTokens?: number;
+  /** Ask the principal to assess these configured MCP servers for this child task. */
+  mcp?: string[];
+  mcpReason?: string;
   requestedAt: number;
 };
 
@@ -53,6 +56,8 @@ export function readSpawnRequest(archiveRoot: string): SpawnRequest | null {
       skills: Array.isArray(parsed.skills) ? parsed.skills.map(String) : undefined,
       readScope: parsed.readScope === 'machine' ? 'machine' : parsed.readScope === 'project' ? 'project' : undefined,
       budgetTokens: Number.isFinite(parsed.budgetTokens) ? Number(parsed.budgetTokens) : undefined,
+      mcp: Array.isArray(parsed.mcp) ? parsed.mcp.map(String).slice(0, 8) : undefined,
+      mcpReason: typeof parsed.mcpReason === 'string' ? parsed.mcpReason.slice(0, 500) : undefined,
       requestedAt: Number(parsed.requestedAt) || 0,
     };
   } catch { return null; }
@@ -117,7 +122,7 @@ export default function representativeTools(pi: any) {
   pi.registerTool({
     name: 'kepos_spawn',
     label: '派生僚属',
-    description: '派生一个僚属执行子任务。僚属继承你的模型与只读工具，时限不超过你剩余时间的一半。同一时刻只能有一个待处理请求。',
+    description: '派生一个僚属执行子任务。僚属继承你的模型与只读工具，时限不超过你剩余时间的一半。同一时刻只能有一个待处理请求。若子任务确实需要已配置的外部软件，可填写最小 MCP 服务器列表和理由；总理会独立评估，代理模式下才可能临时授予，严格/只读模式或未配置服务器会交由人类处理。',
     parameters: {
       type: 'object',
       properties: {
@@ -126,10 +131,16 @@ export default function representativeTools(pi: any) {
         skills: { type: 'array', items: { type: 'string' }, description: '明确批准的 Skill 名称' },
         readScope: { type: 'string', enum: ['project', 'machine'], description: '读取范围；保密任务用 project' },
         budgetTokens: { type: 'integer', minimum: 1000, description: '僚属的 token 预算' },
+        mcp: { type: 'array', items: { type: 'string' }, maxItems: 8, description: '可选：申请本任务所需的最小 MCP 服务器名称，必须已由人类配置；这不是授权' },
+        mcpReason: { type: 'string', maxLength: 500, description: '解释为什么该子任务需要这些外部工具，以及不使用它们的影响' },
       },
       required: ['task'],
     },
     async execute(_id: string, params: any) {
+      const mcp = Array.isArray(params.mcp) ? [...new Set<string>((params.mcp as unknown[]).map(server => String(server).trim()).filter(Boolean))] : undefined;
+      const mcpReason = String(params.mcpReason || '').trim();
+      if (mcp?.length && !mcpReason) return { content: [{ type: 'text', text: '申请 MCP 时必须同时说明理由；尚未提交派生请求。' }], isError: true };
+      if (mcpReason.length > 500) return { content: [{ type: 'text', text: 'MCP 申请理由最多 500 字符；尚未提交派生请求。' }], isError: true };
       const existing = readSpawnRequest(archiveRoot);
       if (existing && !existing.requestedAt) return { content: [{ type: 'text', text: '已有一个待处理的派生请求，请等待父进程接收后再试。' }] };
       writeSpawnRequest(archiveRoot, {
@@ -139,6 +150,8 @@ export default function representativeTools(pi: any) {
         skills: Array.isArray(params.skills) ? params.skills.map(String) : undefined,
         readScope: params.readScope === 'machine' ? 'machine' : undefined,
         budgetTokens: Number.isFinite(params.budgetTokens) ? Number(params.budgetTokens) : undefined,
+        mcp,
+        mcpReason: mcp?.length ? mcpReason : undefined,
         requestedAt: Date.now(),
       });
       return { content: [{ type: 'text', text: `已提交派生请求。父进程会在下一个轮询周期接收并启动僚属。\n任务：${String(params.task).slice(0, 200)}` }] };

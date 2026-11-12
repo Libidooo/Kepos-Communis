@@ -10,6 +10,7 @@ import { readProfiles, syncAgentsFile, syncProfiles } from './profile-file.ts';
 import { syncWorkflows } from './workflow.ts';
 import { migrateAutomation } from './automation.ts';
 import { ProfileHistory, type AgentProfile } from './profiles.ts';
+import { currentReadOnlyTools } from './worker-contract.ts';
 export { root, sessionRoot } from './paths.ts';
 
 export type Crew = AgentProfile;
@@ -143,6 +144,13 @@ export function loadConfig(): Config {
       database.set('workspace', saved);
     }
     const config = { ...defaults(), ...saved };
+    let toolsMigrated = false;
+    config.agents = config.agents.map(agent => {
+      const tools = currentReadOnlyTools(agent.tools);
+      if (JSON.stringify(tools) === JSON.stringify(agent.tools)) return agent;
+      toolsMigrated = true;
+      return { ...agent, tools };
+    });
     // 旧版把自动化拆成 watch.enabled / precheck.enabled 两组散字段。
     // 迁移时一律降级为"仅观察"：升级不该让人在没察觉的情况下开始花钱。
     if (!config.automation && ('watch' in saved || 'precheck' in saved)) {
@@ -151,6 +159,7 @@ export function loadConfig(): Config {
       delete (config as any).precheck;
       database.set('workspace', config);
     }
+    if (toolsMigrated) database.set('workspace', config);
     for (const agent of config.agents) profileHistory().record(agent);
     return remember(config);
   });

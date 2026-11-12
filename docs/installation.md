@@ -4,7 +4,7 @@ Kepos 需要 Node.js 24+。可以从源码运行，也可以安装构建好的 `
 
 ## 版本与下载
 
-`main` 分支版本为 **0.5.1**。历史 Release 见 [Releases](https://github.com/Libidooo/kepos-communis/releases)。包尚未发布到 npm 公共仓库，安装取以下三条路径之一。
+`main` 分支版本为 **0.5.4**。历史 Release 见 [Releases](https://github.com/Libidooo/kepos-communis/releases)。包尚未发布到 npm 公共仓库，安装取以下三条路径之一。
 
 ## 一行安装
 

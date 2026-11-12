@@ -1,6 +1,12 @@
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
+import { Type } from '@earendil-works/pi-ai';
+import { registerWebResearchTools } from './web-research.ts';
+import { registerResearchLoop } from './research-loop.ts';
+import { registerFileSearchTool } from './file-search.ts';
+import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
+import { dataRoot } from './paths.ts';
 
 /** Where a worker's read tools may look. 'project' confines to the task directory plus allow-list; 'machine' allows everything except the deny list. */
 export type ReadScope = 'project' | 'machine';
@@ -105,6 +111,30 @@ export function envPolicy(env: NodeJS.ProcessEnv, cwd: string): SandboxPolicy {
 /** Pi extension loaded inside worker processes: guard the read tools' targets. */
 export default function workerSandbox(pi: any) {
   const policy = envPolicy(process.env, process.cwd());
+  registerWebResearchTools(pi);
+  if (process.env.KEPOS_DISABLE_RESEARCH_LOOP !== '1') registerResearchLoop(pi);
+  registerFileSearchTool(pi, policy, path => readDenied(path, policy));
+  pi.registerTool({
+    name: 'kepos_attach', label: '读取附件',
+    description: '读取已授权范围内的本地文件并提取文档或文本内容。文件名请先用 kepos_find_file 定位；拒绝凭据文件和 Kepos 数据。',
+    parameters: Type.Object({
+      paths: Type.Array(Type.String({ maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
+      cursor: Type.Optional(Type.Integer({ minimum: 0 })),
+      maxChars: Type.Optional(Type.Integer({ minimum: 500, maximum: 120000 })),
+    }),
+    async execute(_id: string, params: any) {
+      const results: any[] = [];
+      for (const path of params.paths) {
+        const loaded = await loadAttachment(path, { cwd: process.cwd(), policy, deny: [dataRoot] });
+        if (!isAttached(loaded)) { results.push({ ok: false, path, reason: loaded.reason }); continue; }
+        const page = loaded.attachment.kind === 'image' ? null : paginateAttachmentText(loaded.attachment.text || '', params.cursor ?? 0, params.maxChars ?? 20000);
+        results.push({ ok: true, name: loaded.attachment.name, path: loaded.attachment.path, kind: loaded.attachment.kind,
+          content: loaded.attachment.kind === 'image' ? `[图片 ${loaded.attachment.name} · 已作为图像附件]` : page!.text,
+          ...(page ? { cursor: page.cursor, nextCursor: page.nextCursor, total: page.total, page: page.page, pages: page.pages } : {}) });
+      }
+      return { content: [{ type: 'text', text: results.map(item => item.ok ? `<file name="${item.name}" kind="${item.kind}">\n${item.content}\n</file>` : `<file-error path="${item.path}">${item.reason}</file-error>`).join('\n\n') }], details: { results } };
+    },
+  });
   pi.on('tool_call' as any, async (event: any) => {
     if (!['read', 'grep', 'find', 'ls'].includes(String(event?.toolName))) return undefined;
     const reason = readDenied(String(event.input?.path || '.'), policy);

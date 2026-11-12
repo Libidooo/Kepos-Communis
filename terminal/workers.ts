@@ -354,7 +354,7 @@ export class WorkerPool {
   this.pumpScheduled = true;
   queueMicrotask(() => { this.pumpScheduled = false; this.pump(); });
  }
- private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false, taskId?: string, cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>): WorkerProfile {
+ private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false, taskId?: string, cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>, purpose?: WorkerLaunchMetadata['purpose']): WorkerProfile {
   if (!crew.model?.trim()) throw Error('Worker model is empty');
   // 只读工具永远允许；写工具（bash/powershell/edit/write）必须出现在本任务的授权里。
   // 授权由代表申请、代理总代转呈、总理批准、人类确认后绑定到这次任务，任务结束即失效。
@@ -363,8 +363,12 @@ export class WorkerPool {
   const allowed = new Set<string>([...base, ...granted]);
   const blocked = tools.filter(tool => !allowed.has(tool));
   if (blocked.length) throw Error(`Unapproved tool: ${blocked.join(', ')}；写权限需由代表向代理总代申请，经总理批准后随任务生效`);
-  return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
-   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants };
+  // The role extension registers these tools, but Pi's --tools flag is a second
+  // allowlist. Include the representative capabilities there or they exist in the
+  // extension yet are invisible to the model at runtime.
+  const effectiveTools = representative ? [...new Set([...tools, ...REPRESENTATIVE_TOOLS])] : [...new Set(tools)];
+  return { cwd, model: crew.model, provider: crew.provider, tools: effectiveTools.sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
+   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants, purpose };
  }
  private executor(profile: WorkerProfile, extraSlots = 0): WorkerExecutor | undefined {
   // 与 WarmExecutor 构造共用同一函数：两边算法一漂移就是永久死锁。
@@ -597,7 +601,7 @@ export class WorkerPool {
   // 例外：值守自动派发的任务（purpose=watch）没有人类在场，
   // 给它派生权等于让一条误触发的规则自行繁殖出一整棵任务树。
   const canSpawn = canRepresent(delegationDepth, metadata);
-  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], canSpawn, undefined, metadata.cliGrants);
+  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], canSpawn, undefined, metadata.cliGrants, metadata.purpose);
   const snapshotBase = { name: crew.name, role: crew.role, roleKey: crew.roleKey, model: profile.model, provider: profile.provider, tools: [...profile.tools], skills: [...profile.skills], mcp: profile.mcp };
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);

@@ -53,8 +53,8 @@ test('worker defaults respect saved readonly tool presets and preserve the profi
  let requested;
  const pool = new WorkerPool(db, tools => { requested = tools; throw Error('fixture: do not spawn'); });
  const handle = pool.launch(profile, 'fixture', isolated, 'source', 1, undefined, 'parent');
- assert.deepEqual(requested.tools, ['read']);
- assert.equal(pool.result(handle, 'parent').profileRevision, agentRevision(profile));
+ assert.deepEqual(requested.tools, ['find', 'grep', 'kepos_attach', 'kepos_cli', 'kepos_find_file', 'kepos_market_quote', 'kepos_report', 'kepos_research_status', 'kepos_spawn', 'kepos_web_open', 'kepos_web_search', 'ls', 'read']);
+ assert.notEqual(pool.result(handle, 'parent').profileRevision, agentRevision(profile), 'the dispatched representative snapshot includes its added representative tools');
  pool.close(); db.close();
 });
 

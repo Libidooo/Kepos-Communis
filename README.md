@@ -8,8 +8,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.1-B52F3B?style=flat-square&labelColor=22201F" alt="版本 0.5.1">
-  <img src="https://img.shields.io/badge/tests-584%20%E2%9C%94-22201F?style=flat-square&labelColor=55514A" alt="584 项测试">
+  <img src="https://img.shields.io/badge/version-0.5.4-B52F3B?style=flat-square&labelColor=22201F" alt="版本 0.5.4">
+  <img src="https://img.shields.io/badge/tests-580%20%E2%9C%94-22201F?style=flat-square&labelColor=55514A" alt="580 项测试">
   <img src="https://img.shields.io/badge/Node.js-24%2B-22201F?style=flat-square&labelColor=55514A" alt="Node.js 24+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22201F?style=flat-square&labelColor=55514A" alt="MIT 许可"></a>
 </p>
@@ -33,7 +33,7 @@
 需要 Node.js 24+。Windows 用户在 Windows Terminal 中运行；在旧控制台启动时，程序自动迁移到 Windows Terminal。Windows x64 安装包内置 fd 与 ripgrep，首次启动不联网下载。
 
 ```bash
-npm install -g https://github.com/Libidooo/kepos-communis/releases/download/v0.5.1/kepos-communis-0.5.1.tgz
+npm install -g https://github.com/Libidooo/kepos-communis/releases/download/v0.5.4/kepos-communis-0.5.4.tgz
 kepos
 ```
 
@@ -94,6 +94,14 @@ npm start
 - 单批并发上限 8 路，`config.maxBatchConcurrency` 可调整
 - 预算按任务难度分档：查询 ≥20k、常规 50k、深度分析 100k–200k token
 - 读取类任务通过 `readAllow` 授权路径；推演类任务声明直接作答
+
+### 研究与证据
+
+- 对外部事实、当前信息、项目代码、本机文件、用户材料、创作和闲聊选择不同资料路径，并记录路由原因
+- 可配置 Brave Search 或 DuckDuckGo；可选 Finnhub 结构化行情，记录来源、数据时间与读取时间
+- 搜索摘要只作线索；事实型回答检查是否读取来源、引用是否属于本轮证据，并可由隔离 verifier 逐条审阅主张
+- 总理、代表和僚属可在获准范围内按文件名定位本机文件；实际读取继续受沙箱限制
+- Pi SDK 执行自动上下文压缩；Kepos 记录压缩触发原因，并提示自动压缩成功或失败
 
 ### 记忆与工作流
 
