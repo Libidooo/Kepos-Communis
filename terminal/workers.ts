@@ -11,11 +11,12 @@ import { readWorkerEvents } from './events.ts';
 import { canRepresent } from './watch-purpose.ts';
 import { reusableProfileKey } from './warm-executor.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
+import { changedFilesFromAudit, readWriteAudit, writeAuditCounts } from './write-audit.ts';
 export { killTree };
 import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,REPRESENTATIVE_WRITE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' | 'watch'; groupId?: string; /** 短标题：覆盖"任务全文即标题"的默认——内部任务的标题不该是提示词转储。 */ title?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean; /** 值守派发时命中的文件路径：把评估记录与任务结果关联起来。 */ watchPath?: string };
-export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
+export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' | 'watch'; groupId?: string; /** 短标题：覆盖"任务全文即标题"的默认——内部任务的标题不该是提示词转储。 */ title?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean; /** 值守派发时命中的文件路径：把评估记录与任务结果关联起来。 */ watchPath?: string; /** Parent task id when this is a fresh, permission-reset continuation. */ resumedFromTaskId?: string };
+export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; /** Original dispatch instruction retained separately from the display title for recovery. */ instruction?: string; resumedFromTaskId?: string; readScope?: 'project' | 'machine'; readAllow?: string[]; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean; changedFiles?: string[]; writeEventCount?: number; verifiedWriteCount?: number; unverifiedWriteCount?: number };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
 const labels: Record<WorkerState, string> = { QUEUED: '排队中', STARTING: '启动中', RUNNING: '运行中', SUCCEEDED: '完成', FAILED: '失败', INTERRUPTED: '已中断', CANCEL_REQUESTED: '正在终止', CANCELLED: '已取消', TIMED_OUT: '超时' };
@@ -143,7 +144,9 @@ export class WorkerPool {
  }
  private settle(task: Task, state: WorkerState, error?: string): Receipt {
   const ended = Date.now();
-  const complete = { ...task, state, status: labels[state], ended, tool: '', reviewDue: false, stalled: false, error, output: bounded(task.output), outputTruncated: task.outputTruncated || Buffer.byteLength(task.output) > 32768 };
+  const writeEvents = readWriteAudit(join(task.cwd, ARCHIVE_DIR), task.id);
+  const writeCounts = writeAuditCounts(writeEvents);
+  const complete = { ...task, changedFiles: changedFilesFromAudit(writeEvents), writeEventCount: writeEvents.length, verifiedWriteCount: writeCounts.verified, unverifiedWriteCount: writeCounts.unverified, state, status: labels[state], ended, tool: '', reviewDue: false, stalled: false, error, output: bounded(task.output), outputTruncated: task.outputTruncated || Buffer.byteLength(task.output) > 32768 };
   const receipt: Receipt = { version: 1, workerId: task.id, parentSessionId: task.parentSessionId, correlationId: task.correlationId, state, started: task.started, ended, output: complete.output, profileSnapshot: task.profileSnapshot, profileRevision: task.profileRevision, outputTruncated: complete.outputTruncated, error, resultHash: hash(complete.output), usage: task.usage };
   // Publish the terminal state, result and event together; crashes cannot leave a
   // terminal task with no receipt between separate UPDATE statements.
@@ -180,8 +183,22 @@ export class WorkerPool {
   // report 与 transcript：契约标记之前是过程，之后是结论。
   const split = output.lastIndexOf('## 结论');
   const transcript = split >= 0 ? output.slice(0, split).trim() : output;
-  const report = split >= 0 ? output.slice(split).trim() : '';
-  writeArchiveDoc(files.brief, `# 任务说明\n\n- 任务 ID：${task.id}\n- 执行者：${task.agent}\n- 状态：${task.status}\n- 开始：${new Date(task.started).toISOString()}\n${task.ended ? `- 结束：${new Date(task.ended).toISOString()}\n` : ''}${task.parentWorkerId ? `- 直属代表任务：${task.parentWorkerId}\n` : ''}\n## 授权事项\n\n${task.title}\n`);
+  const writeEvents = readWriteAudit(join(cwd, ARCHIVE_DIR), task.id);
+  const changedFiles = changedFilesFromAudit(writeEvents);
+  const writeCounts = writeAuditCounts(writeEvents);
+  let report = split >= 0 ? output.slice(split).trim() : '';
+  if (writeEvents.length) {
+   const systemRecord = [
+    '', '## 系统观察到的文件修改', '',
+    ...(changedFiles.length ? changedFiles.map(path => `- ${path}`) : ['- 没有观察到成功的文件写入。']),
+    `- 工具回执：${writeCounts.written} 成功，${writeCounts.failed} 失败，${writeCounts.blocked} 被拦截。`,
+    `- 写后回读：${writeCounts.verified} 项通过 SHA-256 校验，${writeCounts.unverified} 项未能核验。校验只证明文件可稳定读取并记录了摘要，不证明内容符合任务语义。`,
+    ...writeEvents.filter(event => event.status === 'written').map(event => `- 回读记录：${event.path}；${event.verification?.status === 'verified' ? `SHA-256 ${event.verification.sha256}，${event.verification.bytes} 字节，${event.verification.checkedAt}` : `未核验：${event.verification?.reason || '缺少写后回读记录'}`}`),
+    ...(writeEvents.some(event => event.status !== 'written') ? ['', '被拦截/失败的路径与原因保存在本任务的 write-events.jsonl。'] : []),
+   ].join('\n');
+   report = report ? `${report}\n${systemRecord}` : `# 结论\n\n执行者未提供结构化结论。\n${systemRecord}`;
+  }
+  writeArchiveDoc(files.brief, `# 任务说明\n\n- 任务 ID：${task.id}\n- 执行者：${task.agent}\n- 状态：${task.status}\n- 开始：${new Date(task.started).toISOString()}\n${task.ended ? `- 结束：${new Date(task.ended).toISOString()}\n` : ''}${task.parentWorkerId ? `- 直属代表任务：${task.parentWorkerId}\n` : ''}${task.resumedFromTaskId ? `- 恢复自任务：${task.resumedFromTaskId}\n` : ''}\n## 授权事项\n\n${task.instruction || task.title}\n`);
   if (transcript) writeArchiveDoc(files.transcript, `# 过程记录\n\n${transcript}\n`);
   if (report) writeArchiveDoc(files.report, report);
   else if (transcript) writeArchiveDoc(files.report, `# 结论\n\n（执行者未按输出契约给出结论；完整过程见 transcript.md。状态：${task.status}${task.error ? `，错误：${task.error}` : ''}）\n`);
@@ -206,7 +223,7 @@ export class WorkerPool {
   const row = this.authorize(handle, parent);
   if (!row) return { state: 'UNKNOWN' };
   const task = this.tasks.find(task => task.id === handle.workerId && task.ownerEpoch === this.epoch) || JSON.parse(row.task);
-  return { workerId: task.id, state: row.state, agent: task.agent, elapsedMs: (task.ended || Date.now()) - task.started, limitSeconds: task.limit, tool: task.tool || null, firstTextMs: task.firstTextMs ?? null, queueWaitMs: task.queueWaitMs ?? null, queued: task.state === 'QUEUED' };
+  return { workerId: task.id, state: row.state, agent: task.agent, elapsedMs: (task.ended || Date.now()) - task.started, limitSeconds: task.limit, tool: task.tool || null, checkpoint: task.checkpoint || null, checkpointAt: task.checkpointAt ?? null, resumedFromTaskId: task.resumedFromTaskId || null, firstTextMs: task.firstTextMs ?? null, queueWaitMs: task.queueWaitMs ?? null, writeEventCount: task.writeEventCount ?? 0, verifiedWriteCount: task.verifiedWriteCount ?? 0, unverifiedWriteCount: task.unverifiedWriteCount ?? 0, queued: task.state === 'QUEUED' };
  }
  /** Rebuild a live handle this instance issued (scheduler restart within the same process). Never crosses a process boundary. */
  liveHandle(workerId: string, parent: string): WorkerHandle | undefined {
@@ -261,6 +278,7 @@ export class WorkerPool {
   if (queued) {
    queued.instruction = `${queued.instruction}\n\n## 人类补充（优先处理）\n${text}`;
    task.title = queued.instruction;
+   task.instruction = queued.instruction;
    this.persist(task, 'human_note');
    this.emit({ type: 'task_message_forwarded', task: { ...task }, urgent: true });
    const woken = this.wakeByHuman(handle.workerId);
@@ -268,6 +286,8 @@ export class WorkerPool {
   }
   const executor = this.executorsByTask.get(handle.workerId);
   if (!executor) return { state: task.state, delivered: false, error: '执行器不可达，请稍后重试或终止任务' };
+  task.instruction = `${task.instruction || task.title}\n\n## 人类补充（优先处理）\n${text}`;
+  this.persist(task, 'human_note');
   this.emit({ type: 'task_message_forwarded', task: { ...task } });
   let outcome: any = { disposition: 'pending' };
   // streamingBehavior 必传：Pi 在流式期间没有它就直接抛 "Agent is already processing"，
@@ -620,10 +640,11 @@ export class WorkerPool {
   if (profile.representative) profile.subordinateTaskIds = this.tasks.filter(t => t.parentWorkerId === id).map(t => t.id);
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
   this.capabilities.set(id, capability);
-  const task: Task = { id, agent: crew.name, ...(crew.id ? { agentId: crew.id } : {}), ...(metadata.purpose ? { purpose: metadata.purpose } : {}), ...(metadata.groupId ? { groupId: metadata.groupId } : {}), role: crew.role, title: metadata.title ?? instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
+  const task: Task = { id, agent: crew.name, ...(crew.id ? { agentId: crew.id } : {}), ...(metadata.purpose ? { purpose: metadata.purpose } : {}), ...(metadata.groupId ? { groupId: metadata.groupId } : {}), ...(metadata.resumedFromTaskId ? { resumedFromTaskId: metadata.resumedFromTaskId } : {}), role: crew.role, title: metadata.title ?? instruction, instruction, ...(profile.readScope ? { readScope: profile.readScope } : {}), ...(profile.readAllow?.length ? { readAllow: [...profile.readAllow] } : {}), cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));
    this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'queued', task.started, JSON.stringify({state:task.state,profileRevision:task.profileRevision}));
+   if (metadata.resumedFromTaskId) this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'task_resumed', task.started, JSON.stringify({ resumedFromTaskId: metadata.resumedFromTaskId }));
    // 记忆注入标记：度量"注入过记忆的任务是否更容易成功"必须能分辨这两组。
    // 没有这一行，那条指标永远没有分子。
    if (metadata.memoryInjected) this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'memory_injected', task.started, JSON.stringify({ state: task.state }));

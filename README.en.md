@@ -8,8 +8,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.4-B52F3B?style=flat-square&labelColor=22201F" alt="version 0.5.4">
-  <img src="https://img.shields.io/badge/tests-580%20%E2%9C%94-22201F?style=flat-square&labelColor=55514A" alt="580 tests">
+  <img src="https://img.shields.io/badge/version-0.5.5-B52F3B?style=flat-square&labelColor=22201F" alt="version 0.5.5">
+  <img src="https://img.shields.io/badge/tests-605%20%E2%9C%94-22201F?style=flat-square&labelColor=55514A" alt="605 tests">
   <img src="https://img.shields.io/badge/Node.js-24%2B-22201F?style=flat-square&labelColor=55514A" alt="Node.js 24+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22201F?style=flat-square&labelColor=55514A" alt="MIT license"></a>
 </p>
@@ -33,9 +33,11 @@
 Requires Node.js 24+. On Windows, run inside Windows Terminal; when started from a legacy console the program relaunches itself there. The Windows x64 package bundles fd and ripgrep, so the first start downloads nothing.
 
 ```bash
-npm install -g https://github.com/Libidooo/kepos-communis/releases/download/v0.5.4/kepos-communis-0.5.4.tgz
+npm install -g https://github.com/Libidooo/kepos-communis/releases/latest/download/kepos-communis-latest.tgz
 kepos
 ```
+
+This install URL always resolves to the latest stable GitHub Release. Previous versions remain available on the [Releases](https://github.com/Libidooo/kepos-communis/releases) page.
 
 From source:
 
@@ -86,9 +88,13 @@ When a task hits its budget, the approval window moves to the front: approve at 
 ### Research and evidence
 
 - Routes external facts, current information, project code, local files, user-provided material, creative work, and chat to the relevant evidence path
+- Adds a constrained model classifier for low- and medium-confidence routes; explicit local/offline scope wins, and `kepos_research_status` shows the reason
 - Supports configurable Brave Search or DuckDuckGo, plus optional Finnhub quotes with source, data time, and retrieval time
 - Treats search snippets as leads; checks whether factual answers read source pages and cite evidence from the current turn, with an isolated verifier for claim review
 - Lets the premier, representatives, and subordinates locate filenames within their permitted read scope; file access remains sandboxed
+- Requires supported claims to quote their cited retrieved excerpt; filename search reports coverage and does not turn an incomplete scan into a definite “not found”
+- Lets representatives request named existing project checks, with exit code, duration, and archived output; successful, failed, and blocked file writes are audited
+- Resumes failed, interrupted, or timed-out representative work as a new checkpoint-based continuation; old write, MCP, and CLI grants do not carry over
 - Uses the Pi SDK's automatic context compaction and records its trigger, with success/failure notices
 
 ### Memory and workflows

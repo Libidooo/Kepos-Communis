@@ -8,6 +8,7 @@ import { registerFileSearchTool } from './file-search.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
 import { dataRoot } from './paths.ts';
 import { writeAccessDenied } from './grant.ts';
+import { appendWriteAudit, verifyWriteAfter } from './write-audit.ts';
 
 /** Where a worker's read tools may look. 'project' confines to the task directory plus allow-list; 'machine' allows everything except the deny list. */
 export type ReadScope = 'project' | 'machine';
@@ -142,10 +143,46 @@ export default function workerSandbox(pi: any) {
     // task id is a host-injected marker; ordinary subordinate workers stay read-only.
     if (process.env.KEPOS_TASK_ID && ['bash', 'powershell', 'edit', 'write'].includes(toolName)) {
       const reason = writeAccessDenied({ toolName, input: event.input, grantFile: process.env.KEPOS_WRITE_GRANT_FILE, taskId: process.env.KEPOS_TASK_ID });
-      if (reason) return { block: true, reason };
+      if (reason) {
+        if (['edit', 'write'].includes(toolName) && process.env.KEPOS_ARCHIVE_ROOT) {
+          const rawPath = event.input?.path ?? event.input?.filePath ?? event.input?.file ?? '';
+          appendWriteAudit(process.env.KEPOS_ARCHIVE_ROOT, process.cwd(), { taskId: process.env.KEPOS_TASK_ID, tool: toolName as 'edit' | 'write', status: 'blocked', path: String(rawPath), reason });
+        }
+        return { block: true, reason };
+      }
     }
     if (!['read', 'grep', 'find', 'ls'].includes(toolName)) return undefined;
     const reason = readDenied(String(event.input?.path || '.'), policy);
     return reason ? { block: true, reason } : undefined;
+  });
+  pi.on('tool_execution_end' as any, (event: any) => {
+    const toolName = String(event?.toolName || '');
+    const taskId = String(process.env.KEPOS_TASK_ID || '');
+    const archiveRoot = String(process.env.KEPOS_ARCHIVE_ROOT || '');
+    if (!taskId || !archiveRoot || !['edit', 'write'].includes(toolName)) return;
+    const args = event?.args && typeof event.args === 'object' ? event.args : event?.input && typeof event.input === 'object' ? event.input : {};
+    const rawPath = args.path ?? args.filePath ?? args.file ?? '';
+    if (typeof rawPath !== 'string' || !rawPath.trim()) return;
+    const failed = event?.isError === true || event?.result?.isError === true;
+    const response = Array.isArray(event?.result?.content) ? event.result.content.map((item: any) => String(item?.text || '')).join('\n') : '';
+    let expectation: Parameters<typeof verifyWriteAfter>[2];
+    if (toolName === 'write' && typeof args.content === 'string') expectation = { content: args.content };
+    else if (toolName === 'edit') {
+      let edits = args.edits;
+      if (typeof edits === 'string') { try { edits = JSON.parse(edits); } catch { edits = undefined; } }
+      if (!Array.isArray(edits) && edits && typeof edits === 'object') edits = [edits];
+      if (Array.isArray(edits)) {
+        expectation = { edits: edits.filter((item: any) => typeof item?.oldText === 'string' && typeof item?.newText === 'string').map((item: any) => ({ oldText: item.oldText, newText: item.newText })) };
+      }
+    }
+    const verification = failed ? undefined : verifyWriteAfter(process.cwd(), rawPath, expectation);
+    appendWriteAudit(archiveRoot, process.cwd(), {
+      taskId,
+      tool: toolName as 'edit' | 'write',
+      status: failed ? 'failed' : 'written',
+      path: rawPath,
+      ...(failed && response ? { reason: response.slice(0, 500) } : {}),
+      ...(!failed ? { verification } : {}),
+    });
   });
 }

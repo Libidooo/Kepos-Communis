@@ -53,7 +53,7 @@ test('representatives keep their saved readonly tools and expose guarded write t
  let requested;
  const pool = new WorkerPool(db, tools => { requested = tools; throw Error('fixture: do not spawn'); });
  const handle = pool.launch(profile, 'fixture', isolated, 'source', 1, undefined, 'parent');
- assert.deepEqual(requested.tools, ['edit', 'find', 'grep', 'kepos_attach', 'kepos_cli', 'kepos_find_file', 'kepos_market_quote', 'kepos_report', 'kepos_research_status', 'kepos_spawn', 'kepos_web_open', 'kepos_web_search', 'ls', 'read', 'write']);
+ assert.deepEqual(requested.tools, ['edit', 'find', 'grep', 'kepos_attach', 'kepos_cli', 'kepos_find_file', 'kepos_market_quote', 'kepos_report', 'kepos_request_check', 'kepos_request_write', 'kepos_research_status', 'kepos_spawn', 'kepos_web_open', 'kepos_web_search', 'ls', 'read', 'write']);
  assert.notEqual(pool.result(handle, 'parent').profileRevision, agentRevision(profile), 'the dispatched representative snapshot includes its added representative tools');
  pool.close(); db.close();
 });

@@ -1,17 +1,53 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-const { routeResearchIntent, checkResearchProvenance, citationUrls } = await import('../dist/terminal/research-router.js');
-const { parseAnswerAudit, registerResearchLoop } = await import('../dist/terminal/research-loop.js');
+const { applyResearchClassification, parseResearchClassification, routeResearchIntent, checkResearchProvenance, citationUrls } = await import('../dist/terminal/research-router.js');
+const { parseAnswerAudit, quoteMatchesRetrievedEvidence, registerResearchLoop } = await import('../dist/terminal/research-loop.js');
 const { parseBraveSearchResponse, parseFinnhubQuote } = await import('../dist/terminal/web-research.js');
 
 test('intent routing distinguishes project, local files, current facts, provided material, and chat', () => {
   assert.equal(routeResearchIntent('检查我们 Kepos 仓库里的启动逻辑').kind, 'project');
   assert.equal(routeResearchIntent('打开简历文件').kind, 'local_file');
   assert.equal(routeResearchIntent('查看今天英特尔的股票行情').kind, 'live_external');
+  assert.equal(routeResearchIntent('查看今天英特尔的股票行情').confidence, 'high');
+  const mixed = routeResearchIntent('根据附件对比英特尔今天的股价', { hasAttachment: true });
+  assert.equal(mixed.kind, 'live_external');
+  assert.ok(mixed.sources.includes('user_material'), 'attachments and live sources are both included');
   assert.equal(routeResearchIntent('根据附件总结这份材料', { hasAttachment: true }).kind, 'provided_material');
   assert.equal(routeResearchIntent('谢谢').requiresEvidence, false);
+  assert.equal(routeResearchIntent('某个不明确的陈述').confidence, 'low');
   assert.equal(routeResearchIntent('不要联网，只根据附件回答', { hasAttachment: true }).explicit, true);
+});
+
+test('model classification repairs uncertain routes while explicit user scope stays authoritative', () => {
+  const fallback = routeResearchIntent('Fermat theorem proof');
+  assert.equal(fallback.confidence, 'low');
+  const refined = applyResearchClassification(fallback, { kind: 'external_knowledge', confidence: 'high', reason: 'Named mathematical theorem requires factual explanation.' });
+  assert.equal(refined.kind, 'external_knowledge');
+  assert.equal(refined.method, 'model');
+  assert.deepEqual(refined.sources, ['web_search', 'source_pages']);
+  assert.equal(applyResearchClassification(routeResearchIntent('Why do leaves change color?'), { kind: 'chat', confidence: 'low', reason: 'uncertain' }).kind, 'external_knowledge', 'uncertain classification cannot suppress the evidence route');
+  const explicit = routeResearchIntent('不要联网，只根据附件总结', { hasAttachment: true });
+  assert.equal(applyResearchClassification(explicit, { kind: 'live_external', reason: 'bad override' }, true).kind, 'provided_material');
+  assert.equal(parseResearchClassification('{"kind":"project","confidence":"high","reason":"asks about repository code"}').kind, 'project');
+  assert.throws(() => parseResearchClassification('{"kind":"surprise","reason":"unknown"}'), /未知资料路由/);
+});
+
+test('research loop asks the classifier only for uncertain routes and records its decision', async () => {
+  const handlers = new Map();
+  const pi = { registerTool() {}, on(name, handler) { handlers.set(name, handler); } };
+  let calls = 0;
+  registerResearchLoop(pi, {
+    autoSearch: false,
+    classify: async ({ query }) => { calls++; assert.match(query, /Fermat/); return { kind: 'external_knowledge', confidence: 'high', reason: 'A named theorem is a factual topic.' }; },
+  });
+  const sections = {};
+  await handlers.get('before_agent_start')({ messageType: 'user', prompt: 'Fermat theorem proof', systemPromptOptions: { sections } });
+  assert.match(sections.kepos_research_route, /live_external|external_knowledge/);
+  assert.match(sections.kepos_research_route, /method=model/);
+  assert.equal(calls, 1);
+  await handlers.get('before_agent_start')({ messageType: 'user', prompt: '不要联网，只根据附件总结', images: [{}], systemPromptOptions: { sections: {} } });
+  assert.equal(calls, 1, 'explicit scope bypasses the classifier');
 });
 
 test('evidence gate treats search hits as leads and requires a read source plus matching citation', () => {
@@ -46,6 +82,49 @@ test('answer audit parser rejects invalid JSON and normalizes unverifiable claim
   assert.equal(audit.claims[0].status, 'unsupported');
 });
 
+test('a supported claim needs an exact quote from one of its cited retrieved excerpts', async () => {
+  assert.equal(quoteMatchesRetrievedEvidence('Actual evidence text', ['The Actual evidence\ntext appears here.']), true);
+  assert.equal(quoteMatchesRetrievedEvidence('Fabricated wording', ['The page contains unrelated text.']), false);
+  const handlers = new Map();
+  const pi = { registerTool() {}, on(name, handler) { handlers.set(name, handler); } };
+  registerResearchLoop(pi, {
+    autoSearch: false,
+    verify: async () => ({ claims: [{ claim: 'A factual claim', status: 'supported', sources: ['https://source.example/page'], quote: 'A fabricated quote from this article.' }] }),
+  });
+  const sections = {};
+  await handlers.get('before_agent_start')({ messageType: 'user', prompt: 'What is the current evidence?', systemPromptOptions: { sections } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_search', result: { details: { results: [{ url: 'https://source.example/page' }] } } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_open', args: { url: 'https://source.example/page' }, result: { details: { url: 'https://source.example/page', content: 'The article contains a different factual passage.' } } });
+  const event = await handlers.get('agent_before_settle')({ outcome: 'completed', context: { contextMessages: [{ role: 'assistant', content: [{ type: 'text', text: 'A factual claim. https://source.example/page' }] }] } });
+  assert.equal(event.continue, true, 'the runtime asks for more evidence or a narrower answer');
+  assert.match(event.entries[0].content, /逐字匹配/);
+});
+
+test('empty claim extraction fails closed and requests another evidence turn', async () => {
+  const handlers = new Map();
+  const pi = { registerTool() {}, on(name, handler) { handlers.set(name, handler); } };
+  registerResearchLoop(pi, { autoSearch: false, verify: async () => ({ claims: [], note: 'No claims found' }) });
+  await handlers.get('before_agent_start')({ messageType: 'user', prompt: 'What is the current status?', systemPromptOptions: { sections: {} } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_search', result: { details: { results: [{ url: 'https://source.example/page' }] } } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_open', args: { url: 'https://source.example/page' }, result: { details: { url: 'https://source.example/page', content: 'A current factual passage.' } } });
+  const event = await handlers.get('agent_before_settle')({ outcome: 'completed', context: { contextMessages: [{ role: 'assistant', content: [{ type: 'text', text: 'The current status is active. https://source.example/page' }] }] } });
+  assert.equal(event.continue, true);
+  assert.match(event.entries[0].content, /没有提取可核验主张/);
+});
+
+test('a worker without an independent claim verifier reports provenance as partial, not verified', async () => {
+  const handlers = new Map();
+  const pi = { registerTool() {}, on(name, handler) { handlers.set(name, handler); } };
+  registerResearchLoop(pi, { autoSearch: false });
+  await handlers.get('before_agent_start')({ messageType: 'user', prompt: 'What is the current status?', systemPromptOptions: { sections: {} } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_search', result: { details: { results: [{ url: 'https://source.example/page' }] } } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_open', args: { url: 'https://source.example/page' }, result: { details: { url: 'https://source.example/page', content: 'A current factual passage.' } } });
+  const event = await handlers.get('agent_before_settle')({ outcome: 'completed', context: { contextMessages: [{ role: 'assistant', content: [{ type: 'text', text: 'The current status is active. https://source.example/page' }] }] } });
+  assert.equal(event.continue, false);
+  assert.match(event.entries[0].content, /partial/);
+  assert.doesNotMatch(event.entries[0].content, /verified_sources/);
+});
+
 test('research continues past two source pages while evidence makes progress, then settles when supported', async () => {
   const handlers = new Map();
   const pi = { registerTool() {}, on(name, handler) { handlers.set(name, handler); } };
@@ -55,7 +134,7 @@ test('research continues past two source pages while evidence makes progress, th
     verify: async ({ sources }) => {
       reviewedSources = sources.length;
       const final = sources.length >= 4;
-      return { claims: [{ claim: 'The requested factual claim.', status: final ? 'supported' : 'partial', sources: [sources.at(-1).url], quote: final ? 'supporting text' : '', reason: final ? '' : '还需要更多来源材料' }] };
+      return { claims: [{ claim: 'The requested factual claim.', status: final ? 'supported' : 'partial', sources: [sources.at(-1).url], quote: final ? 'supporting source excerpt' : '', reason: final ? '' : '还需要更多来源材料' }] };
     },
   });
   const sections = {};

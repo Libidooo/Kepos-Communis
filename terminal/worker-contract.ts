@@ -48,7 +48,7 @@ export function currentReadOnlyTools(tools?: readonly string[]): string[] {
  * 代表对自己的僚属全权负责，因此必须能分派；但它仍然不能直接改代码——
  * 写权限要单独申请（见 grant.ts），不由派生能力附带。
  */
-export const REPRESENTATIVE_TOOLS = [...READ_ONLY_TOOLS, 'kepos_spawn', 'kepos_report', 'kepos_cli'] as const;
+export const REPRESENTATIVE_TOOLS = [...READ_ONLY_TOOLS, 'kepos_spawn', 'kepos_report', 'kepos_cli', 'kepos_request_write', 'kepos_request_check'] as const;
 /** 一个代表最多同时带几个僚属。远小于总理的 48，避免层级爆炸。 */
 // 实际执行在 subordinates.ts：那里同时管硬上限与"超过三人需人类审批"的门槛。
 // 这里保留导出是为了兼容既有引用，值的来源只有一处。

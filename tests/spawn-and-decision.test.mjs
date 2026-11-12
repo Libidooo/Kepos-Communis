@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const { archivePaths, ensureArchive } = await import('../dist/terminal/archive.js');
-const { writeSpawnRequest, readSpawnRequest, clearSpawnRequest, writeDecision, readDecision } = await import('../dist/terminal/representative-tools.js');
+const { writeSpawnRequest, readSpawnRequest, clearSpawnRequest, writeDecision, readDecision, readProjectCheckRequest, readProjectCheckResult } = await import('../dist/terminal/representative-tools.js');
 const { SpawnRequestPoller } = await import('../dist/terminal/spawn-poller.js');
 const { canReadArchive, archiveTaskIdOf } = await import('../dist/terminal/archive-access.js');
 
@@ -57,6 +57,31 @@ test('a failed spawn is recorded back for the representative to read', async () 
   const failure = join(root, 'spawn-failed.md');
   assert.ok(existsSync(failure), 'failure is written where the representative can see it');
   assert.match(readFileSync(failure, 'utf8'), /配额已满/);
+});
+
+test('the poller handles a named project-check request and writes its bound result', async () => {
+  const cwd = fresh();
+  ensureArchive(cwd);
+  const root = archivePaths(cwd).task('rep-check').dir;
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'project-check-request.json'), JSON.stringify({ id: 'check-1', taskId: 'rep-check', check: 'test', reason: '验证修复', requestedAt: Date.now() }));
+  const received = [];
+  const poller = new SpawnRequestPoller({
+    onSpawn: async () => ({ ok: true }),
+    onProjectCheck: async (taskId, request) => {
+      received.push({ taskId, request });
+      return { id: request.id, taskId, approved: true, check: request.check, command: 'npm run --ignore-scripts test', exitCode: 0, output: 'PASS' };
+    },
+  });
+  await poller.tick(['rep-check'], cwd);
+  assert.equal(received.length, 1);
+  assert.equal(received[0].request.check, 'test');
+  assert.equal(readProjectCheckRequest(root), null, 'handled request is removed');
+  assert.equal(readProjectCheckResult(root)?.id, 'check-1');
+  assert.equal(readProjectCheckResult(root)?.taskId, 'rep-check');
+  assert.equal(readProjectCheckResult(root)?.output, 'PASS');
+  await poller.tick(['rep-check'], cwd);
+  assert.equal(received.length, 1, 'a handled check is not replayed');
 });
 
 test('a decision is written and read back', () => {

@@ -8,8 +8,8 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.4-B52F3B?style=flat-square&labelColor=22201F" alt="版本 0.5.4">
-  <img src="https://img.shields.io/badge/tests-580%20%E2%9C%94-22201F?style=flat-square&labelColor=55514A" alt="580 项测试">
+  <img src="https://img.shields.io/badge/version-0.5.5-B52F3B?style=flat-square&labelColor=22201F" alt="版本 0.5.5">
+  <img src="https://img.shields.io/badge/tests-605%20%E2%9C%94-22201F?style=flat-square&labelColor=55514A" alt="605 项测试">
   <img src="https://img.shields.io/badge/Node.js-24%2B-22201F?style=flat-square&labelColor=55514A" alt="Node.js 24+">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-22201F?style=flat-square&labelColor=55514A" alt="MIT 许可"></a>
 </p>
@@ -33,9 +33,11 @@
 需要 Node.js 24+。Windows 用户在 Windows Terminal 中运行；在旧控制台启动时，程序自动迁移到 Windows Terminal。Windows x64 安装包内置 fd 与 ripgrep，首次启动不联网下载。
 
 ```bash
-npm install -g https://github.com/Libidooo/kepos-communis/releases/download/v0.5.4/kepos-communis-0.5.4.tgz
+npm install -g https://github.com/Libidooo/kepos-communis/releases/latest/download/kepos-communis-latest.tgz
 kepos
 ```
+
+此安装地址始终指向 GitHub 上最新的正式 Release；历史版本仍可在 [Releases](https://github.com/Libidooo/kepos-communis/releases) 下载。
 
 源码运行：
 
@@ -98,9 +100,13 @@ npm start
 ### 研究与证据
 
 - 对外部事实、当前信息、项目代码、本机文件、用户材料、创作和闲聊选择不同资料路径，并记录路由原因
+- 对规则置信度不足的请求增加一次受限模型分类；显式本地/离线范围优先，路由原因可由 `kepos_research_status` 查看
 - 可配置 Brave Search 或 DuckDuckGo；可选 Finnhub 结构化行情，记录来源、数据时间与读取时间
 - 搜索摘要只作线索；事实型回答检查是否读取来源、引用是否属于本轮证据，并可由隔离 verifier 逐条审阅主张
 - 总理、代表和僚属可在获准范围内按文件名定位本机文件；实际读取继续受沙箱限制
+- supported 主张的引文必须能在本轮对应来源摘录中找到；文件搜索披露扫描覆盖，覆盖不完整时不会把“未找到”说成确定事实
+- 代表可申请执行已存在的项目验证脚本，结果带退出码、耗时和归档；写入工具的成功、失败与拦截也会留审计记录
+- 失败、中断或超时的代表任务可从检查点新建 continuation；旧写入、MCP、CLI 授权不继承，恢复前先核查当前项目状态
 - Pi SDK 执行自动上下文压缩；Kepos 记录压缩触发原因，并提示自动压缩成功或失败
 
 ### 记忆与工作流

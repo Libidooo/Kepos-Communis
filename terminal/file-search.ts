@@ -61,7 +61,7 @@ export function registerFileSearchTool(pi: any, scope: FileScope, canRead: (path
       const errors: string[] = blocked.map(item => `${item.path}: ${item.reason}`);
       const queue = allowedRoots.map(path => ({ path, depth: 0 }));
       const seenRoots = new Set<string>();
-      let scanned = 0;
+      let scanned = 0, depthLimitedDirectories = 0, hiddenDirectoriesExcluded = 0, ignoredDirectoriesExcluded = 0, restrictedEntriesSkipped = 0, symlinksSkipped = 0, unreadableDirectories = 0;
       const targetCount = Math.max(1, Math.min(20, Number(params.limit) || 10));
 
       while (queue.length && scanned < MAX_ENTRIES && found.length < targetCount) {
@@ -71,16 +71,24 @@ export function registerFileSearchTool(pi: any, scope: FileScope, canRead: (path
         let entries;
         try { entries = await readdir(current.path, { withFileTypes: true }); }
         catch (error) {
+          // Machine-scope defaults name common locations across platforms. An
+          // absent Desktop/OneDrive/etc. is normal, not missing search coverage.
+          if (!Array.isArray(params.paths) && current.depth === 0 && (error as NodeJS.ErrnoException).code === 'ENOENT') continue;
           if (current.depth === 0) errors.push(`${current.path}: ${(error as NodeJS.ErrnoException).code || '无法读取'}`);
+          unreadableDirectories++;
           continue;
         }
         for (const entry of entries) {
           if (++scanned >= MAX_ENTRIES || found.length >= targetCount) break;
           const path = join(current.path, entry.name);
-          if (entry.isSymbolicLink() || canRead(path)) continue;
+          if (entry.isSymbolicLink()) { symlinksSkipped++; continue; }
+          if (canRead(path)) { restrictedEntriesSkipped++; continue; }
           if (entry.isDirectory()) {
             const lower = entry.name.toLowerCase();
-            if (current.depth < MAX_DEPTH && !entry.name.startsWith('.') && !IGNORED_DIRECTORIES.has(lower)) queue.push({ path, depth: current.depth + 1 });
+            if (entry.name.startsWith('.')) { hiddenDirectoriesExcluded++; continue; }
+            if (IGNORED_DIRECTORIES.has(lower)) { ignoredDirectoriesExcluded++; continue; }
+            if (current.depth < MAX_DEPTH) queue.push({ path, depth: current.depth + 1 });
+            else depthLimitedDirectories++;
             continue;
           }
           if (!entry.isFile() || !matchesName(entry.name, query)) continue;
@@ -92,9 +100,24 @@ export function registerFileSearchTool(pi: any, scope: FileScope, canRead: (path
       }
       const normalizedQuery = query.toLowerCase();
       found.sort((a, b) => Number(!a.name.toLowerCase().includes(normalizedQuery)) - Number(!b.name.toLowerCase().includes(normalizedQuery)));
-      const result = { query, roots: allowedRoots, scannedEntries: scanned, truncated: scanned >= MAX_ENTRIES, results: found,
+      const resultLimitReached = found.length >= targetCount;
+      const entryLimitReached = scanned >= MAX_ENTRIES;
+      const coverageReasons = [
+        ...(resultLimitReached ? ['result_limit'] : []),
+        ...(entryLimitReached ? ['entry_limit'] : []),
+        ...(depthLimitedDirectories ? ['max_depth'] : []),
+        ...(hiddenDirectoriesExcluded ? ['hidden_directories_excluded'] : []),
+        ...(ignoredDirectoriesExcluded ? ['protected_or_system_directories_excluded'] : []),
+        ...(restrictedEntriesSkipped ? ['read_scope_exclusions'] : []),
+        ...(symlinksSkipped ? ['symlinks_not_followed'] : []),
+        ...(unreadableDirectories || errors.length ? ['unreadable_directories'] : []),
+      ];
+      const truncated = resultLimitReached || entryLimitReached || depthLimitedDirectories > 0;
+      const coverage = coverageReasons.length ? 'partial' : 'complete';
+      const result = { query, roots: allowedRoots, scannedEntries: scanned, maxEntries: MAX_ENTRIES, maxDepth: MAX_DEPTH, coverage, coverageReasons, truncated, results: found,
+        scanStats: { depthLimitedDirectories, hiddenDirectoriesExcluded, ignoredDirectoriesExcluded, restrictedEntriesSkipped, symlinksSkipped, unreadableDirectories },
         ...(errors.length ? { skipped: errors.slice(0, 12) } : {}),
-        note: found.length ? '文件名定位结果；尚未读取内容。选定目标后用 kepos_attach 读取。' : '没有在已授权目录中找到匹配文件；检查 skipped，并在需要时请求更宽的搜索目录。' };
+        note: found.length ? `文件名定位结果；尚未读取内容。选定目标后用 kepos_attach 读取。搜索覆盖：${coverage}。` : coverage === 'complete' ? '在本次已授权的可搜索目录中没有匹配文件。' : `未在已扫描目录找到匹配文件，但搜索覆盖不完整（${coverageReasons.join(', ')}）；不能据此断言文件不存在。可检查 skipped 或指定更合适的授权目录。` };
       return { content: [{ type: 'text', text: JSON.stringify(result) }], details: result };
     },
   });
