@@ -1,6 +1,14 @@
 import { homedir } from 'node:os';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { realpathSync } from 'node:fs';
+import { Type } from '@earendil-works/pi-ai';
+import { registerWebResearchTools } from './web-research.ts';
+import { registerResearchLoop } from './research-loop.ts';
+import { registerFileSearchTool } from './file-search.ts';
+import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
+import { dataRoot } from './paths.ts';
+import { writeAccessDenied } from './grant.ts';
+import { appendWriteAudit, verifyWriteAfter } from './write-audit.ts';
 
 /** Where a worker's read tools may look. 'project' confines to the task directory plus allow-list; 'machine' allows everything except the deny list. */
 export type ReadScope = 'project' | 'machine';
@@ -105,9 +113,76 @@ export function envPolicy(env: NodeJS.ProcessEnv, cwd: string): SandboxPolicy {
 /** Pi extension loaded inside worker processes: guard the read tools' targets. */
 export default function workerSandbox(pi: any) {
   const policy = envPolicy(process.env, process.cwd());
+  registerWebResearchTools(pi);
+  if (process.env.KEPOS_DISABLE_RESEARCH_LOOP !== '1') registerResearchLoop(pi);
+  registerFileSearchTool(pi, policy, path => readDenied(path, policy));
+  pi.registerTool({
+    name: 'kepos_attach', label: '读取附件',
+    description: '读取已授权范围内的本地文件并提取文档或文本内容。文件名请先用 kepos_find_file 定位；拒绝凭据文件和 Kepos 数据。',
+    parameters: Type.Object({
+      paths: Type.Array(Type.String({ maxLength: 1000 }), { minItems: 1, maxItems: 8 }),
+      cursor: Type.Optional(Type.Integer({ minimum: 0 })),
+      maxChars: Type.Optional(Type.Integer({ minimum: 500, maximum: 120000 })),
+    }),
+    async execute(_id: string, params: any) {
+      const results: any[] = [];
+      for (const path of params.paths) {
+        const loaded = await loadAttachment(path, { cwd: process.cwd(), policy, deny: [dataRoot] });
+        if (!isAttached(loaded)) { results.push({ ok: false, path, reason: loaded.reason }); continue; }
+        const page = loaded.attachment.kind === 'image' ? null : paginateAttachmentText(loaded.attachment.text || '', params.cursor ?? 0, params.maxChars ?? 20000);
+        results.push({ ok: true, name: loaded.attachment.name, path: loaded.attachment.path, kind: loaded.attachment.kind,
+          content: loaded.attachment.kind === 'image' ? `[图片 ${loaded.attachment.name} · 已作为图像附件]` : page!.text,
+          ...(page ? { cursor: page.cursor, nextCursor: page.nextCursor, total: page.total, page: page.page, pages: page.pages } : {}) });
+      }
+      return { content: [{ type: 'text', text: results.map(item => item.ok ? `<file name="${item.name}" kind="${item.kind}">\n${item.content}\n</file>` : `<file-error path="${item.path}">${item.reason}</file-error>`).join('\n\n') }], details: { results } };
+    },
+  });
   pi.on('tool_call' as any, async (event: any) => {
-    if (!['read', 'grep', 'find', 'ls'].includes(String(event?.toolName))) return undefined;
+    const toolName = String(event?.toolName || '');
+    // Only representatives receive the edit/write tool definitions at launch. Their
+    // task id is a host-injected marker; ordinary subordinate workers stay read-only.
+    if (process.env.KEPOS_TASK_ID && ['bash', 'powershell', 'edit', 'write'].includes(toolName)) {
+      const reason = writeAccessDenied({ toolName, input: event.input, grantFile: process.env.KEPOS_WRITE_GRANT_FILE, taskId: process.env.KEPOS_TASK_ID });
+      if (reason) {
+        if (['edit', 'write'].includes(toolName) && process.env.KEPOS_ARCHIVE_ROOT) {
+          const rawPath = event.input?.path ?? event.input?.filePath ?? event.input?.file ?? '';
+          appendWriteAudit(process.env.KEPOS_ARCHIVE_ROOT, process.cwd(), { taskId: process.env.KEPOS_TASK_ID, tool: toolName as 'edit' | 'write', status: 'blocked', path: String(rawPath), reason });
+        }
+        return { block: true, reason };
+      }
+    }
+    if (!['read', 'grep', 'find', 'ls'].includes(toolName)) return undefined;
     const reason = readDenied(String(event.input?.path || '.'), policy);
     return reason ? { block: true, reason } : undefined;
+  });
+  pi.on('tool_execution_end' as any, (event: any) => {
+    const toolName = String(event?.toolName || '');
+    const taskId = String(process.env.KEPOS_TASK_ID || '');
+    const archiveRoot = String(process.env.KEPOS_ARCHIVE_ROOT || '');
+    if (!taskId || !archiveRoot || !['edit', 'write'].includes(toolName)) return;
+    const args = event?.args && typeof event.args === 'object' ? event.args : event?.input && typeof event.input === 'object' ? event.input : {};
+    const rawPath = args.path ?? args.filePath ?? args.file ?? '';
+    if (typeof rawPath !== 'string' || !rawPath.trim()) return;
+    const failed = event?.isError === true || event?.result?.isError === true;
+    const response = Array.isArray(event?.result?.content) ? event.result.content.map((item: any) => String(item?.text || '')).join('\n') : '';
+    let expectation: Parameters<typeof verifyWriteAfter>[2];
+    if (toolName === 'write' && typeof args.content === 'string') expectation = { content: args.content };
+    else if (toolName === 'edit') {
+      let edits = args.edits;
+      if (typeof edits === 'string') { try { edits = JSON.parse(edits); } catch { edits = undefined; } }
+      if (!Array.isArray(edits) && edits && typeof edits === 'object') edits = [edits];
+      if (Array.isArray(edits)) {
+        expectation = { edits: edits.filter((item: any) => typeof item?.oldText === 'string' && typeof item?.newText === 'string').map((item: any) => ({ oldText: item.oldText, newText: item.newText })) };
+      }
+    }
+    const verification = failed ? undefined : verifyWriteAfter(process.cwd(), rawPath, expectation);
+    appendWriteAudit(archiveRoot, process.cwd(), {
+      taskId,
+      tool: toolName as 'edit' | 'write',
+      status: failed ? 'failed' : 'written',
+      path: rawPath,
+      ...(failed && response ? { reason: response.slice(0, 500) } : {}),
+      ...(!failed ? { verification } : {}),
+    });
   });
 }

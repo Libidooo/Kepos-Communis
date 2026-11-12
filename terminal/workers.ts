@@ -4,16 +4,19 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { root, type Crew } from './store.ts';
+import { dataRoot } from './paths.ts';
+import { writeGrantSnapshotPath } from './grant.ts';
 import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { canRepresent } from './watch-purpose.ts';
 import { reusableProfileKey } from './warm-executor.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
+import { changedFilesFromAudit, readWriteAudit, writeAuditCounts } from './write-audit.ts';
 export { killTree };
-import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
+import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,REPRESENTATIVE_WRITE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
-export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' | 'watch'; groupId?: string; /** 短标题：覆盖"任务全文即标题"的默认——内部任务的标题不该是提示词转储。 */ title?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean; /** 值守派发时命中的文件路径：把评估记录与任务结果关联起来。 */ watchPath?: string };
-export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
+export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' | 'watch'; groupId?: string; /** 短标题：覆盖"任务全文即标题"的默认——内部任务的标题不该是提示词转储。 */ title?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean; /** 值守派发时命中的文件路径：把评估记录与任务结果关联起来。 */ watchPath?: string; /** Parent task id when this is a fresh, permission-reset continuation. */ resumedFromTaskId?: string };
+export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; /** Original dispatch instruction retained separately from the display title for recovery. */ instruction?: string; resumedFromTaskId?: string; readScope?: 'project' | 'machine'; readAllow?: string[]; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean; changedFiles?: string[]; writeEventCount?: number; verifiedWriteCount?: number; unverifiedWriteCount?: number };
 export type Receipt = { version: 1; workerId: string; parentSessionId: string; correlationId: string; state: WorkerState; started: number; ended: number; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; resultHash: string; usage?: any };
 export const terminalStates = new Set(['完成', '失败', '已取消', '超时', '已中断']);
 const labels: Record<WorkerState, string> = { QUEUED: '排队中', STARTING: '启动中', RUNNING: '运行中', SUCCEEDED: '完成', FAILED: '失败', INTERRUPTED: '已中断', CANCEL_REQUESTED: '正在终止', CANCELLED: '已取消', TIMED_OUT: '超时' };
@@ -141,7 +144,9 @@ export class WorkerPool {
  }
  private settle(task: Task, state: WorkerState, error?: string): Receipt {
   const ended = Date.now();
-  const complete = { ...task, state, status: labels[state], ended, tool: '', reviewDue: false, stalled: false, error, output: bounded(task.output), outputTruncated: task.outputTruncated || Buffer.byteLength(task.output) > 32768 };
+  const writeEvents = readWriteAudit(join(task.cwd, ARCHIVE_DIR), task.id);
+  const writeCounts = writeAuditCounts(writeEvents);
+  const complete = { ...task, changedFiles: changedFilesFromAudit(writeEvents), writeEventCount: writeEvents.length, verifiedWriteCount: writeCounts.verified, unverifiedWriteCount: writeCounts.unverified, state, status: labels[state], ended, tool: '', reviewDue: false, stalled: false, error, output: bounded(task.output), outputTruncated: task.outputTruncated || Buffer.byteLength(task.output) > 32768 };
   const receipt: Receipt = { version: 1, workerId: task.id, parentSessionId: task.parentSessionId, correlationId: task.correlationId, state, started: task.started, ended, output: complete.output, profileSnapshot: task.profileSnapshot, profileRevision: task.profileRevision, outputTruncated: complete.outputTruncated, error, resultHash: hash(complete.output), usage: task.usage };
   // Publish the terminal state, result and event together; crashes cannot leave a
   // terminal task with no receipt between separate UPDATE statements.
@@ -178,8 +183,22 @@ export class WorkerPool {
   // report 与 transcript：契约标记之前是过程，之后是结论。
   const split = output.lastIndexOf('## 结论');
   const transcript = split >= 0 ? output.slice(0, split).trim() : output;
-  const report = split >= 0 ? output.slice(split).trim() : '';
-  writeArchiveDoc(files.brief, `# 任务说明\n\n- 任务 ID：${task.id}\n- 执行者：${task.agent}\n- 状态：${task.status}\n- 开始：${new Date(task.started).toISOString()}\n${task.ended ? `- 结束：${new Date(task.ended).toISOString()}\n` : ''}${task.parentWorkerId ? `- 直属代表任务：${task.parentWorkerId}\n` : ''}\n## 授权事项\n\n${task.title}\n`);
+  const writeEvents = readWriteAudit(join(cwd, ARCHIVE_DIR), task.id);
+  const changedFiles = changedFilesFromAudit(writeEvents);
+  const writeCounts = writeAuditCounts(writeEvents);
+  let report = split >= 0 ? output.slice(split).trim() : '';
+  if (writeEvents.length) {
+   const systemRecord = [
+    '', '## 系统观察到的文件修改', '',
+    ...(changedFiles.length ? changedFiles.map(path => `- ${path}`) : ['- 没有观察到成功的文件写入。']),
+    `- 工具回执：${writeCounts.written} 成功，${writeCounts.failed} 失败，${writeCounts.blocked} 被拦截。`,
+    `- 写后回读：${writeCounts.verified} 项通过 SHA-256 校验，${writeCounts.unverified} 项未能核验。校验只证明文件可稳定读取并记录了摘要，不证明内容符合任务语义。`,
+    ...writeEvents.filter(event => event.status === 'written').map(event => `- 回读记录：${event.path}；${event.verification?.status === 'verified' ? `SHA-256 ${event.verification.sha256}，${event.verification.bytes} 字节，${event.verification.checkedAt}` : `未核验：${event.verification?.reason || '缺少写后回读记录'}`}`),
+    ...(writeEvents.some(event => event.status !== 'written') ? ['', '被拦截/失败的路径与原因保存在本任务的 write-events.jsonl。'] : []),
+   ].join('\n');
+   report = report ? `${report}\n${systemRecord}` : `# 结论\n\n执行者未提供结构化结论。\n${systemRecord}`;
+  }
+  writeArchiveDoc(files.brief, `# 任务说明\n\n- 任务 ID：${task.id}\n- 执行者：${task.agent}\n- 状态：${task.status}\n- 开始：${new Date(task.started).toISOString()}\n${task.ended ? `- 结束：${new Date(task.ended).toISOString()}\n` : ''}${task.parentWorkerId ? `- 直属代表任务：${task.parentWorkerId}\n` : ''}${task.resumedFromTaskId ? `- 恢复自任务：${task.resumedFromTaskId}\n` : ''}\n## 授权事项\n\n${task.instruction || task.title}\n`);
   if (transcript) writeArchiveDoc(files.transcript, `# 过程记录\n\n${transcript}\n`);
   if (report) writeArchiveDoc(files.report, report);
   else if (transcript) writeArchiveDoc(files.report, `# 结论\n\n（执行者未按输出契约给出结论；完整过程见 transcript.md。状态：${task.status}${task.error ? `，错误：${task.error}` : ''}）\n`);
@@ -204,7 +223,7 @@ export class WorkerPool {
   const row = this.authorize(handle, parent);
   if (!row) return { state: 'UNKNOWN' };
   const task = this.tasks.find(task => task.id === handle.workerId && task.ownerEpoch === this.epoch) || JSON.parse(row.task);
-  return { workerId: task.id, state: row.state, agent: task.agent, elapsedMs: (task.ended || Date.now()) - task.started, limitSeconds: task.limit, tool: task.tool || null, firstTextMs: task.firstTextMs ?? null, queueWaitMs: task.queueWaitMs ?? null, queued: task.state === 'QUEUED' };
+  return { workerId: task.id, state: row.state, agent: task.agent, elapsedMs: (task.ended || Date.now()) - task.started, limitSeconds: task.limit, tool: task.tool || null, checkpoint: task.checkpoint || null, checkpointAt: task.checkpointAt ?? null, resumedFromTaskId: task.resumedFromTaskId || null, firstTextMs: task.firstTextMs ?? null, queueWaitMs: task.queueWaitMs ?? null, writeEventCount: task.writeEventCount ?? 0, verifiedWriteCount: task.verifiedWriteCount ?? 0, unverifiedWriteCount: task.unverifiedWriteCount ?? 0, queued: task.state === 'QUEUED' };
  }
  /** Rebuild a live handle this instance issued (scheduler restart within the same process). Never crosses a process boundary. */
  liveHandle(workerId: string, parent: string): WorkerHandle | undefined {
@@ -259,6 +278,7 @@ export class WorkerPool {
   if (queued) {
    queued.instruction = `${queued.instruction}\n\n## 人类补充（优先处理）\n${text}`;
    task.title = queued.instruction;
+   task.instruction = queued.instruction;
    this.persist(task, 'human_note');
    this.emit({ type: 'task_message_forwarded', task: { ...task }, urgent: true });
    const woken = this.wakeByHuman(handle.workerId);
@@ -266,6 +286,8 @@ export class WorkerPool {
   }
   const executor = this.executorsByTask.get(handle.workerId);
   if (!executor) return { state: task.state, delivered: false, error: '执行器不可达，请稍后重试或终止任务' };
+  task.instruction = `${task.instruction || task.title}\n\n## 人类补充（优先处理）\n${text}`;
+  this.persist(task, 'human_note');
   this.emit({ type: 'task_message_forwarded', task: { ...task } });
   let outcome: any = { disposition: 'pending' };
   // streamingBehavior 必传：Pi 在流式期间没有它就直接抛 "Agent is already processing"，
@@ -354,17 +376,23 @@ export class WorkerPool {
   this.pumpScheduled = true;
   queueMicrotask(() => { this.pumpScheduled = false; this.pump(); });
  }
- private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false, taskId?: string, cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>): WorkerProfile {
+ private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false, taskId?: string, cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>, purpose?: WorkerLaunchMetadata['purpose']): WorkerProfile {
   if (!crew.model?.trim()) throw Error('Worker model is empty');
-  // 只读工具永远允许；写工具（bash/powershell/edit/write）必须出现在本任务的授权里。
-  // 授权由代表申请、代理总代转呈、总理批准、人类确认后绑定到这次任务，任务结束即失效。
+  // 代表的 edit/write 工具会在启动时注册，但每次调用仍由私有授权快照门控；
+  // bash/powershell 不属于代表可申请的路径受限写能力，代表进程永远不暴露这两项。
   // 代表额外持有派生与裁决工具：它要对自己的僚属负责，包括分派与裁决。
-  const base = representative ? [...READ_ONLY_TOOLS, ...REPRESENTATIVE_TOOLS] : [...READ_ONLY_TOOLS];
-  const allowed = new Set<string>([...base, ...granted]);
+  const base = representative ? [...READ_ONLY_TOOLS, ...REPRESENTATIVE_TOOLS, ...REPRESENTATIVE_WRITE_TOOLS] : [...READ_ONLY_TOOLS];
+  const scopedGrants = representative ? granted.filter(tool => (REPRESENTATIVE_WRITE_TOOLS as readonly string[]).includes(tool)) : [];
+  const allowed = new Set<string>([...base, ...scopedGrants]);
   const blocked = tools.filter(tool => !allowed.has(tool));
   if (blocked.length) throw Error(`Unapproved tool: ${blocked.join(', ')}；写权限需由代表向代理总代申请，经总理批准后随任务生效`);
-  return { cwd, model: crew.model, provider: crew.provider, tools: [...new Set(tools)].sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
-   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants };
+  // The role extension registers these tools, but Pi's --tools flag is a second
+  // allowlist. Include the representative capabilities there or they exist in the
+  // extension yet are invisible to the model at runtime.
+  const effectiveTools = representative ? [...new Set([...tools, ...REPRESENTATIVE_TOOLS, ...REPRESENTATIVE_WRITE_TOOLS])] : [...new Set(tools)];
+  return { cwd, model: crew.model, provider: crew.provider, tools: effectiveTools.sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
+   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId,
+   writeGrantFile: undefined, cliGrants, purpose };
  }
  private executor(profile: WorkerProfile, extraSlots = 0): WorkerExecutor | undefined {
   // 与 WarmExecutor 构造共用同一函数：两边算法一漂移就是永久死锁。
@@ -597,13 +625,14 @@ export class WorkerPool {
   // 例外：值守自动派发的任务（purpose=watch）没有人类在场，
   // 给它派生权等于让一条误触发的规则自行繁殖出一整棵任务树。
   const canSpawn = canRepresent(delegationDepth, metadata);
-  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], canSpawn, undefined, metadata.cliGrants);
+  const profile = this.profile(crew, cwd, tools, skills, mcp, metadata.grantedTools || [], canSpawn, undefined, metadata.cliGrants, metadata.purpose);
   const snapshotBase = { name: crew.name, role: crew.role, roleKey: crew.roleKey, model: profile.model, provider: profile.provider, tools: [...profile.tools], skills: [...profile.skills], mcp: profile.mcp };
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
-  // 代表进程靠这个定位自己的归档与会话；此时 executor 尚未创建，不影响复用键（key 也排除了它）。
+  // 代表进程靠这个定位自己的归档与会话；唯一的授权快照路径留在复用键里，确保不同任务绝不共用写权限上下文。
   profile.taskId = id;
+  if (profile.representative) profile.writeGrantFile = writeGrantSnapshotPath(dataRoot, id);
   if (metadata.groupId) profile.groupId = metadata.groupId;
   // 本任务是否由在任代理总代执行：代表进程据此注册跨组借调工具。
   const deputyId = deputyProvider();
@@ -611,10 +640,11 @@ export class WorkerPool {
   if (profile.representative) profile.subordinateTaskIds = this.tasks.filter(t => t.parentWorkerId === id).map(t => t.id);
   const handle: WorkerHandle = { version: 1, workerId: id, parentSessionId, capability, delegationDepth, parentWorkerId };
   this.capabilities.set(id, capability);
-  const task: Task = { id, agent: crew.name, ...(crew.id ? { agentId: crew.id } : {}), ...(metadata.purpose ? { purpose: metadata.purpose } : {}), ...(metadata.groupId ? { groupId: metadata.groupId } : {}), role: crew.role, title: metadata.title ?? instruction, cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
+  const task: Task = { id, agent: crew.name, ...(crew.id ? { agentId: crew.id } : {}), ...(metadata.purpose ? { purpose: metadata.purpose } : {}), ...(metadata.groupId ? { groupId: metadata.groupId } : {}), ...(metadata.resumedFromTaskId ? { resumedFromTaskId: metadata.resumedFromTaskId } : {}), role: crew.role, title: metadata.title ?? instruction, instruction, ...(profile.readScope ? { readScope: profile.readScope } : {}), ...(profile.readAllow?.length ? { readAllow: [...profile.readAllow] } : {}), cwd, session, parentSessionId, correlationId: randomUUID(), state: 'QUEUED', status: labels.QUEUED, started: Date.now(), output: '', profileSnapshot: snapshot, profileRevision: snapshot.revision, limit: seconds, model: crew.model, provider: crew.provider, ownerPid: process.pid, ownerEpoch: this.epoch, tools: [...profile.tools], skills: [...profile.skills], mcp, delegationDepth, parentWorkerId, ...(budgetTokens ? { budgetTokens } : {}), ...(profile.mcpServers?.length ? { mcpServers: profile.mcpServers } : {}) };
   this.database.transaction(() => {
    this.database.prepare('INSERT INTO workers VALUES(?,?,?,?,?,?,?,NULL)').run(id, parentSessionId, task.correlationId, hash(capability), this.epoch, task.state, JSON.stringify(task));
    this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'queued', task.started, JSON.stringify({state:task.state,profileRevision:task.profileRevision}));
+   if (metadata.resumedFromTaskId) this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'task_resumed', task.started, JSON.stringify({ resumedFromTaskId: metadata.resumedFromTaskId }));
    // 记忆注入标记：度量"注入过记忆的任务是否更容易成功"必须能分辨这两组。
    // 没有这一行，那条指标永远没有分子。
    if (metadata.memoryInjected) this.database.prepare('INSERT INTO worker_events(worker_id,type,created,payload) VALUES(?,?,?,?)').run(id, 'memory_injected', task.started, JSON.stringify({ state: task.state }));

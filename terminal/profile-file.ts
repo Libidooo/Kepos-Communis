@@ -14,7 +14,7 @@
 // 这样文件是可读可改的接口，但不会在无人察觉时改变运行时行为。
 import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { READ_ONLY_TOOLS } from './worker-contract.ts';
+import { currentReadOnlyTools, READ_ONLY_TOOLS } from './worker-contract.ts';
 import type { AgentProfile } from './profiles.ts';
 
 /** 档案目录名：放在项目归档区下，与工作区的 .kepos 其它内容同一处。 */
@@ -144,7 +144,7 @@ export function parseProfile(text: string): { profile?: AgentProfile; error?: st
   if (!model) return { error: '缺少 model' };
   if (!role) return { error: '正文为空：正文就是职责提示词' };
   if (!id) return { error: '缺少 id（档案必须能对应回既有代表）' };
-  const tools = list('tools').filter(tool => (READ_ONLY_TOOLS as readonly string[]).includes(tool));
+  const tools = currentReadOnlyTools(list('tools').filter(tool => (READ_ONLY_TOOLS as readonly string[]).includes(tool)));
   const profile: AgentProfile = {
     id, name, model, role,
     provider: text_('provider'),
@@ -251,7 +251,7 @@ export function renderAgentsFile(input: {
     '',
     `工作目录：\`${input.workspace}\``,
     '',
-    '这个工作区由 Kepos Communis 驱动：一位总理（主 Agent）把任务分派给多名只读代表，',
+    '这个工作区由 Kepos Communis 驱动：一位总理（主 Agent）把任务分派给多名默认只读的代表，',
     '代表可以派生僚属，并对僚属的结果负责。所有产出都留档，不依赖会话上下文存活。',
     '',
     '## 归档结构',
@@ -271,7 +271,7 @@ export function renderAgentsFile(input: {
     '',
     '## 约定',
     '',
-    '- 代表只读；写操作必须经人类批准并绑定到单次任务，任务结束即失效。',
+    '- 代表只读为默认；代理模式下由总理评估路径受限的 edit/write 申请，严格模式由人类确认，只读模式拒绝。授权仅限项目内批准路径，并在任务结束时失效。',
     '- 代表之间的证据不互读；同一工作小组内可读彼此证据，但结论各自独立。',
     '- 僚属不读其他任务的归档，也不读本目录之外的代表配置。',
     '- 记忆是双时态的：修正只标记失效，不删除，历史可回溯。',

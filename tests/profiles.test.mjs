@@ -47,14 +47,14 @@ test('restoring a renamed version cannot collide with another member name', asyn
  assert.equal(config.agents.find(agent => agent.id === profile.id).name, 'Renamed');
 });
 
-test('worker defaults respect saved readonly tool presets and preserve the profile revision', async () => {
+test('representatives keep their saved readonly tools and expose guarded write tools', async () => {
  const { WorkerPool } = await import('../dist/terminal/workers.js');
  const db = new KeposDatabase(join(isolated, 'tool-default.sqlite'));
  let requested;
  const pool = new WorkerPool(db, tools => { requested = tools; throw Error('fixture: do not spawn'); });
  const handle = pool.launch(profile, 'fixture', isolated, 'source', 1, undefined, 'parent');
- assert.deepEqual(requested.tools, ['read']);
- assert.equal(pool.result(handle, 'parent').profileRevision, agentRevision(profile));
+ assert.deepEqual(requested.tools, ['edit', 'find', 'grep', 'kepos_attach', 'kepos_cli', 'kepos_find_file', 'kepos_market_quote', 'kepos_report', 'kepos_request_check', 'kepos_request_write', 'kepos_research_status', 'kepos_spawn', 'kepos_web_open', 'kepos_web_search', 'ls', 'read', 'write']);
+ assert.notEqual(pool.result(handle, 'parent').profileRevision, agentRevision(profile), 'the dispatched representative snapshot includes its added representative tools');
  pool.close(); db.close();
 });
 

@@ -32,7 +32,9 @@ function fixture(t,concurrency=1){
   executors.push(e);alive++;peak=Math.max(peak,alive);return e;
  };
  const pool=new WorkerPool(database,create,{concurrency});
- const launch=(text,parent='a',extra={})=>pool.launch(extra.crew||crew,text,dir,'source',extra.seconds||5,extra.signal,parent,[],[],false);
+ // Queue tests model internal read-only work; representative workers carry a
+ // task-specific authorization snapshot and intentionally do not share a process.
+ const launch=(text,parent='a',extra={})=>pool.launch(extra.crew||crew,text,dir,'source',extra.seconds||5,extra.signal,parent,[],[],false,0,undefined,undefined,{purpose:'configuration'});
  t.after(async()=>{pool.close();await turn();database.close();});
  return{pool,launch,executors,database,dir,peak:()=>peak};
 }

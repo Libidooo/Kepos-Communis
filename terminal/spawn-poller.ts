@@ -6,11 +6,15 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ARCHIVE_DIR } from './archive.ts';
-import { clearSecondmentRequest, clearSpawnRequest, readSecondmentRequest, readSpawnRequest, type SecondmentRequest, type SpawnRequest } from './representative-tools.ts';
+import { clearProjectCheckRequest, clearSecondmentRequest, clearSpawnRequest, clearWriteAccessRequest, readProjectCheckRequest, readSecondmentRequest, readSpawnRequest, readWriteAccessRequest, writeProjectCheckResult, writeWriteAccessResult, type ProjectCheckRequest, type ProjectCheckResult, type RepresentativeWriteRequest, type RepresentativeWriteResult, type SecondmentRequest, type SpawnRequest } from './representative-tools.ts';
 
 export type SpawnHandler = (taskId: string, request: SpawnRequest) => Promise<{ ok: boolean; reason?: string }>;
 /** 借调申请的处理：由父进程转呈总理评估（静默批准，不经人类）。 */
 export type SecondmentHandler = (taskId: string, request: SecondmentRequest) => Promise<{ ok: boolean; reason?: string }>;
+/** Write access is adjudicated by the principal; this callback never receives raw tool execution. */
+export type WriteAccessHandler = (taskId: string, request: RepresentativeWriteRequest) => Promise<RepresentativeWriteResult>;
+/** A fixed, named project validation command evaluated by the parent principal. */
+export type ProjectCheckHandler = (taskId: string, request: ProjectCheckRequest) => Promise<ProjectCheckResult>;
 
 export type SpawnPollOptions = {
   /** 轮询间隔，缺省 2 秒：够快让人看不出延迟，又不至于空转。 */
@@ -19,6 +23,10 @@ export type SpawnPollOptions = {
   onSpawn: SpawnHandler;
   /** 可选：处理跨组借调申请。没有它时申请会被忽略（不误报为成功）。 */
   onSecondment?: SecondmentHandler;
+  /** Optional scoped edit/write grant workflow for representative tasks. */
+  onWriteAccess?: WriteAccessHandler;
+  /** Optional named validation workflow; never accepts arbitrary shell command strings. */
+  onProjectCheck?: ProjectCheckHandler;
 };
 
 /**
@@ -45,6 +53,7 @@ export class SpawnRequestPoller {
   }
 
   async tick(taskIds: string[], cwd: string): Promise<void> {
+    const pending: Promise<void>[] = [];
     for (const taskId of taskIds) {
       if (this.busy.has(taskId)) continue;
       const root = join(cwd, ARCHIVE_DIR, String(taskId).replace(/[^A-Za-z0-9_-]/g, ''));
@@ -56,6 +65,42 @@ export class SpawnRequestPoller {
           try { await this.options.onSecondment(taskId, secondment); }
           catch { /* 申请失败不能影响派生处理 */ }
           finally { clearSecondmentRequest(root); }
+        }
+      }
+      if (this.options.onProjectCheck) {
+        const checkRequest = readProjectCheckRequest(root);
+        if (checkRequest?.requestedAt) {
+          this.busy.add(taskId);
+          pending.push((async () => {
+            try {
+              const result = await this.options.onProjectCheck!(taskId, checkRequest);
+              writeProjectCheckResult(root, result);
+            } catch (error: any) {
+              writeProjectCheckResult(root, { id: checkRequest.id, taskId, approved: false, reason: error?.message || String(error) });
+            } finally {
+              clearProjectCheckRequest(root);
+              this.busy.delete(taskId);
+            }
+          })());
+          continue;
+        }
+      }
+      if (this.options.onWriteAccess) {
+        const writeRequest = readWriteAccessRequest(root);
+        if (writeRequest?.requestedAt) {
+          this.busy.add(taskId);
+          pending.push((async () => {
+            try {
+              const result = await this.options.onWriteAccess!(taskId, writeRequest);
+              writeWriteAccessResult(root, result);
+            } catch (error: any) {
+              writeWriteAccessResult(root, { id: writeRequest.id, approved: false, reason: error?.message || String(error) });
+            } finally {
+              clearWriteAccessRequest(root);
+              this.busy.delete(taskId);
+            }
+          })());
+          continue;
         }
       }
       const request = readSpawnRequest(root);
@@ -79,5 +124,9 @@ export class SpawnRequestPoller {
         this.busy.delete(taskId);
       }
     }
+    // Approval/execution for one representative must not serialize polling for the rest.
+    // Await this tick's work for deterministic callers and tests, while the timer can
+    // continue handling other task IDs on subsequent ticks.
+    await Promise.allSettled(pending);
   }
 }

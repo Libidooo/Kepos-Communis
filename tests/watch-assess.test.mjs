@@ -93,6 +93,7 @@ test('a watch dispatch is marked so it cannot spawn subordinates',async()=>{
   const {readonlyToolsForPurpose,canRepresent} =await import('../dist/terminal/watch-purpose.js');
   assert.equal(canRepresent(0,{purpose:'delegation'}),true,'an ordinary depth-0 task may spawn subordinates');
   assert.equal(canRepresent(0,{purpose:'watch'}),false,'a watcher-dispatched task may not');
+  assert.equal(canRepresent(0,{purpose:'configuration'}),false,'internal assessors and generators are not representatives');
   assert.equal(canRepresent(1,{purpose:'delegation'}),false,'subordinates never spawn');
   assert.equal(canRepresent(0,{}),true,'unmarked depth-0 keeps existing behaviour');
   assert.deepEqual(readonlyToolsForPurpose({purpose:'watch'}),['read']);

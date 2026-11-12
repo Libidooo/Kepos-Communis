@@ -60,9 +60,12 @@ test('worker env whitelist drops shell secrets and honors explicit passthrough',
 
 test('the sandbox extension registers a tool_call guard that blocks outside reads',async()=>{
  const mod=await import('../dist/terminal/worker-sandbox.js');
- let guard;const pi={on:(name,handler)=>{assert.equal(name,'tool_call');guard=handler;}};
+ const listeners=new Map();const tools=[];const pi={registerTool:tool=>tools.push(tool.name),on:(name,handler)=>listeners.set(name,handler)};
  mod.default(pi);
+ const guard=listeners.get('tool_call');
  assert.ok(guard,'extension must register the tool_call handler');
+ assert.ok(tools.includes('kepos_web_search'));
+ assert.ok(tools.includes('kepos_find_file'));
  const blocked=await guard({toolName:'read',input:{path:join(tmpdir(),'elsewhere.txt')}},{});
  assert.equal(blocked?.block,true);
  assert.match(String(blocked?.reason),/只读范围限定/);
