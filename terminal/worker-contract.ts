@@ -10,6 +10,8 @@ export const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls', 'kepos_attach', 'kepos_find_file', 'kepos_web_search', 'kepos_web_open', 'kepos_market_quote', 'kepos_research_status'] as const;
 export const WEB_RESEARCH_TOOLS = ['kepos_web_search', 'kepos_web_open'] as const;
 export const MARKET_RESEARCH_TOOLS = ['kepos_market_quote'] as const;
+/** Representatives may see edit/write, but worker-sandbox blocks both until the host grants a scoped task capability. */
+export const REPRESENTATIVE_WRITE_TOOLS = ['edit', 'write'] as const;
 export function needsMarketResearch(text: string): boolean {
     return /(?:\b(?:stock|stocks|ticker|share price|quote|equity|market price)\b|股票|股价|行情|证券|英特尔|英伟达|苹果公司|特斯拉|\b(?:intc|nvda|aapl|tsla)\b)/i.test(String(text || ''));
 }

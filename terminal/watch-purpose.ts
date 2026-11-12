@@ -15,7 +15,9 @@ import type { WorkerLaunchMetadata } from './workers.ts';
  */
 export function canRepresent(delegationDepth: number, metadata: Pick<WorkerLaunchMetadata, 'purpose'> = {}): boolean {
   if (delegationDepth !== 0) return false;
-  return metadata.purpose !== 'watch';
+  // Internal one-shot work is not a representative task. In particular, the
+  // write-request assessor must not receive the very capability it is judging.
+  return metadata.purpose !== 'watch' && metadata.purpose !== 'configuration';
 }
 
 /** 值守派发的任务只拿最小只读工具集——它要做的只是"看一眼再说"。 */

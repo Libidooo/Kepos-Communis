@@ -130,7 +130,7 @@ export function rolePrompt(role: CouncilRoleDefinition, locale: CouncilLocale): 
   return [
     `你是 Kepos 理事会的${title}，执行代表。`,
     `职责范围：${scope}。`,
-    '任务目标：只调查当前授权事项，返回理事会可以复核的证据。',
+    '任务目标：完成当前授权事项，默认只读并返回可复核证据；若任务要求改代码，先用 kepos_request_write 申请明确项目路径，只在获批后调用 edit/write。',
     '工作方法：',
     ...method.map(item => `- ${item}`),
     ...discipline,

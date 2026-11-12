@@ -7,6 +7,7 @@ import { registerResearchLoop } from './research-loop.ts';
 import { registerFileSearchTool } from './file-search.ts';
 import { loadAttachment, isAttached, paginateAttachmentText } from './attachments.ts';
 import { dataRoot } from './paths.ts';
+import { writeAccessDenied } from './grant.ts';
 
 /** Where a worker's read tools may look. 'project' confines to the task directory plus allow-list; 'machine' allows everything except the deny list. */
 export type ReadScope = 'project' | 'machine';
@@ -136,7 +137,14 @@ export default function workerSandbox(pi: any) {
     },
   });
   pi.on('tool_call' as any, async (event: any) => {
-    if (!['read', 'grep', 'find', 'ls'].includes(String(event?.toolName))) return undefined;
+    const toolName = String(event?.toolName || '');
+    // Only representatives receive the edit/write tool definitions at launch. Their
+    // task id is a host-injected marker; ordinary subordinate workers stay read-only.
+    if (process.env.KEPOS_TASK_ID && ['bash', 'powershell', 'edit', 'write'].includes(toolName)) {
+      const reason = writeAccessDenied({ toolName, input: event.input, grantFile: process.env.KEPOS_WRITE_GRANT_FILE, taskId: process.env.KEPOS_TASK_ID });
+      if (reason) return { block: true, reason };
+    }
+    if (!['read', 'grep', 'find', 'ls'].includes(toolName)) return undefined;
     const reason = readDenied(String(event.input?.path || '.'), policy);
     return reason ? { block: true, reason } : undefined;
   });

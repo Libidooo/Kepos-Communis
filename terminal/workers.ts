@@ -4,13 +4,15 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { root, type Crew } from './store.ts';
+import { dataRoot } from './paths.ts';
+import { writeGrantSnapshotPath } from './grant.ts';
 import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { canRepresent } from './watch-purpose.ts';
 import { reusableProfileKey } from './warm-executor.ts';
 import { WarmExecutor, killTree, type WorkerProfile, type WorkerExecutor } from './warm-executor.ts';
 export { killTree };
-import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
+import {DEFAULT_TASK_SECONDS,MAX_CONCURRENT_CHILDREN,MAX_TASK_SECONDS,READ_ONLY_TOOLS,REPRESENTATIVE_TOOLS,REPRESENTATIVE_WRITE_TOOLS,SUPERVISION_INTERVAL_SECONDS,STALL_REVIEW_CYCLES,profileRevision,type WorkerState,type WorkerHandle,type AgentProfileSnapshot} from './worker-contract.ts';
 export * from './worker-contract.ts';
 export type WorkerLaunchMetadata = { purpose?: 'delegation' | 'configuration' | 'watch'; groupId?: string; /** 短标题：覆盖"任务全文即标题"的默认——内部任务的标题不该是提示词转储。 */ title?: string; /** 本次任务获批的写权限，任务结束即失效。 */ grantedTools?: string[]; /** 本次任务获批的外部 CLI 授权。 */ cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>; /** 本次派发是否注入了该代表的记忆索引（用于度量，不影响执行）。 */ memoryInjected?: boolean; /** 值守派发时命中的文件路径：把评估记录与任务结果关联起来。 */ watchPath?: string };
 export type Task = { id: string; agent: string; agentId?: string; purpose?: WorkerLaunchMetadata['purpose']; groupId?: string; role?: string; title: string; cwd: string; session: string; parentSessionId: string; correlationId: string; status: string; state: WorkerState; started: number; dispatchedAt?: number; queueWaitMs?: number; checkpoint?: string; checkpointAt?: number; reviewAt?: number; reviewCount?: number; reviewDue?: boolean; stalled?: boolean; budgetTokens?: number; mcpServers?: string[]; delegationDepth?: number; parentWorkerId?: string; ended?: number; tool?: string; output: string; profileSnapshot?: AgentProfileSnapshot; profileRevision?: string; outputTruncated?: boolean; error?: string; limit: number; model: string; provider: string; usage?: any; ownerPid: number; ownerEpoch: string; tools: string[]; skills: string[]; mcp: boolean; firstTextMs?: number; workerReused?: boolean };
@@ -356,19 +358,21 @@ export class WorkerPool {
  }
  private profile(crew: Crew, cwd: string, tools: string[], skills: string[], mcp: boolean, granted: readonly string[] = [], representative = false, taskId?: string, cliGrants?: Array<{ cli: string; envKey?: string; argPrefixes?: string[] }>, purpose?: WorkerLaunchMetadata['purpose']): WorkerProfile {
   if (!crew.model?.trim()) throw Error('Worker model is empty');
-  // 只读工具永远允许；写工具（bash/powershell/edit/write）必须出现在本任务的授权里。
-  // 授权由代表申请、代理总代转呈、总理批准、人类确认后绑定到这次任务，任务结束即失效。
+  // 代表的 edit/write 工具会在启动时注册，但每次调用仍由私有授权快照门控；
+  // bash/powershell 不属于代表可申请的路径受限写能力，代表进程永远不暴露这两项。
   // 代表额外持有派生与裁决工具：它要对自己的僚属负责，包括分派与裁决。
-  const base = representative ? [...READ_ONLY_TOOLS, ...REPRESENTATIVE_TOOLS] : [...READ_ONLY_TOOLS];
-  const allowed = new Set<string>([...base, ...granted]);
+  const base = representative ? [...READ_ONLY_TOOLS, ...REPRESENTATIVE_TOOLS, ...REPRESENTATIVE_WRITE_TOOLS] : [...READ_ONLY_TOOLS];
+  const scopedGrants = representative ? granted.filter(tool => (REPRESENTATIVE_WRITE_TOOLS as readonly string[]).includes(tool)) : [];
+  const allowed = new Set<string>([...base, ...scopedGrants]);
   const blocked = tools.filter(tool => !allowed.has(tool));
   if (blocked.length) throw Error(`Unapproved tool: ${blocked.join(', ')}；写权限需由代表向代理总代申请，经总理批准后随任务生效`);
   // The role extension registers these tools, but Pi's --tools flag is a second
   // allowlist. Include the representative capabilities there or they exist in the
   // extension yet are invisible to the model at runtime.
-  const effectiveTools = representative ? [...new Set([...tools, ...REPRESENTATIVE_TOOLS])] : [...new Set(tools)];
+  const effectiveTools = representative ? [...new Set([...tools, ...REPRESENTATIVE_TOOLS, ...REPRESENTATIVE_WRITE_TOOLS])] : [...new Set(tools)];
   return { cwd, model: crew.model, provider: crew.provider, tools: effectiveTools.sort(), skills: [...new Set(skills)].sort(), mcp, role: crew.role, readScope: crew.readScope, readAllow: crew.readAllow, mcpServers: crew.mcpServers,
-   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId, cliGrants, purpose };
+   representative, archiveRoot: representative ? join(cwd, ARCHIVE_DIR) : undefined, agentName: crew.name, taskId,
+   writeGrantFile: undefined, cliGrants, purpose };
  }
  private executor(profile: WorkerProfile, extraSlots = 0): WorkerExecutor | undefined {
   // 与 WarmExecutor 构造共用同一函数：两边算法一漂移就是永久死锁。
@@ -606,8 +610,9 @@ export class WorkerPool {
   const snapshot: AgentProfileSnapshot = structuredClone({ ...snapshotBase, revision: profileRevision(snapshotBase) });
   Object.freeze(snapshot.tools); Object.freeze(snapshot.skills); Object.freeze(snapshot);
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
-  // 代表进程靠这个定位自己的归档与会话；此时 executor 尚未创建，不影响复用键（key 也排除了它）。
+  // 代表进程靠这个定位自己的归档与会话；唯一的授权快照路径留在复用键里，确保不同任务绝不共用写权限上下文。
   profile.taskId = id;
+  if (profile.representative) profile.writeGrantFile = writeGrantSnapshotPath(dataRoot, id);
   if (metadata.groupId) profile.groupId = metadata.groupId;
   // 本任务是否由在任代理总代执行：代表进程据此注册跨组借调工具。
   const deputyId = deputyProvider();

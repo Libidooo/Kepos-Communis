@@ -5,7 +5,8 @@
 // 写归档目录里的请求文件，父进程轮询后执行。
 // 这条路有代价（延迟一个轮询周期），但它不需要改动 RPC 协议，也不给子进程
 // 新增网络能力，权限面最小。
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { CliSessions } from './cli-runtime.ts';
 import { clampTurnOutput } from './cli-dialog.ts';
@@ -16,7 +17,53 @@ import { listCliTurns, readCliTurn } from './cli-dialog.ts';
 export const SPAWN_REQUEST_FILE = 'spawn-request.json';
 /** 跨组借调申请：同上，由父进程轮询后转呈总理。 */
 export const SECONDMENT_REQUEST_FILE = 'secondment-request.json';
+/** 代表申请受限文件写权限；由宿主评估并将最终授权写入 Kepos 私有数据目录。 */
+export const WRITE_ACCESS_REQUEST_FILE = 'write-access-request.json';
+export const WRITE_ACCESS_RESULT_FILE = 'write-access-result.json';
 export const DECISION_FILE = 'decision.md';
+
+export type RepresentativeWriteRequest = {
+  id: string;
+  taskId: string;
+  tools: string[];
+  paths: string[];
+  reason: string;
+  requestedAt: number;
+};
+export type RepresentativeWriteResult = { id: string; approved: boolean; reason: string; tools?: string[]; paths?: string[]; directoryPaths?: string[]; expiresAt?: number };
+
+export function readWriteAccessRequest(archiveRoot: string): RepresentativeWriteRequest | null {
+  const file = join(archiveRoot, WRITE_ACCESS_REQUEST_FILE);
+  if (!existsSync(file)) return null;
+  try {
+    const value = JSON.parse(readFileSync(file, 'utf8'));
+    if (!value || !value.requestedAt || typeof value.id !== 'string' || typeof value.taskId !== 'string') return null;
+    return {
+      id: value.id.slice(0, 100), taskId: value.taskId.slice(0, 100),
+      tools: Array.isArray(value.tools) ? value.tools.map(String).slice(0, 8) : [],
+      paths: Array.isArray(value.paths) ? value.paths.map(String).slice(0, 8) : [],
+      reason: String(value.reason || '').slice(0, 500), requestedAt: Number(value.requestedAt) || 0,
+    };
+  } catch { return null; }
+}
+
+export function clearWriteAccessRequest(archiveRoot: string): void {
+  const file = join(archiveRoot, WRITE_ACCESS_REQUEST_FILE);
+  try { if (existsSync(file)) writeFileSync(file, JSON.stringify({ handled: true }) + '\n', 'utf8'); } catch { /* parent will time out and deny */ }
+}
+
+export function writeWriteAccessResult(archiveRoot: string, result: RepresentativeWriteResult): void {
+  mkdirSync(archiveRoot, { recursive: true });
+  writeFileSync(join(archiveRoot, WRITE_ACCESS_RESULT_FILE), JSON.stringify(result, null, 2) + '\n', 'utf8');
+}
+
+function readWriteAccessResult(archiveRoot: string): RepresentativeWriteResult | null {
+  try {
+    const value = JSON.parse(readFileSync(join(archiveRoot, WRITE_ACCESS_RESULT_FILE), 'utf8'));
+    if (!value || typeof value.id !== 'string' || typeof value.approved !== 'boolean') return null;
+    return { id: value.id, approved: value.approved, reason: String(value.reason || '').slice(0, 1000), tools: Array.isArray(value.tools) ? value.tools.map(String) : undefined, paths: Array.isArray(value.paths) ? value.paths.map(String) : undefined, directoryPaths: Array.isArray(value.directoryPaths) ? value.directoryPaths.map(String) : undefined, expiresAt: Number(value.expiresAt) || undefined };
+  } catch { return null; }
+}
 
 export type SpawnRequest = {
   /** 请求 id：父进程处理后写回 handledAt，代表据此判断是否已被接收。 */
@@ -109,7 +156,7 @@ export function readDecision(archiveRoot: string): { adopted?: boolean; note?: s
 }
 
 /**
- * 代表侧扩展入口：注册两个工具。
+ * 代表侧扩展入口：注册代表专属的派生、裁决、写权限申请与协作工具。
  * 只注册给代表进程——僚属的沙箱是另一个扩展，不会加载这里。
  */
 export default function representativeTools(pi: any) {
@@ -118,6 +165,52 @@ export default function representativeTools(pi: any) {
   // 本任务 id：定位自己的归档、认出自己的僚属、在组通道里标识发言者。
   const taskId = String(process.env.KEPOS_TASK_ID || '');
   if (!archiveRoot) return;
+  // The host poller consumes request files from .kepos/<taskId>. Keeping the
+  // transport files per task prevents concurrent representatives from
+  // overwriting each other's requests or receiving another task's decision.
+  const taskArchiveRoot = taskId ? join(archiveRoot, taskId.replace(/[^A-Za-z0-9_-]/g, '')) : archiveRoot;
+
+  pi.registerTool({
+    name: 'kepos_request_write',
+    label: '申请文件写权限',
+    description: '为当前代表任务申请直接修改项目文件。必须给出具体理由和 1–8 个目标：已存在目录会授权其后代文件，已存在文件或新建文件路径只授权该文件本身。授权只支持 edit/write，并由总理按审批模式评估，严格模式由人类确认，只读模式拒绝。权限仅作用于批准路径并随当前任务结束失效。bash/powershell 不属于此授权。该工具会等待审批结果；获批后再调用 edit/write。',
+    parameters: {
+      type: 'object',
+      properties: {
+        tools: { type: 'array', items: { type: 'string', enum: ['edit', 'write'] }, minItems: 1, maxItems: 2, description: '只申请完成修改所需的最小工具集' },
+        paths: { type: 'array', items: { type: 'string', maxLength: 1000 }, minItems: 1, maxItems: 8, description: '具体文件、已有目录或新建文件路径；相对路径以项目根目录为基准' },
+        reason: { type: 'string', maxLength: 500, description: '说明要改什么、为什么只读工作不足，以及验收方式' },
+      },
+      required: ['tools', 'paths', 'reason'],
+    },
+    async execute(_id: string, params: any, signal?: AbortSignal) {
+      if (!taskId) return { content: [{ type: 'text', text: '缺少当前任务标识，不能申请写权限。' }], isError: true };
+      const prior = readWriteAccessRequest(taskArchiveRoot);
+      if (prior?.requestedAt) return { content: [{ type: 'text', text: '已有写权限申请正在处理，请等待它返回后再提交。' }], isError: true };
+      const tools: string[] = Array.isArray(params.tools) ? [...new Set<string>(params.tools.map((value: unknown) => String(value).toLowerCase()))] : [];
+      const paths: string[] = Array.isArray(params.paths) ? [...new Set<string>(params.paths.map((value: unknown) => String(value).trim()).filter(Boolean))] : [];
+      const reason = String(params.reason || '').trim();
+      if (!tools.length || tools.some((tool: string) => !['edit', 'write'].includes(tool)) || !paths.length || paths.length > 8 || !reason || reason.length > 500) {
+        return { content: [{ type: 'text', text: '申请无效：仅支持 edit/write；必须提供 1–8 个目标路径和不超过 500 字的理由。' }], isError: true };
+      }
+      const id = randomUUID();
+      try { unlinkSync(join(taskArchiveRoot, WRITE_ACCESS_RESULT_FILE)); } catch { /* first request */ }
+      mkdirSync(taskArchiveRoot, { recursive: true });
+      const request: RepresentativeWriteRequest = { id, taskId, tools, paths, reason, requestedAt: Date.now() };
+      writeFileSync(join(taskArchiveRoot, WRITE_ACCESS_REQUEST_FILE), JSON.stringify(request, null, 2) + '\n', 'utf8');
+      const deadline = Date.now() + 180_000;
+      while (Date.now() < deadline) {
+        if (signal?.aborted) return { content: [{ type: 'text', text: '写权限申请已随任务取消。' }], isError: true };
+        const result = readWriteAccessResult(taskArchiveRoot);
+        if (result?.id === id) {
+          if (!result.approved) return { content: [{ type: 'text', text: `总理/人类未授予写权限：${result.reason}` }], isError: true };
+          return { content: [{ type: 'text', text: `写权限已生效：${(result.tools || []).join(' / ')}；批准路径：${(result.paths || []).map(path => `${path}${result.directoryPaths?.includes(path) ? '（目录内）' : '（仅此文件）'}`).join('；')}；到期 ${new Date(result.expiresAt || Date.now()).toLocaleString()}。现在可在该范围内调用 edit/write。` }], details: result };
+        }
+        await new Promise(resolve => setTimeout(resolve, 300));
+      }
+      return { content: [{ type: 'text', text: '等待写权限审批超过 3 分钟；按未获批处理。请向总理汇报后继续只读工作。' }], isError: true };
+    },
+  });
 
   pi.registerTool({
     name: 'kepos_spawn',
@@ -141,9 +234,9 @@ export default function representativeTools(pi: any) {
       const mcpReason = String(params.mcpReason || '').trim();
       if (mcp?.length && !mcpReason) return { content: [{ type: 'text', text: '申请 MCP 时必须同时说明理由；尚未提交派生请求。' }], isError: true };
       if (mcpReason.length > 500) return { content: [{ type: 'text', text: 'MCP 申请理由最多 500 字符；尚未提交派生请求。' }], isError: true };
-      const existing = readSpawnRequest(archiveRoot);
+      const existing = readSpawnRequest(taskArchiveRoot);
       if (existing && !existing.requestedAt) return { content: [{ type: 'text', text: '已有一个待处理的派生请求，请等待父进程接收后再试。' }] };
-      writeSpawnRequest(archiveRoot, {
+      writeSpawnRequest(taskArchiveRoot, {
         id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         task: String(params.task || ''),
         seconds: Number.isFinite(params.seconds) ? Number(params.seconds) : undefined,
@@ -213,7 +306,8 @@ export default function representativeTools(pi: any) {
           if (!request.agent || !request.fromGroup || !request.toGroup || !request.reason) {
             return { content: [{ type: 'text', text: '借调需要：代表、来源组、目标组、原因。' }], isError: true };
           }
-          writeFileSync(join(archiveRoot, SECONDMENT_REQUEST_FILE), JSON.stringify(request), 'utf8');
+          mkdirSync(taskArchiveRoot, { recursive: true });
+          writeFileSync(join(taskArchiveRoot, SECONDMENT_REQUEST_FILE), JSON.stringify(request), 'utf8');
           return { content: [{ type: 'text', text: `已提交借调申请，等待总理评估：${request.agent} 从组 ${request.fromGroup} 借到组 ${request.toGroup}` }] };
         } catch (error: any) {
           return { content: [{ type: 'text', text: '提交失败：' + (error?.message || error) }], isError: true };

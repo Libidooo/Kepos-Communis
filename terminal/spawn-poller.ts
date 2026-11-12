@@ -6,11 +6,13 @@
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { ARCHIVE_DIR } from './archive.ts';
-import { clearSecondmentRequest, clearSpawnRequest, readSecondmentRequest, readSpawnRequest, type SecondmentRequest, type SpawnRequest } from './representative-tools.ts';
+import { clearSecondmentRequest, clearSpawnRequest, clearWriteAccessRequest, readSecondmentRequest, readSpawnRequest, readWriteAccessRequest, writeWriteAccessResult, type RepresentativeWriteRequest, type RepresentativeWriteResult, type SecondmentRequest, type SpawnRequest } from './representative-tools.ts';
 
 export type SpawnHandler = (taskId: string, request: SpawnRequest) => Promise<{ ok: boolean; reason?: string }>;
 /** 借调申请的处理：由父进程转呈总理评估（静默批准，不经人类）。 */
 export type SecondmentHandler = (taskId: string, request: SecondmentRequest) => Promise<{ ok: boolean; reason?: string }>;
+/** Write access is adjudicated by the principal; this callback never receives raw tool execution. */
+export type WriteAccessHandler = (taskId: string, request: RepresentativeWriteRequest) => Promise<RepresentativeWriteResult>;
 
 export type SpawnPollOptions = {
   /** 轮询间隔，缺省 2 秒：够快让人看不出延迟，又不至于空转。 */
@@ -19,6 +21,8 @@ export type SpawnPollOptions = {
   onSpawn: SpawnHandler;
   /** 可选：处理跨组借调申请。没有它时申请会被忽略（不误报为成功）。 */
   onSecondment?: SecondmentHandler;
+  /** Optional scoped edit/write grant workflow for representative tasks. */
+  onWriteAccess?: WriteAccessHandler;
 };
 
 /**
@@ -56,6 +60,22 @@ export class SpawnRequestPoller {
           try { await this.options.onSecondment(taskId, secondment); }
           catch { /* 申请失败不能影响派生处理 */ }
           finally { clearSecondmentRequest(root); }
+        }
+      }
+      if (this.options.onWriteAccess) {
+        const writeRequest = readWriteAccessRequest(root);
+        if (writeRequest?.requestedAt) {
+          this.busy.add(taskId);
+          try {
+            const result = await this.options.onWriteAccess(taskId, writeRequest);
+            writeWriteAccessResult(root, result);
+          } catch (error: any) {
+            writeWriteAccessResult(root, { id: writeRequest.id, approved: false, reason: error?.message || String(error) });
+          } finally {
+            clearWriteAccessRequest(root);
+            this.busy.delete(taskId);
+          }
+          continue;
         }
       }
       const request = readSpawnRequest(root);
