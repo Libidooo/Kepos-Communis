@@ -182,15 +182,15 @@ test('acceptance can only be checked by naming items, one at a time',async t=>{
  const f=fixture(t);const m=f.enqueue([{id:'scan',agent,task:'scan',acceptance:['测试通过','无新增依赖']}]);
  await f.scheduler.tick();f.done(0,'tests passed');
  // 空数组不勾任何条目——"都完成了"不构成勾选。
- assert.equal(f.scheduler.checkAcceptance(m.id,'parent','scan',[]).marked,0);
+ assert.equal((await f.scheduler.checkAcceptance(m.id,'parent','scan',[])).marked,0);
  assert.equal(f.scheduler.acceptanceProgress(m.id,'parent').done,0);
  // 点名第 1 条。
- const first=f.scheduler.checkAcceptance(m.id,'parent','scan',[1]);
+ const first=await f.scheduler.checkAcceptance(m.id,'parent','scan',[1]);
  assert.equal(first.marked,1);
  assert.equal(first.state,'pending');
  assert.deepEqual(f.scheduler.get(m.id).jobs[0].acceptance.map(item=>item.passes),[true,false]);
  // 再用原文勾第 2 条，全部勾满。
- assert.equal(f.scheduler.checkAcceptance(m.id,'parent','scan',['无新增依赖']).state,'complete');
+ assert.equal((await f.scheduler.checkAcceptance(m.id,'parent','scan',['无新增依赖'])).state,'complete');
  assert.equal(f.scheduler.acceptanceProgress(m.id,'parent').complete,true);
 });
 

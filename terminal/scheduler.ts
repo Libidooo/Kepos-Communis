@@ -4,7 +4,7 @@ import { GraphStore } from './graph.ts';
 import type { WorkerPool } from './workers.ts';
 import { DEFAULT_TASK_SECONDS, HUMAN_APPROVAL_THRESHOLD_SECONDS, MAX_CONCURRENT_CHILDREN, READ_ONLY_TOOLS, MAX_TASK_SECONDS, profileRevision, type WorkerHandle } from './worker-contract.ts';
 import { optionalGroupId } from './group-id.ts';
-import { acceptanceState, freshAcceptance, isPrematureDone, markPasses, normalizeAcceptance, unmetChecks, type AcceptanceCheck } from './acceptance.ts';
+import { acceptanceState, adjudicateVerifiedAcceptance, freshAcceptance, isPrematureDone, markPasses, normalizeAcceptance, unmetChecks, type AcceptanceCheck } from './acceptance.ts';
 export type MissionState = 'QUEUED' | 'RUNNING' | 'PAUSED' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export type JobState = 'QUEUED' | 'RUNNING' | 'WAITING' | 'NEEDS_HUMAN' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED';
 export interface MissionJobInput {
@@ -300,7 +300,7 @@ export class MissionScheduler {
      * 勾选验收条目。复核只认逐条点名——"都完成了"不是勾选。
      * 返回更新后的步骤；计划已结束或步骤不在验收范围内时抛出。
      */
-    checkAcceptance(id: string, parent: string, jobId: string, passed: unknown) {
+    async checkAcceptance(id: string, parent: string, jobId: string, passed: unknown, baseCwd?: string) {
         const m = this.authorize(id, parent);
         // 计划已结束后仍然可以勾选：复核本来就常发生在完成之后，
         // 而 premature_done 记录的正是"完成时还没勾满"。拦掉只会让人无法补记。
@@ -313,18 +313,27 @@ export class MissionScheduler {
         if (!['RUNNING', 'SUCCEEDED', 'FAILED'].includes(job.state))
             throw Error('只能对已派发或已完成的步骤勾选验收');
         const { checks, marked } = markPasses(job.acceptance, passed);
-        const state = acceptanceState(checks);
-        if (!marked)
-            return { job, marked: 0, state };
+        // 绑定了 verify 的条目走机器裁决：实际运行具名检查，退出码即结果。
+        // 这与是否有人自述无关——没有勾选也照跑，失败/缺脚本一律 false。
+        let final = checks;
+        let mechanical = 0;
+        if (final.some(item => item.verify)) {
+            const adjudicated = await adjudicateVerifiedAcceptance(final, baseCwd || '');
+            mechanical = adjudicated.filter((item, index) => item.passes !== final[index].passes).length;
+            final = adjudicated;
+        }
+        const state = acceptanceState(final);
+        if (!marked && !mechanical)
+            return { job, marked: 0, mechanical: 0, state };
         this.database.transaction(() => {
-            this.database.prepare('UPDATE mission_jobs SET acceptance=? WHERE id=?').run(JSON.stringify(checks), job.key);
-            this.event(id, job.key, 'acceptance_checked', { marked, state, unmet: unmetChecks(checks) });
-            this.graph.updateNode(id, job.key, job.state as any, { checkpoint: `验收 ${checks.filter(item => item.passes).length}/${checks.length}` });
+            this.database.prepare('UPDATE mission_jobs SET acceptance=? WHERE id=?').run(JSON.stringify(final), job.key);
+            this.event(id, job.key, 'acceptance_checked', { marked, mechanical, state, unmet: unmetChecks(final) });
+            this.graph.updateNode(id, job.key, job.state as any, { checkpoint: `验收 ${final.filter(item => item.passes).length}/${final.length}` });
         });
         // 勾满之后计划应当自行离开 NEEDS_HUMAN——它先前停在那里唯一的原因就是这些条目。
         // 不在这里重判，人就得手动再点一次才能让计划收尾。
         if (state === 'complete' && m.state === 'NEEDS_HUMAN') this.publishState(this.get(id, parent)!);
-        return { job: { ...job, acceptance: checks }, marked, state };
+        return { job: { ...job, acceptance: final }, marked, mechanical, state };
     }
     /** 计划内所有步骤的验收勾选进度。没有条目的步骤不计入——"没写验收"不是"通过"。 */
     acceptanceProgress(id: string, parent: string) {

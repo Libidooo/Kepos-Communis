@@ -5,14 +5,32 @@
 //   单独存成 [{check, passes}] 后，复核必须逐条回答"这一条过了吗"——
 //   未勾选的条目留在那里，不能靠一句"全部完成"糊过去。
 //   这是 harness 层面的事实，不是提示词里的请求。
+import { PROJECT_CHECKS, inspectProjectCheck, runProjectCheck, type ProjectCheck } from './validation-command.ts';
+
+/** 机器裁决的绑定：勾选这类条目时实际运行具名项目检查，退出码即结果，自述无效。 */
+export type AcceptanceVerify = { project: ProjectCheck; cwd?: string };
 
 /** 一条验收标准。passes 在计划创建时必须是 false——先声明，后达成。 */
-export type AcceptanceCheck = { check: string; passes: boolean };
+export type AcceptanceCheck = { check: string; passes: boolean; verify?: AcceptanceVerify; verifyError?: string };
 
 export const MIN_ACCEPTANCE = 1;
 export const MAX_ACCEPTANCE = 8;
 /** 单条上限：超过就不是"可以验证的一条"，而是一段需求描述。 */
 export const MAX_CHECK_CHARS = 300;
+
+/** verify 允许字符串简写（'test'）或 {check, cwd}；名字必须是具名项目检查。 */
+function parseVerify(raw: any): AcceptanceVerify | undefined {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  const value = typeof raw === 'string' ? { check: raw } : raw;
+  if (typeof value !== 'object') throw Error('verify 必须是具名检查（字符串）或 {check, cwd}');
+  const project = String(value.check ?? '').trim();
+  if (!project) throw Error('verify.check 不能为空');
+  if (!(PROJECT_CHECKS as readonly string[]).includes(project)) {
+    throw Error(`verify.check 只支持具名项目检查：${PROJECT_CHECKS.join(' / ')}，收到「${project.slice(0, 40)}」`);
+  }
+  const cwd = typeof value.cwd === 'string' && value.cwd.trim() ? value.cwd.trim() : undefined;
+  return { project: project as ProjectCheck, ...(cwd ? { cwd } : {}) };
+}
 
 /**
  * 校验并规范化一组验收条目。
@@ -36,14 +54,33 @@ export function normalizeAcceptance(input: unknown): AcceptanceCheck[] {
     const key = check.toLowerCase();
     if (seen.has(key)) continue;                 // 重复条目只留一条，不报错
     seen.add(key);
-    out.push({ check, passes: typeof raw === 'object' && raw?.passes === true });
+    const verify = typeof raw === 'object' ? parseVerify(raw?.verify) : undefined;
+    out.push({ check, passes: typeof raw === 'object' && raw?.passes === true, ...(verify ? { verify } : {}) });
   }
   return out;
 }
 
-/** 创建计划时的验收条目：一律从"未通过"开始。 */
+/** 创建计划时的验收条目：一律从"未通过"开始；verify 绑定保留——机器裁决不因建档丢失。 */
 export function freshAcceptance(input: unknown): AcceptanceCheck[] {
-  return normalizeAcceptance(input).map(item => ({ check: item.check, passes: false }));
+  return normalizeAcceptance(input).map(item => ({ check: item.check, passes: false, ...(item.verify ? { verify: item.verify } : {}) }));
+}
+
+/**
+ * 绑定了 verify 的条目由机器裁决：实际运行具名项目检查，退出码即 passes。
+ * 这封住了与"未经核验的结论"同类的缺口——claim（验收通过）必须有 evidence（退出码）。
+ * 代表或复核者的自述对这类条目不生效；运行失败/脚本缺失一律 false，错误留在 verifyError。
+ */
+export async function adjudicateVerifiedAcceptance(items: AcceptanceCheck[], baseCwd: string, run: typeof runProjectCheck = runProjectCheck): Promise<AcceptanceCheck[]> {
+  const out: AcceptanceCheck[] = [];
+  for (const item of items) {
+    if (!item.verify) { out.push(item); continue; }
+    const cwd = item.verify.cwd || baseCwd;
+    const info = inspectProjectCheck(cwd, item.verify.project);
+    if ('error' in info) { out.push({ ...item, passes: false, verifyError: info.error }); continue; }
+    const result = await run({ info, expectedPackageHash: info.packageHash });
+    out.push({ ...item, passes: result.ok === true, ...(result.error ? { verifyError: result.error.slice(0, 200) } : {}) });
+  }
+  return out;
 }
 
 /** 是否所有条目都已勾选。没有条目时返回 null——"没写验收"不等于"验收通过"。 */
@@ -77,7 +114,8 @@ export function markPasses(checks: AcceptanceCheck[], passed: unknown): { checks
   }
   let marked = 0;
   const next = checks.map((item, index) => {
-    if (!targets.has(index) || item.passes) return item;
+    // 绑定了 verify 的条目不接受自述勾选：它只能被机器裁决（adjudicateVerifiedAcceptance）。
+    if (!targets.has(index) || item.passes || item.verify) return item;
     marked++;
     return { ...item, passes: true };
   });

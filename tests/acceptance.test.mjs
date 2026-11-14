@@ -1,8 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   normalizeAcceptance, freshAcceptance, acceptanceState, unmetChecks, markPasses,
-  isPrematureDone, acceptanceReviewPrompt, parseReviewVerdict,
+  isPrematureDone, acceptanceReviewPrompt, parseReviewVerdict, adjudicateVerifiedAcceptance,
   MIN_ACCEPTANCE, MAX_ACCEPTANCE, MAX_CHECK_CHARS,
 } from '../dist/terminal/acceptance.js';
 
@@ -73,4 +76,61 @@ test('the review verdict parses defensively', () => {
   assert.deepEqual(parseReviewVerdict('{not json'), { passed: [], unmet: [] });
   assert.deepEqual(parseReviewVerdict('{"passed":[0,-2,"x"]}').passed, []);
   assert.deepEqual(parseReviewVerdict(JSON.stringify({ passed: [1, 1, 2] })).passed, [1, 2], 'de-duplicated');
+});
+
+// —— verify 绑定：验收条目的机器裁决（封住"自述通过"这个同类缺口）——
+
+test('verify accepts a named check as string or object and rejects unknown names', () => {
+  const items = normalizeAcceptance([
+    { check: '测试套件通过', verify: 'test' },
+    { check: '类型检查干净', verify: { check: 'typecheck', cwd: 'T:/elsewhere' } },
+    '纯文本条目不需要验证',
+  ]);
+  assert.equal(items[0].verify.project, 'test');
+  assert.equal(items[1].verify.project, 'typecheck');
+  assert.equal(items[1].verify.cwd, 'T:/elsewhere');
+  assert.equal(items[2].verify, undefined);
+  assert.throws(() => normalizeAcceptance([{ check: 'x', verify: 'deploy' }]), /只支持具名项目检查/);
+  assert.throws(() => normalizeAcceptance([{ check: 'x', verify: { check: '' } }]), /verify\.check 不能为空/);
+});
+
+test('fresh acceptance keeps the verify binding while resetting passes', () => {
+  const fresh = freshAcceptance([{ check: '测试套件通过', verify: 'test', passes: true }]);
+  assert.equal(fresh[0].passes, false, 'creation always starts unmet');
+  assert.equal(fresh[0].verify.project, 'test', 'the binding survives plan creation');
+});
+
+test('self-attestation cannot tick a verify-bound item', () => {
+  const items = normalizeAcceptance([{ check: '测试套件通过', verify: 'test' }, { check: '文档已更新' }]);
+  const { checks, marked } = markPasses(items, [1, 2]);
+  assert.equal(marked, 1, 'only the unbound item takes attestation');
+  assert.equal(checks[0].passes, false, 'the exit code is the only adjudicator for verify items');
+  assert.equal(checks[1].passes, true, 'unbound items still take attestation');
+});
+
+test('adjudication runs the named check for real and sets passes from the exit code', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'kepos-acceptance-verify-'));
+  try {
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'fixture', scripts: { test: 'node -e "process.exit(0)"', lint: 'node -e "process.exit(3)"' } }));
+    const items = normalizeAcceptance([
+      { check: '测试套件通过', verify: 'test' },
+      { check: 'lint 干净', verify: 'lint' },
+      { check: '构建产物齐全' },
+    ]);
+    const adjudicated = await adjudicateVerifiedAcceptance(items, cwd);
+    assert.equal(adjudicated[0].passes, true, 'exit 0 passes the item');
+    assert.equal(adjudicated[1].passes, false, 'exit 3 fails the item despite any claim');
+    assert.equal(adjudicated[2].passes, false, 'unbound items keep the attestation path');
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test('adjudication fails closed when the project has no such script', async () => {
+  const cwd = mkdtempSync(join(tmpdir(), 'kepos-acceptance-missing-'));
+  try {
+    writeFileSync(join(cwd, 'package.json'), JSON.stringify({ name: 'fixture', scripts: {} }));
+    const items = normalizeAcceptance([{ check: 'lint 干净', verify: 'lint' }]);
+    const adjudicated = await adjudicateVerifiedAcceptance(items, cwd);
+    assert.equal(adjudicated[0].passes, false);
+    assert.match(adjudicated[0].verifyError, /没有 scripts\.lint/);
+  } finally { rmSync(cwd, { recursive: true, force: true }); }
 });
