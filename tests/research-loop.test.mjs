@@ -154,3 +154,38 @@ test('research continues past two source pages while evidence makes progress, th
   assert.equal(reviewedSources, 4);
   assert.match(finalEvent.entries[0].content, /verified_sources/);
 });
+
+// 人类裁定：续回合不设硬上限，但从第三轮起提醒收敛，且次数对人类可见。
+test('repeated continuations get a convergence reminder and the audit reports the turn count', async () => {
+  const handlers = new Map();
+  const pi = { registerTool() {}, on(name, handler) { handlers.set(name, handler); } };
+  registerResearchLoop(pi, {
+    autoSearch: false,
+    verify: async ({ sources }) => {
+      const final = sources.length >= 6;
+      return { claims: [{ claim: 'The requested factual claim.', status: final ? 'supported' : 'partial', sources: [sources.at(-1).url], quote: final ? 'supporting source excerpt' : '', reason: final ? '' : '还需要更多来源材料' }] };
+    },
+  });
+  const sections = {};
+  await handlers.get('before_agent_start')({ messageType: 'user', prompt: 'What is the current evidence?', systemPromptOptions: { sections } });
+  handlers.get('tool_execution_end')({ toolName: 'kepos_web_search', result: { details: { source: 'test search', searchedAt: 'now', results: [{ url: 'https://source1.example' }] } } });
+  const gates = [];
+  let finalEvent;
+  for (let index = 1; index <= 6; index++) {
+    const url = `https://source${index}.example/page`;
+    handlers.get('tool_execution_end')({ toolName: 'kepos_web_open', args: { url }, result: { details: { url, title: `Source ${index}`, content: 'supporting source excerpt', fetchedAt: `read-${index}` } } });
+    finalEvent = await handlers.get('agent_before_settle')({
+      outcome: 'completed',
+      context: { contextMessages: [{ role: 'assistant', content: [{ type: 'text', text: 'The claim is under review. https://source1.example/page' }] }] },
+    });
+    if (finalEvent.continue) gates.push(finalEvent.entries[0].content);
+  }
+  assert.equal(gates.length, 5, 'five continuations, then the loop settles');
+  assert.doesNotMatch(gates[1], /提示：研究闭环已续/, 'no nagging while continuations are still cheap');
+  assert.match(gates[2], /已续 3 次/);
+  assert.match(gates[2], /收窄的结论/);
+  assert.match(gates[4], /已续 5 次/, 'the counter keeps counting without a cap');
+  assert.equal(finalEvent.continue, false);
+  assert.match(finalEvent.entries[0].content, /verified_sources/);
+  assert.match(finalEvent.entries[0].content, /共续 5 次回合/, 'the human sees the extra turn cost');
+});

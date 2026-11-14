@@ -200,14 +200,19 @@ export function registerResearchLoop(pi: any, options: { verify?: ResearchVerifi
       active.lastContinuationSignature = continuationSignature;
       active.continuations++;
       const next = provenance.missing.length ? `缺少：${provenance.missing.join('；')}` : `事实核验发现以下主张缺少来源支持：\n${auditText(active.audit!)}`;
-      return { entries: [{ type: 'custom_message', customType: 'kepos_research_gate', content: `研究闭环要求继续：${next}\n请补充来源或收窄/限定结论，再完成回答。`, display: false }], continue: true };
+      // 软提醒（人类裁定：不设硬上限）。续到第三轮还收不拢，多半是缺口本身补不上——
+      // 提醒模型收窄结论并标注未核实部分，而不是为了凑核验继续空转烧钱。
+      const remind = active.continuations >= 3 ? `\n提示：研究闭环已续 ${active.continuations} 次。若现有证据足以支撑一个收窄的结论，请直接给出最终回答并明确标注未核实部分；不要为了凑核验而继续空转。` : '';
+      return { entries: [{ type: 'custom_message', customType: 'kepos_research_gate', content: `研究闭环要求继续：${next}${remind}\n请补充来源或收窄/限定结论，再完成回答。`, display: false }], continue: true };
     }
     const status = !active.route.requiresEvidence ? 'not_required' : active.evidence.some(item => item.ok) && provenance.ready && active.audit?.status === 'supported' ? 'verified_sources' : active.evidence.some(item => item.ok) ? 'partial' : 'failed';
     const audit = renderResearchAudit(active.route, active.evidence, status);
     const claimReport = active.audit ? `\n逐条主张核验（独立模型审阅，非数学证明）：\n${auditText(active.audit)}` : '';
     const citationReport = provenance.uncitedSources.length ? `\n未在本轮读取的引用：${provenance.uncitedSources.join('、')}` : '';
     const closing = needsAnotherTurn ? '\n闭环未通过：证据或引用仍不完整。上方回答不得被理解为已核验。' : '';
-    return { entries: [{ type: 'custom_message', customType: 'kepos_research_audit', content: `${audit}${claimReport}${citationReport}${closing}`, display: true }], continue: false };
+    // 续回合次数对人类可见：这是本回合为满足闭环付出的额外轮次成本。
+    const continuationReport = active.continuations > 0 ? `\n本轮为满足研究闭环共续 ${active.continuations} 次回合。` : '';
+    return { entries: [{ type: 'custom_message', customType: 'kepos_research_audit', content: `${audit}${claimReport}${citationReport}${continuationReport}${closing}`, display: true }], continue: false };
   });
 }
 
