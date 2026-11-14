@@ -108,14 +108,26 @@ async function pinnedPublicAddress(hostname: string): Promise<{ address: string;
   return addresses[0];
 }
 
+/**
+ * Node ≥20 默认开启 autoSelectFamily：连接层以 all:true 调用 lookup 并要求数组返回；
+ * 经典契约则是单地址三元组。两种形态都按调用方的 options.all 给——
+ * 钉住的安全地址不变，私网拒绝逻辑全部在 pinnedPublicAddress，这里只做契约适配。
+ * （0.5.5 曾固定返回单地址，Node 24 下抛 "Invalid IP address: undefined"。）
+ */
+export function pinnedLookup(pinned: { address: string; family: number }): (host: string, options: { all?: boolean } | undefined, callback: (error: Error | null, address: any, family?: number) => void) => void {
+  return (_host, options, callback) => {
+    if (options?.all) callback(null, [{ address: pinned.address, family: pinned.family }]);
+    else callback(null, pinned.address, pinned.family);
+  };
+}
+
 async function requestText(url: URL): Promise<{ status: number; location?: string; type: string; body: string }> {
   const pinned = await pinnedPublicAddress(url.hostname);
   return await new Promise((resolve, reject) => {
     const req = request(url, {
       method: 'GET',
       headers: { 'user-agent': USER_AGENT, accept: 'text/html,text/plain,application/xhtml+xml;q=0.9,*/*;q=0.1', 'accept-encoding': 'identity' },
-      lookup: ((_host: string, _options: unknown, callback: (error: Error | null, address: string, family: number) => void) =>
-        callback(null, pinned.address, pinned.family)) as any,
+      lookup: pinnedLookup(pinned) as any,
       servername: url.hostname,
     }, response => {
       const chunks: Buffer[] = [];

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 const { applyResearchClassification, parseResearchClassification, routeResearchIntent, checkResearchProvenance, citationUrls } = await import('../dist/terminal/research-router.js');
 const { parseAnswerAudit, quoteMatchesRetrievedEvidence, registerResearchLoop } = await import('../dist/terminal/research-loop.js');
-const { parseBraveSearchResponse, parseFinnhubQuote } = await import('../dist/terminal/web-research.js');
+const { parseBraveSearchResponse, parseFinnhubQuote, pinnedLookup } = await import('../dist/terminal/web-research.js');
 
 test('intent routing distinguishes project, local files, current facts, provided material, and chat', () => {
   assert.equal(routeResearchIntent('检查我们 Kepos 仓库里的启动逻辑').kind, 'project');
@@ -188,4 +188,17 @@ test('repeated continuations get a convergence reminder and the audit reports th
   assert.equal(finalEvent.continue, false);
   assert.match(finalEvent.entries[0].content, /verified_sources/);
   assert.match(finalEvent.entries[0].content, /共续 5 次回合/, 'the human sees the extra turn cost');
+});
+
+// Node ≥20 默认 autoSelectFamily：lookup 回调以 all:true 被调用并要求数组返回。
+// 0.5.5 固定返回单地址，Node 24 下整个钉 IP 路径抛 "Invalid IP address: undefined"。
+test('the pinned lookup honours both Node address contracts', () => {
+  const lookup = pinnedLookup({ address: '93.184.216.34', family: 4 });
+  let arrayCall;
+  lookup('example.org', { all: true }, (error, addresses) => { arrayCall = { error, addresses }; });
+  assert.equal(arrayCall.error, null);
+  assert.deepEqual(arrayCall.addresses, [{ address: '93.184.216.34', family: 4 }], 'autoSelectFamily expects an array');
+  let tupleCall;
+  lookup('example.org', undefined, (error, address, family) => { tupleCall = { error, address, family }; });
+  assert.deepEqual(tupleCall, { error: null, address: '93.184.216.34', family: 4 }, 'the classic contract stays a tuple');
 });
