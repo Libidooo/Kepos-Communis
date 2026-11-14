@@ -30,8 +30,8 @@ test('human gate never starts until explicitly approved, and failure cannot be a
  assert.throws(()=>f.scheduler.approve(m.id,'foreign'),/Unknown/);f.scheduler.approve(m.id,'parent','approval');await f.scheduler.tick();assert.equal(f.dispatch.length,1);
  f.records.set(f.dispatch[0].h.workerId,{state:'FAILED',error:'bad'});await f.scheduler.tick();assert.equal(f.scheduler.get(m.id).state,'NEEDS_HUMAN');assert.throws(()=>f.scheduler.approve(m.id,'parent'),/explicit new/);await f.scheduler.tick();assert.equal(f.dispatch.length,1);
 });
-test('steps longer than twenty minutes are automatically placed behind a human gate',async t=>{
- const f=fixture(t);const m=f.enqueue([{id:'long',agent,task:'long running review',seconds:1201}]);await f.scheduler.tick();assert.equal(f.dispatch.length,0);assert.equal(f.scheduler.get(m.id).jobs[0].state,'NEEDS_HUMAN');assert.equal(f.scheduler.get(m.id).jobs[0].requiresHuman,true);
+test('steps longer than one hour are automatically placed behind a human gate',async t=>{
+ const f=fixture(t);const m=f.enqueue([{id:'long',agent,task:'long running review',seconds:3601}]);await f.scheduler.tick();assert.equal(f.dispatch.length,0);assert.equal(f.scheduler.get(m.id).jobs[0].state,'NEEDS_HUMAN');assert.equal(f.scheduler.get(m.id).jobs[0].requiresHuman,true);
 });
 test('paused mission drains its active job and dispatches no dependent work',async t=>{
  const f=fixture(t);const m=f.enqueue([{id:'a',agent,task:'a'},{id:'b',agent,task:'b',dependsOn:['a']}]);await f.scheduler.tick();f.scheduler.pause(m.id,'parent');f.done(0);await f.scheduler.tick();assert.equal(f.dispatch.length,1);assert.equal(f.scheduler.get(m.id).jobs[0].state,'SUCCEEDED');assert.equal(f.scheduler.get(m.id).state,'PAUSED');
@@ -80,13 +80,13 @@ test('dispatch persists a hashed capability, not the live one',async t=>{
 test('reschedule adjusts queued step limits but never clears an existing gate',async t=>{
  const f=fixture(t);const m=f.enqueue([{id:'quick',agent,task:'quick',seconds:100},{id:'long',agent,task:'long',seconds:2400,requiresHuman:true}]);
  const plan=f.scheduler.get(m.id);
- const updated=f.scheduler.reschedule(m.id,'parent','quick',1800);
- assert.equal(updated.jobs.find(j=>j.id==='quick').seconds,1800);
- assert.equal(updated.jobs.find(j=>j.id==='quick').requiresHuman,true,'1800s is above the 20 minute gate');
+ const updated=f.scheduler.reschedule(m.id,'parent','quick',3800);
+ assert.equal(updated.jobs.find(j=>j.id==='quick').seconds,3800);
+ assert.equal(updated.jobs.find(j=>j.id==='quick').requiresHuman,true,'3800s is above the one hour gate');
  const lowered=f.scheduler.reschedule(m.id,'parent','quick',60);
  assert.equal(lowered.jobs.find(j=>j.id==='quick').seconds,60);
  assert.equal(lowered.jobs.find(j=>j.id==='quick').requiresHuman,true,'original explicit gate stays');
- assert.throws(()=>f.scheduler.reschedule(m.id,'parent','quick',0),/1-3600/);
+ assert.throws(()=>f.scheduler.reschedule(m.id,'parent','quick',0),/1-14400/);
  assert.throws(()=>f.scheduler.reschedule(m.id,'parent','missing',60),/未知步骤/);
 });
 

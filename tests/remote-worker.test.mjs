@@ -35,11 +35,11 @@ test('remote events require a parentSessionId and are filtered by it',async()=>{
  await server.close();
 });
 
-test('remote submit rejects durations past the 20 minute human gate',async()=>{
+test('remote submit rejects durations past the one hour human gate',async()=>{
  const server=new RemoteWorkerServer(fakePool(),{host:'127.0.0.1',port:0,token:'secret'});const address=await server.listen();
  const client=new RemoteWorkerClient({host:address.host,port:address.port,token:'secret'});
  const crew={name:'Remote',model:'fixture',provider:'fixture',role:'read'};
- await assert.rejects(client.submit({crew,instruction:'long run',cwd:'.',parentSessionId:'p',seconds:3600}),/missions for longer runs/);
+ await assert.rejects(client.submit({crew,instruction:'long run',cwd:'.',parentSessionId:'p',seconds:7200}),/missions for longer runs/);
  await server.close();
 });
 

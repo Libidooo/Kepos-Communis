@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { root, type Crew } from './store.ts';
 import { dataRoot } from './paths.ts';
-import { writeGrantSnapshotPath } from './grant.ts';
+import { writeGrantSnapshotPath, persistActiveWriteGrant } from './grant.ts';
 import { db, type KeposDatabase } from './database.ts';
 import { readWorkerEvents } from './events.ts';
 import { canRepresent } from './watch-purpose.ts';
@@ -632,7 +632,23 @@ export class WorkerPool {
   const id = randomUUID(), capability = randomBytes(32).toString('hex');
   // 代表进程靠这个定位自己的归档与会话；唯一的授权快照路径留在复用键里，确保不同任务绝不共用写权限上下文。
   profile.taskId = id;
-  if (profile.representative) profile.writeGrantFile = writeGrantSnapshotPath(dataRoot, id);
+  if (profile.representative) {
+    profile.writeGrantFile = writeGrantSnapshotPath(dataRoot, id);
+    // 派发时声明的写工具（代理档由总理批准）：launch 内直接发放授权快照，
+    // 范围=项目目录、保护 Kepos 数据与归档、到期=任务时限——代表开工即有手，
+    // 不必先停下来走一轮申请。严格档不传 grantedTools，走 kepos_grant 人类链。
+    const dispatchWrite = (metadata.grantedTools || []).filter(tool => (REPRESENTATIVE_WRITE_TOOLS as readonly string[]).includes(tool));
+    if (dispatchWrite.length) {
+      const now = Date.now();
+      persistActiveWriteGrant(dataRoot, {
+        version: 1, id: `dg_${id.slice(0, 8)}`, taskId: id,
+        tools: dispatchWrite as Array<'edit' | 'write'>,
+        paths: [cwd], directoryPaths: [cwd], projectRoot: cwd,
+        protectedPaths: [dataRoot, join(cwd, ARCHIVE_DIR)],
+        issuedAt: now, expiresAt: now + seconds * 1000,
+      });
+    }
+  }
   if (metadata.groupId) profile.groupId = metadata.groupId;
   // 本任务是否由在任代理总代执行：代表进程据此注册跨组借调工具。
   const deputyId = deputyProvider();

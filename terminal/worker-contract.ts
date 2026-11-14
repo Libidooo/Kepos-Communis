@@ -1,11 +1,17 @@
 import { createHash } from 'node:crypto';
-export const DEFAULT_TASK_SECONDS = 300;
+/**
+ * 时长体系（人类裁定）：审批的职责是"别脱轨"，不是"别太久"。
+ *   默认 15 分钟——多数调查够用；超过 1 小时的步骤进入审批（原 20 分钟）；
+ *   单任务上限 4 小时（原 1 小时）——长任务靠复核与门禁保持在轨道上，
+ *   而不是被一刀切掐断。三个值可被 config 覆盖（defaultTaskSeconds 等）。
+ */
+export const DEFAULT_TASK_SECONDS = 900;
 export const SUPERVISION_INTERVAL_SECONDS = 300;
-export const HUMAN_APPROVAL_THRESHOLD_SECONDS = 1200;
+export const HUMAN_APPROVAL_THRESHOLD_SECONDS = 3600;
 export const MAX_CONCURRENT_CHILDREN = 48;
 /** 连续几个复核周期没有任何进展才判定空转并唤醒主 Agent（3 × 5 分钟 = 15 分钟）。 */
 export const STALL_REVIEW_CYCLES = 3;
-export const MAX_TASK_SECONDS = 3600;
+export const MAX_TASK_SECONDS = 14400;
 export const MAX_OUTPUT_BYTES = 8 * 1024 * 1024;
 export const READ_ONLY_TOOLS = ['read', 'grep', 'find', 'ls', 'kepos_attach', 'kepos_find_file', 'kepos_web_search', 'kepos_web_open', 'kepos_market_quote', 'kepos_research_status'] as const;
 export const WEB_RESEARCH_TOOLS = ['kepos_web_search', 'kepos_web_open'] as const;

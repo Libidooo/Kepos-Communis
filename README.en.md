@@ -76,6 +76,8 @@ Three panes: seats on the left, the conversation in the middle, projects and ses
 | ⚖ Proxy | The premier may approve gates after checking evidence; budget increases within 2M tokens per task are decided by the premier with an audit trail, beyond that they go to the human |
 | ⊙ Readonly | Mutating tools are removed; observe and report |
 
+In proxy mode, `kepos_delegate` `tasks[].tools` may carry `edit`/`write` directly: the grant attaches to the task, is scoped to the project directory, and expires with the task, all audited. In strict mode delegates request write access mid-task via `kepos_grant` and a human confirms. `bash`/`powershell` are never delegate tools; command execution goes through the human-owned CLI allowlist.
+
 When a task hits its budget, the approval window moves to the front: approve at the suggested amount, set a custom amount, or refuse.
 
 ### Dispatch control
@@ -150,7 +152,7 @@ pool ────────── subordinate executors ── task results
 | Mechanism | Notes |
 | --- | --- |
 | Worker pool | Concurrency cap 48, independent of seat count; per-session queuing, context cleared before process reuse |
-| Long-range plans | DAG steps and dependencies; 5-minute default, steps beyond 20 minutes require approval, 60-minute per-step cap |
+| Long-range plans | DAG steps and dependencies; 15-minute default, steps beyond 1 hour require approval, 4-hour per-task cap (three config overrides) |
 | Run evidence | Paged reads; result hashes, terminal receipts and per-task token usage |
 | Permissions | Three approval regimes, read scopes, environment allowlists, per-task MCP grants |
 
